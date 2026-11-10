@@ -56,8 +56,8 @@ export function NovaAvatar3D({
 
   // Full quality fur configuration parameters
   const furParamsRef = useRef({
-    baseColor: '#5e2bff', // Plush lavender-violet
-    tipColor: '#ff9ec7',  // Soft petal pink tips
+    baseColor: '#8F9780',
+    tipColor: '#B8BEA8',
     furLength: 0.31,
     furDensity: 0.75,
     roughness: 0.77,
