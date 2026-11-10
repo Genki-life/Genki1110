@@ -8,59 +8,59 @@ import * as THREE from 'three';
  * - Slightly longer/fluffier (1.15) on the cheek tufts, chest fluff, and ear tips
  */
 export function evaluateFollicleMask(x: number, y: number, z: number): number {
-  // Left and right eye centers in local space (aligned to vertical oval face)
+  // Left and right eye centers in local space (aligned to flush vertical oval face)
   const lx = x + 0.25;
   const rx = x - 0.25;
-  const ey = y - 0.26;
+  const ey = y - 0.22;
   const ez = z - 0.66;
 
   const distLeftEye = Math.sqrt(lx * lx + ey * ey * 1.1 + ez * ez);
   const distRightEye = Math.sqrt(rx * rx + ey * ey * 1.1 + ez * ez);
   const minEyeDist = Math.min(distLeftEye, distRightEye);
 
-  // Tightly match the cornea radius (r < 0.148 = 0), then transition immediately
-  // into short velvety eyelash/brow fuzz (0.28 -> 1.0) so there is NO bald skin ring!
+  // Tightly match the cornea radius (r < 0.145 = 0), then transition smoothly
+  // into short velvety eyelash/brow fuzz so eyes are never buried by 0.31 fur
   if (minEyeDist < 0.145) {
     return 0.0;
   }
-  const eyeMask = 0.28 + 0.72 * smoothstep(0.145, 0.25, minEyeDist);
+  const eyeMask = 0.18 + 0.82 * smoothstep(0.145, 0.30, minEyeDist);
 
   // Small mask right under the pink nose button & mouth
   const mx = x / 1.25;
-  const my = (y - 0.13) * 1.4;
-  const mz = z - 0.73;
+  const my = (y - 0.11) * 1.4;
+  const mz = z - 0.76;
   const distMouth = Math.sqrt(mx * mx + my * my + mz * mz);
-  const mouthMask = 0.22 + 0.78 * smoothstep(0.065, 0.16, distMouth);
+  const mouthMask = 0.16 + 0.84 * smoothstep(0.06, 0.20, distMouth);
 
   // Bottom belly contact pad taper so the base sits flat and level
-  const bottomMask = smoothstep(-0.96, -0.66, y);
+  const bottomMask = smoothstep(-0.92, -0.62, y);
 
   // Extra fluff boost on cheeks
   const cheekDist = Math.min(
-    Math.hypot(x + 0.42, y - 0.08, z - 0.56),
-    Math.hypot(x - 0.42, y - 0.08, z - 0.56)
+    Math.hypot(x + 0.44, y - 0.06, z - 0.56),
+    Math.hypot(x - 0.44, y - 0.06, z - 0.56)
   );
-  const cheekFluff = 1.0 + 0.12 * (1.0 - smoothstep(0.0, 0.36, cheekDist));
+  const cheekFluff = 1.0 + 0.10 * (1.0 - smoothstep(0.0, 0.36, cheekDist));
 
-  // Smoothly taper fur length slightly on ear and arm extremities so rounded plush contours stay clean
-  const leftEarTipDist = Math.hypot(x + 0.42, y - 1.28, z - 0.04);
-  const rightEarTipDist = Math.hypot(x - 0.92, y - 0.62, z - 0.06);
-  const armTipDist = Math.min(
-    Math.hypot(x + 0.86, y + 0.22, z - 0.14),
-    Math.hypot(x - 0.86, y + 0.22, z - 0.14)
+  // Keep fur slightly shorter on ear and arm extremities so contours remain recognizable
+  const leftEarDist = Math.hypot(x + 0.36, y - 1.08, z - 0.05);
+  const rightEarDist = Math.hypot(x - 0.76, y - 0.66, z - 0.08);
+  const armDist = Math.min(
+    Math.hypot(x + 0.80, y + 0.30, z - 0.10),
+    Math.hypot(x - 0.80, y + 0.30, z - 0.10)
   );
   const extremityTaper =
-    (0.72 + 0.28 * smoothstep(0.0, 0.48, leftEarTipDist)) *
-    (0.74 + 0.26 * smoothstep(0.0, 0.48, rightEarTipDist)) *
-    (0.76 + 0.24 * smoothstep(0.0, 0.36, armTipDist));
+    (0.68 + 0.32 * smoothstep(0.0, 0.45, leftEarDist)) *
+    (0.68 + 0.32 * smoothstep(0.0, 0.45, rightEarDist)) *
+    (0.72 + 0.28 * smoothstep(0.0, 0.38, armDist));
 
   return Math.max(0.0, Math.min(1.20, eyeMask * mouthMask * bottomMask * cheekFluff * extremityTaper));
 }
 
 /**
- * Computes the biological grooming flow tangent vector on the blob surface.
- * Hairs part naturally from a crown whorl at the top of the head, sweep around
- * the eye sockets, and flow downward with a subtle cheek/belly swirl.
+ * Computes the biological grooming flow tangent vector on the creature surface.
+ * Hairs part naturally from the crown, sweep around the eye sockets, and flow
+ * smoothly along the ears, arms, and plump torso.
  */
 export function evaluateGroomFlow(
   x: number,
@@ -70,15 +70,28 @@ export function evaluateGroomFlow(
   ny: number,
   nz: number
 ): [number, number, number] {
-  // Base gravity/growth direction from crown (0, 1.05, 0.1)
-  let fx = x * 0.25;
+  // Base gravity/growth direction from crown
+  let fx = x * 0.22;
   let fy = -0.85;
-  let fz = (z - 0.15) * 0.25;
+  let fz = (z - 0.12) * 0.22;
+
+  // On the upright left ear (x < -0.15, y > 0.75), groom gently upward-outward along ear axis
+  if (x < -0.15 && y > 0.75) {
+    fx = -0.22;
+    fy = 0.88;
+    fz = 0.06;
+  } else if (x > 0.20 && y > 0.42) {
+    // On the outward-folded drooping right ear, follow the arch-to-droop curve
+    const tDroop = smoothstep(0.35, 0.78, x);
+    fx = 0.65 * (1.0 - 0.45 * tDroop);
+    fy = 0.35 * (1.0 - tDroop) - 0.82 * tDroop;
+    fz = 0.08;
+  }
 
   // Sweep tangentially around the left and right eyes like real facial fur
   const eyeCenters: [number, number, number][] = [
-    [-0.25, 0.26, 0.66],
-    [0.25, 0.26, 0.66]
+    [-0.25, 0.22, 0.66],
+    [0.25, 0.22, 0.66]
   ];
 
   for (let i = 0; i < 2; i++) {
@@ -87,8 +100,8 @@ export function evaluateGroomFlow(
     const dy = y - ey;
     const dz = z - ez;
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-5;
-    if (d < 0.48) {
-      const influence = (1.0 - d / 0.48) * 0.85;
+    if (d < 0.46) {
+      const influence = (1.0 - d / 0.46) * 0.85;
       fx += (dx / d) * influence;
       fy += (dy / d) * influence * 0.6;
       fz += (dz / d) * influence * 0.3;
@@ -120,88 +133,188 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
- * Sculpt a unit sphere vertex into the reference plump vertical oval silhouette:
- * - Full rounded top dome, plump vertical oval torso, and gently flattened resting base
- * - Front-left (x < 0) upright plush ear; front-right (x > 0) outward-bent drooping lop ear
- * - Short rounded stubby side arms
- * - Recessed eye sockets aligned to the vertical oval face
+ * 1. Main Body Part: Plump, smooth vertical oval with a broad rounded top dome,
+ * gently fuller lower belly, and wide flat-ish resting base (zero starfish spikes).
  */
-function sculptBlobPosition(u: number, v: number, w: number): [number, number, number] {
-  // 1. Plump vertical oval body: rounded top dome, gently fuller mid-lower belly, flat-ish bottom
-  const bellySwelling = 0.095 * Math.exp(-Math.pow((v + 0.16) / 0.50, 2.0));
-  const crownRounding = 0.075 * Math.exp(-Math.pow((v - 0.54) / 0.46, 2.0));
-  const widthScale = 0.575 + bellySwelling + crownRounding;
-  const cheekPuff = 1.0 + 0.035 * Math.exp(-Math.pow((v - 0.08) / 0.38, 2.0)) * Math.max(0.0, w);
+function sculptMainBodyVertex(u: number, v: number, w: number): [number, number, number] {
+  const headBroadness = 0.095 * Math.exp(-Math.pow((v - 0.50) / 0.48, 2.0));
+  const bellyFullness = 0.125 * Math.exp(-Math.pow((v + 0.22) / 0.52, 2.0));
+  const bottomRoundness = 0.075 * Math.exp(-Math.pow((v + 0.74) / 0.32, 2.0));
 
-  let x = u * widthScale * cheekPuff;
+  const rx = 0.635 + headBroadness + bellyFullness + bottomRoundness;
+  const cheekPuff = 1.0 + 0.025 * Math.exp(-Math.pow((v - 0.05) / 0.38, 2.0)) * Math.max(0.0, w);
+  const x = u * rx * cheekPuff;
 
-  const frontBelly = 0.055 * Math.exp(-Math.pow((v + 0.14) / 0.52, 2.0)) * Math.max(0.0, w);
-  const depthScale =
-    0.61 +
-    0.085 * Math.exp(-Math.pow((v + 0.16) / 0.54, 2.0)) +
-    crownRounding * 0.85 +
-    frontBelly;
-  let z = w * depthScale;
+  const frontBelly = w > 0 ? 0.055 * Math.exp(-Math.pow((v + 0.22) / 0.50, 2.0)) * w : 0.0;
+  const backCurve = w < 0 ? 0.035 * Math.exp(-Math.pow((v + 0.18) / 0.55, 2.0)) * (-w) : 0.0;
+  const rz =
+    0.625 +
+    headBroadness * 0.85 +
+    bellyFullness * 0.82 +
+    bottomRoundness * 0.85 +
+    frontBelly +
+    backCurve;
+  let z = w * rz;
 
-  let y = v * 1.18;
-  // Keep top crown smoothly rounded
-  if (y > 0.78) {
-    const tc = (y - 0.78) / 0.40;
-    y = 0.78 + Math.tanh(tc * 1.15) * 0.32;
+  // Vertical mapping: broad rounded crown at top (+0.95), gently flattened base at bottom (-0.86)
+  let y = v * 1.04;
+  if (y > 0.66) {
+    const tc = (y - 0.66) / 0.38;
+    y = 0.66 + Math.tanh(tc * 1.12) * 0.30;
   }
-  // Gently flatten the base so the creature sits stably with a smooth flat-ish bottom
-  if (y < -0.56) {
-    const tb = (-0.56 - y) / 0.62;
-    y = -0.56 - Math.tanh(tb * 1.65) * 0.34;
+  if (y < -0.48) {
+    const tb = (-0.48 - y) / 0.56;
+    y = -0.48 - Math.tanh(tb * 1.55) * 0.39;
   }
 
-  // 2A. Front-Left Ear (x < 0): Perky upright rounded bunny/plush ear
-  const leftEarDir = normalize3(-0.38, 0.924, 0.04);
-  const dotLEar = Math.max(0.0, u * leftEarDir[0] + v * leftEarDir[1] + w * leftEarDir[2]);
-  const leftEarProfile = Math.pow(dotLEar, 14.5);
-  x += -0.14 * leftEarProfile;
-  y += 0.50 * leftEarProfile;
-  z += w * leftEarProfile * 0.14;
-
-  // 2B. Front-Right Ear (x > 0): Outward-bent drooping lop ear (two smooth convex lobes)
-  const rightEarRootDir = normalize3(0.45, 0.892, 0.04);
-  const dotRRoot = Math.max(0.0, u * rightEarRootDir[0] + v * rightEarRootDir[1] + w * rightEarRootDir[2]);
-  const rightEarArch = Math.pow(dotRRoot, 16.0);
-
-  const rightEarTipDir = normalize3(0.79, 0.610, 0.06);
-  const dotRTip = Math.max(0.0, u * rightEarTipDir[0] + v * rightEarTipDir[1] + w * rightEarTipDir[2]);
-  const rightEarTip = Math.pow(dotRTip, 20.0);
-
-  x += 0.20 * rightEarArch + 0.46 * rightEarTip;
-  y += 0.20 * rightEarArch - 0.14 * rightEarTip;
-  z += w * (0.10 * rightEarArch + 0.12 * rightEarTip);
-
-  // 3. Short rounded stubby side arms
-  const leftArmDir = normalize3(-0.975, -0.15, 0.16);
-  const rightArmDir = normalize3(0.975, -0.15, 0.16);
-  const dotLArm = Math.max(0.0, u * leftArmDir[0] + v * leftArmDir[1] + w * leftArmDir[2]);
-  const dotRArm = Math.max(0.0, u * rightArmDir[0] + v * rightArmDir[1] + w * rightArmDir[2]);
-  const maxDotArm = Math.max(dotLArm, dotRArm);
-  const armProfile = Math.pow(maxDotArm, 34.0);
-  x += Math.sign(u) * armProfile * 0.34;
-  y += -0.06 * armProfile;
-  z += 0.07 * armProfile;
-
-  // 4. Subtle anatomical eye socket indentation aligned to the vertical oval face
+  // Smooth anatomical eye socket recess so eyes sit flush in Side view without protruding
   const lx = x + 0.25;
-  const rx = x - 0.25;
-  const ey = y - 0.26;
-  const ez = z - 0.66;
+  const rxEye = x - 0.25;
+  const ey = y - 0.22;
+  const ez = z - 0.67;
   const dEye = Math.min(
     Math.sqrt(lx * lx + ey * ey + ez * ez),
-    Math.sqrt(rx * rx + ey * ey + ez * ez)
+    Math.sqrt(rxEye * rxEye + ey * ey + ez * ez)
   );
-  if (dEye < 0.27) {
-    const indent = (1.0 - smoothstep(0.0, 0.27, dEye)) * 0.05;
+  if (dEye < 0.25) {
+    const indent = (1.0 - smoothstep(0.0, 0.25, dEye)) * 0.038;
     z -= indent;
   }
 
   return [x, y, z];
+}
+
+/**
+ * 2A. Front-Left Ear Part (x < 0): Plump, blunt-rounded upright plush bunny ear
+ * with a gentle front inner-ear hollow (ear cup) and right-handed outward normals.
+ */
+function sculptLeftUprightEarVertex(u: number, v: number, w: number): [number, number, number] {
+  const s = (v + 1.0) * 0.5; // [0..1] from ear root (v=-1) to rounded tip (v=+1)
+  const tipPlump = 0.86 + 0.32 * Math.sin(s * Math.PI * 0.76) + 0.18 * Math.pow(s, 1.45);
+  const halfWidth = 0.205 * tipPlump;
+  const halfThick = 0.112 * tipPlump;
+
+  // Subtle concave inner-ear hollow on the front face (w > 0)
+  const scoopEnv = Math.sin(Math.max(0.0, Math.min(1.0, (s - 0.15) / 0.74)) * Math.PI);
+  const scoop = w > 0.0 ? 0.034 * scoopEnv * Math.max(0.0, 1.0 - u * u * 1.25) * w : 0.0;
+
+  const lx = u * halfWidth;
+  const ly = v * 0.37;
+  const lz = w * halfThick - scoop;
+
+  // For upright left ear (v=+1 is tip), positive roll (+0.15 rad ~ 8.6 deg) tilts tip slightly left
+  const roll = 0.15;
+  const yaw = -0.14;
+  const pitch = 0.05;
+
+  const x1 = lx * Math.cos(roll) - ly * Math.sin(roll);
+  const y1 = lx * Math.sin(roll) + ly * Math.cos(roll);
+  const z1 = lz;
+
+  const x2 = x1;
+  const y2 = y1 * Math.cos(pitch) - z1 * Math.sin(pitch);
+  const z2 = y1 * Math.sin(pitch) + z1 * Math.cos(pitch);
+
+  const x3 = x2 * Math.cos(yaw) + z2 * Math.sin(yaw);
+  const y3 = y2;
+  const z3 = -x2 * Math.sin(yaw) + z2 * Math.cos(yaw);
+
+  // Anchor at upper-left head crown
+  return [-0.30 + x3, 0.98 + y3, 0.02 + z3];
+}
+
+/**
+ * 2B-1. Front-Right Ear Root Bridge (x > 0): Smooth plush arch rising from the
+ * upper-right crown (0.28, 0.80) up and outward to the fold crest (0.54, 0.95).
+ */
+function sculptRightEarRootBridgeVertex(u: number, v: number, w: number): [number, number, number] {
+  const s = (v + 1.0) * 0.5; // v=-1 in head crown, v=+1 at upper-right fold crest
+  const profile = 0.90 + 0.22 * Math.sin(s * Math.PI);
+  const lx = u * 0.125 * profile;
+  const ly = v * 0.21;
+  const lz = w * 0.160 * profile;
+
+  // Negative roll (-0.78 rad ~ -45 deg) tilts v=+1 (top of bridge) outward to upper-right (0.54, 0.95)
+  const roll = -0.78;
+  const pitch = 0.04;
+
+  const x1 = lx * Math.cos(roll) - ly * Math.sin(roll);
+  const y1 = lx * Math.sin(roll) + ly * Math.cos(roll);
+  const z1 = lz;
+
+  const x2 = x1;
+  const y2 = y1 * Math.cos(pitch) - z1 * Math.sin(pitch);
+  const z2 = y1 * Math.sin(pitch) + z1 * Math.cos(pitch);
+
+  return [0.41 + x2, 0.85 + y2, 0.04 + z2];
+}
+
+/**
+ * 2B-2. Front-Right Ear Drooping Lobe (x > 0): Plump, wide, blunt-rounded plush ear flap
+ * hanging outward and downward from the fold crest (0.54, 0.94) down to (0.92, 0.44),
+ * leaving a clear, recognizable contour separation from the side of the head.
+ */
+function sculptRightLopEarVertex(u: number, v: number, w: number): [number, number, number] {
+  // v = +1 is top fold crest (upper-left), v = -1 is bottom drooping rounded tip (lower-right)
+  const s = (1.0 - v) * 0.5; // [0..1] from top fold crest (0) down to drooping tip (1)
+  const lobePlump = 0.88 + 0.36 * Math.sin(s * Math.PI * 0.78) + 0.20 * Math.pow(s, 1.35);
+
+  const lx = u * 0.142 * lobePlump;
+  const ly = v * 0.31;
+  const lz = w * 0.195 * lobePlump;
+
+  // Positive roll (+0.64 rad ~ +36.7 deg) places v=+1 at upper-left fold crest (0.55, 0.93)
+  // and v=-1 at lower-right drooping tip (0.93, 0.43), leaving a clear gap from the head temple!
+  const roll = 0.64;
+  const yaw = 0.24;
+  const pitch = -0.06;
+
+  // Yaw around Y so broad face is visible in both Front and Side views
+  const x0 = lx * Math.cos(yaw) + lz * Math.sin(yaw);
+  const y0 = ly;
+  const z0 = -lx * Math.sin(yaw) + lz * Math.cos(yaw);
+
+  // Roll around Z
+  const x1 = x0 * Math.cos(roll) - y0 * Math.sin(roll);
+  const y1 = x0 * Math.sin(roll) + y0 * Math.cos(roll);
+  const z1 = z0;
+
+  // Pitch around X
+  const x2 = x1;
+  const y2 = y1 * Math.cos(pitch) - z1 * Math.sin(pitch);
+  const z2 = y1 * Math.sin(pitch) + z1 * Math.cos(pitch);
+
+  return [0.74 + x2, 0.68 + y2, 0.06 + z2];
+}
+
+/**
+ * 3. Left & Right Side Arm Parts: Short, plump, rounded capsule arms attached at the
+ * mid-lower torso and hanging gently downward along the body sides (right-handed det = +1).
+ */
+function sculptSideArmVertex(u: number, v: number, w: number, side: -1 | 1): [number, number, number] {
+  // v in [-1, 1]: v = +1 is top shoulder tucked in body, v = -1 is bottom rounded paw tip
+  const s = (1.0 - v) * 0.5; // [0..1] from shoulder (0) down to paw tip (1)
+  const pawPlump = 0.88 + 0.30 * Math.sin(s * Math.PI * 0.78) + 0.18 * Math.pow(s, 1.45);
+
+  // Right-handed local ellipsoid (det = +1 for both side = -1 and side = +1)
+  const lx = u * 0.125 * pawPlump;
+  const ly = v * 0.27;
+  const lz = w * 0.152 * pawPlump;
+
+  // Positive +side * 0.46 rad (~26.4 deg) tucks top shoulder (v=+1) into mid-torso (x = side*0.68, y = +0.02)
+  // and angles bottom rounded paw tip (v=-1) downward and outward (x = side*0.92, y = -0.46)!
+  const roll = side * 0.46;
+  const pitch = -0.06;
+
+  const x1 = lx * Math.cos(roll) - ly * Math.sin(roll);
+  const y1 = lx * Math.sin(roll) + ly * Math.cos(roll);
+  const z1 = lz;
+
+  const x2 = x1;
+  const y2 = y1 * Math.cos(pitch) - z1 * Math.sin(pitch);
+  const z2 = y1 * Math.sin(pitch) + z1 * Math.cos(pitch);
+
+  return [side * 0.80 + x2, -0.22 + y2, 0.05 + z2];
 }
 
 function normalize3(x: number, y: number, z: number): [number, number, number] {
@@ -209,48 +322,109 @@ function normalize3(x: number, y: number, z: number): [number, number, number] {
   return [x / l, y / l, z / l];
 }
 
-/**
- * Builds the continuous organic blob geometry with baked vertex attributes:
- * - `aFollicleMask`: float [0..1.25] controlling fur length & density mask
- * - `aGroomTangent`: vec3 biological fur flow direction
- */
-export function createOrganicBlobGeometry(widthSegments = 96, heightSegments = 72): THREE.SphereGeometry {
+function buildSculptedPartGeometry(
+  widthSegments: number,
+  heightSegments: number,
+  sculptFn: (u: number, v: number, w: number) => [number, number, number]
+): THREE.SphereGeometry {
   const geom = new THREE.SphereGeometry(1.0, widthSegments, heightSegments);
   const posAttr = geom.attributes.position;
-  const count = posAttr.count;
-
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < posAttr.count; i++) {
     const u = posAttr.getX(i);
     const v = posAttr.getY(i);
     const w = posAttr.getZ(i);
-    const [sx, sy, sz] = sculptBlobPosition(u, v, w);
+    const [sx, sy, sz] = sculptFn(u, v, w);
     posAttr.setXYZ(i, sx, sy, sz);
   }
   geom.computeVertexNormals();
+  return geom;
+}
 
-  const normAttr = geom.attributes.normal;
-  const follicleMaskArray = new Float32Array(count);
-  const groomTangentArray = new Float32Array(count * 3);
+/**
+ * Builds the complete multi-part organic plush geometry (Body + Upright Left Ear +
+ * Outward-Folded Drooping Right Ear + 2 Downward-Tucked Short Rounded Side Arms)
+ * merged into a single indexed BufferGeometry with baked vertex attributes:
+ * - `aFollicleMask`: float [0..1.20] controlling fur length & density mask
+ * - `aGroomTangent`: vec3 biological fur flow direction
+ */
+export function createOrganicBlobGeometry(widthSegments = 56, heightSegments = 44): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [
+    buildSculptedPartGeometry(widthSegments, heightSegments, sculptMainBodyVertex),
+    buildSculptedPartGeometry(28, 22, sculptLeftUprightEarVertex),
+    buildSculptedPartGeometry(20, 16, sculptRightEarRootBridgeVertex),
+    buildSculptedPartGeometry(28, 22, sculptRightLopEarVertex),
+    buildSculptedPartGeometry(22, 18, (u, v, w) => sculptSideArmVertex(u, v, w, -1)),
+    buildSculptedPartGeometry(22, 18, (u, v, w) => sculptSideArmVertex(u, v, w, 1))
+  ];
 
-  for (let i = 0; i < count; i++) {
-    const x = posAttr.getX(i);
-    const y = posAttr.getY(i);
-    const z = posAttr.getZ(i);
-    const nx = normAttr.getX(i);
-    const ny = normAttr.getY(i);
-    const nz = normAttr.getZ(i);
+  let totalVertices = 0;
+  let totalIndices = 0;
+  for (const part of parts) {
+    totalVertices += part.attributes.position.count;
+    totalIndices += part.index ? part.index.count : 0;
+  }
+
+  const mergedPositions = new Float32Array(totalVertices * 3);
+  const mergedNormals = new Float32Array(totalVertices * 3);
+  const mergedUVs = new Float32Array(totalVertices * 2);
+  const mergedIndices = new Uint32Array(totalIndices);
+
+  let vertexOffset = 0;
+  let indexOffset = 0;
+
+  for (const part of parts) {
+    const pos = part.attributes.position;
+    const norm = part.attributes.normal;
+    const uv = part.attributes.uv;
+    const vCount = pos.count;
+
+    mergedPositions.set(pos.array as Float32Array, vertexOffset * 3);
+    mergedNormals.set(norm.array as Float32Array, vertexOffset * 3);
+    if (uv) {
+      mergedUVs.set(uv.array as Float32Array, vertexOffset * 2);
+    }
+
+    if (part.index) {
+      const idxArray = part.index.array;
+      for (let i = 0; i < idxArray.length; i++) {
+        mergedIndices[indexOffset + i] = idxArray[i] + vertexOffset;
+      }
+      indexOffset += idxArray.length;
+    }
+
+    vertexOffset += vCount;
+    part.dispose();
+  }
+
+  const mergedGeom = new THREE.BufferGeometry();
+  mergedGeom.setAttribute('position', new THREE.BufferAttribute(mergedPositions, 3));
+  mergedGeom.setAttribute('normal', new THREE.BufferAttribute(mergedNormals, 3));
+  mergedGeom.setAttribute('uv', new THREE.BufferAttribute(mergedUVs, 2));
+  mergedGeom.setIndex(new THREE.BufferAttribute(mergedIndices, 1));
+
+  const follicleMaskArray = new Float32Array(totalVertices);
+  const groomTangentArray = new Float32Array(totalVertices * 3);
+
+  for (let i = 0; i < totalVertices; i++) {
+    const i3 = i * 3;
+    const x = mergedPositions[i3];
+    const y = mergedPositions[i3 + 1];
+    const z = mergedPositions[i3 + 2];
+    const nx = mergedNormals[i3];
+    const ny = mergedNormals[i3 + 1];
+    const nz = mergedNormals[i3 + 2];
 
     follicleMaskArray[i] = evaluateFollicleMask(x, y, z);
     const [tx, ty, tz] = evaluateGroomFlow(x, y, z, nx, ny, nz);
-    groomTangentArray[i * 3] = tx;
-    groomTangentArray[i * 3 + 1] = ty;
-    groomTangentArray[i * 3 + 2] = tz;
+    groomTangentArray[i3] = tx;
+    groomTangentArray[i3 + 1] = ty;
+    groomTangentArray[i3 + 2] = tz;
   }
 
-  geom.setAttribute('aFollicleMask', new THREE.BufferAttribute(follicleMaskArray, 1));
-  geom.setAttribute('aGroomTangent', new THREE.BufferAttribute(groomTangentArray, 3));
+  mergedGeom.setAttribute('aFollicleMask', new THREE.BufferAttribute(follicleMaskArray, 1));
+  mergedGeom.setAttribute('aGroomTangent', new THREE.BufferAttribute(groomTangentArray, 3));
 
-  return geom;
+  return mergedGeom;
 }
 
 export interface AnimState {
@@ -306,7 +480,7 @@ export function createBlobCreature(): BlobCreature {
   const root = new THREE.Group();
   root.name = 'MochiPuffCreature';
 
-  const bodyGeometry = createOrganicBlobGeometry(96, 72);
+  const bodyGeometry = createOrganicBlobGeometry(72, 56);
 
   // Under-skin velvety material (visible at roots and around eyes/mouth)
   const skinMaterial = new THREE.MeshStandardMaterial({
@@ -352,35 +526,36 @@ export function createBlobCreature(): BlobCreature {
 
   for (const side of eyeSides) {
     const eyePivot = new THREE.Group();
-    eyePivot.position.set(side * 0.25, 0.26, 0.72);
-    eyePivot.rotation.y = side * 0.22;
+    // Recessed snugly into the eye socket at z=0.635 so side profile never bulges out
+    eyePivot.position.set(side * 0.25, 0.22, 0.635);
+    eyePivot.rotation.y = side * 0.24;
     eyePivot.rotation.x = -0.05;
 
-    // Dark glossy cornea
+    // Dark glossy cornea flattened along Z (0.52) to follow facial curvature
     const eyeballGeo = new THREE.SphereGeometry(0.17, 32, 24);
-    eyeballGeo.scale(0.96, 1.08, 0.68);
+    eyeballGeo.scale(0.94, 1.06, 0.52);
     const eyeball = new THREE.Mesh(eyeballGeo, eyeMaterial);
     eyePivot.add(eyeball);
 
     // Warm violet-amber lower iris crescent
     const irisGeo = new THREE.SphereGeometry(0.12, 24, 16);
-    irisGeo.scale(0.92, 0.95, 0.38);
+    irisGeo.scale(0.90, 0.94, 0.30);
     const iris = new THREE.Mesh(irisGeo, irisMaterial);
-    iris.position.set(0, -0.02, 0.086);
+    iris.position.set(0, -0.02, 0.066);
     eyePivot.add(iris);
 
     // Primary large anime catchlight (top-inner)
-    const catchlightMainGeo = new THREE.SphereGeometry(0.045, 16, 12);
-    catchlightMainGeo.scale(1.0, 1.18, 0.32);
+    const catchlightMainGeo = new THREE.SphereGeometry(0.044, 16, 12);
+    catchlightMainGeo.scale(1.0, 1.18, 0.26);
     const catchlightMain = new THREE.Mesh(catchlightMainGeo, highlightMat);
-    catchlightMain.position.set(-side * 0.042, 0.052, 0.112);
+    catchlightMain.position.set(-side * 0.042, 0.052, 0.086);
     eyePivot.add(catchlightMain);
 
     // Secondary lower rim catchlight
-    const catchlightSubGeo = new THREE.SphereGeometry(0.023, 14, 10);
-    catchlightSubGeo.scale(1.0, 1.0, 0.32);
+    const catchlightSubGeo = new THREE.SphereGeometry(0.022, 14, 10);
+    catchlightSubGeo.scale(1.0, 1.0, 0.26);
     const catchlightSub = new THREE.Mesh(catchlightSubGeo, warmHighlightMat);
-    catchlightSub.position.set(side * 0.048, -0.052, 0.11);
+    catchlightSub.position.set(side * 0.048, -0.052, 0.084);
     eyePivot.add(catchlightSub);
 
     faceGroup.add(eyePivot);
@@ -404,30 +579,30 @@ export function createBlobCreature(): BlobCreature {
 
   for (const side of eyeSides) {
     const blushGeo = new THREE.SphereGeometry(0.12, 20, 16);
-    blushGeo.scale(1.4, 0.75, 0.35);
+    blushGeo.scale(1.35, 0.72, 0.25);
     const blush = new THREE.Mesh(blushGeo, blushMat);
-    blush.position.set(side * 0.36, 0.10, 0.72);
-    blush.rotation.y = side * 0.32;
+    blush.position.set(side * 0.36, 0.07, 0.676);
+    blush.rotation.y = side * 0.36;
     blush.rotation.z = -side * 0.1;
     faceGroup.add(blush);
   }
 
-  // Cute bright pink nose button + W-shaped cat smile positioned proudly on the muzzle surface
+  // Cute bright pink nose button + W-shaped cat smile positioned flush on the muzzle surface
   const noseMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color('#ff94b8')
   });
-  const noseGeo = new THREE.SphereGeometry(0.048, 18, 14);
-  noseGeo.scale(1.3, 0.88, 0.75);
+  const noseGeo = new THREE.SphereGeometry(0.046, 18, 14);
+  noseGeo.scale(1.25, 0.85, 0.55);
   const nose = new THREE.Mesh(noseGeo, noseMat);
-  nose.position.set(0, 0.15, 0.805);
+  nose.position.set(0, 0.13, 0.768);
   faceGroup.add(nose);
 
   // Cute W-mouth made from two torus arcs
   const mouthMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#3a102e') });
   for (const side of [-1, 1]) {
-    const arcGeo = new THREE.TorusGeometry(0.046, 0.013, 10, 20, Math.PI * 0.92);
+    const arcGeo = new THREE.TorusGeometry(0.044, 0.012, 10, 20, Math.PI * 0.92);
     const arc = new THREE.Mesh(arcGeo, mouthMat);
-    arc.position.set(side * 0.043, 0.11, 0.80);
+    arc.position.set(side * 0.042, 0.09, 0.772);
     arc.rotation.x = Math.PI + 0.15;
     arc.rotation.y = side * 0.14;
     faceGroup.add(arc);

@@ -96,6 +96,7 @@ export function createGPUFurSystem(
     uEnvSkyColor: { value: new THREE.Color('#f5d0fe') },
     uEnvGroundColor: { value: new THREE.Color('#1e1b4b') },
     uEnvTintStrength: { value: 0.0 },
+    uDebugNeutralShading: { value: 0.0 },
     uTime: { value: 0.0 },
     uWindStrength: { value: initialParams.windStrength ?? 0.95 },
     uPointerLocalPos: { value: new THREE.Vector3(0, 0, 2) },

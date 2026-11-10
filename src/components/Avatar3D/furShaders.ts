@@ -17,6 +17,7 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
   uniform vec3 uEnvSkyColor;
   uniform vec3 uEnvGroundColor;
   uniform float uEnvTintStrength;
+  uniform float uDebugNeutralShading;
 
   // Shift hair tangent along surface normal to model tilted cuticle scales (Marschner 2003)
   vec3 shiftTangent(vec3 T, vec3 N, float shift) {
@@ -99,7 +100,30 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     vec3 directSpec = (colorR + colorTRT) * uKeyLightIntensity * deepShadow * (0.25 + 0.75 * h);
     vec3 ambientTerm = albedo * hemiFill * follicleAO;
 
-    return directDiffuse + directSpec + scatterTT + ambientTerm;
+    vec3 finalLinear = directDiffuse + directSpec + scatterTT + ambientTerm;
+
+    // Temporary Diagnostic Mode Only (uDebugNeutralShading > 0.5):
+    // Removes purple rim light (#c4b5fd), removes cool blue sky tint, reduces white cuticle desaturation,
+    // and applies linear-to-sRGB gamma encoding so #8F9780/#B8BEA8 displays true sage green
+    if (uDebugNeutralShading > 0.5) {
+      vec3 neutralRimColor = vec3(0.96, 0.95, 0.88);
+      vec3 neutralScatterTT = (
+        forwardKey * uKeyLightColor * 0.25 +
+        (forwardRim * 0.45 + fresnelRim * 0.38) * neutralRimColor * 0.65
+      ) * mix(uBaseColor, uTipColor, 0.85) * (0.35 + 0.65 * h);
+
+      vec3 neutralSky = mix(uTipColor, vec3(0.96, 0.95, 0.90), 0.25);
+      vec3 neutralGround = uBaseColor * 0.62;
+      vec3 neutralHemi = mix(neutralGround, neutralSky, N.y * 0.5 + 0.5) * 0.72;
+      vec3 neutralShadow = mix(vec3(0.52), vec3(1.0), deepShadow);
+      vec3 neutralDiffuse = albedo * balancedKeyTint * (uKeyLightIntensity * 0.78) * wrapDiffuse * neutralShadow;
+      vec3 neutralSpec = (colorR * 0.25 + colorTRT * 0.45) * deepShadow * (0.25 + 0.75 * h);
+      vec3 neutralAmbient = albedo * neutralHemi * mix(0.48, 1.0, pow(clamp(h, 0.0, 1.0), 0.65));
+      vec3 linearClean = neutralDiffuse + neutralSpec + neutralScatterTT + neutralAmbient;
+      return pow(max(linearClean, vec3(0.0)), vec3(1.0 / 2.2));
+    }
+
+    return finalLinear;
   }
 `;
 
