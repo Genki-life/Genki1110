@@ -1,0 +1,8 @@
+{
+  "name": "Genki1110",
+  "description": "High-fidelity mobile UI concept and interactive prototype for Plan B, a calm, empathetic AI health companion.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
