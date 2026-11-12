@@ -87,16 +87,16 @@ export function createGPUFurSystem(
     uRoughness: { value: initialParams.roughness },
     uSpecular: { value: initialParams.specular },
     uKeyLightDir: { value: new THREE.Vector3(0.6, 0.8, 0.7).normalize() },
-    uKeyLightColor: { value: new THREE.Color('#fff7ed') },
+    uKeyLightColor: { value: new THREE.Color('#f7f8f6') },
     uKeyLightIntensity: { value: initialParams.lightIntensity ?? 1.35 },
     uRimLightDir: { value: new THREE.Vector3(-0.6, 0.4, -0.85).normalize() },
-    uRimLightColor: { value: new THREE.Color('#c4b5fd') },
+    uRimLightColor: { value: new THREE.Color('#f2f4ef') },
     uRimIntensity: { value: initialParams.rimIntensity ?? 1.35 },
     uAmbientIntensity: { value: 0.62 },
-    uEnvSkyColor: { value: new THREE.Color('#f5d0fe') },
-    uEnvGroundColor: { value: new THREE.Color('#1e1b4b') },
+    uEnvSkyColor: { value: new THREE.Color('#f5f7f2') },
+    uEnvGroundColor: { value: new THREE.Color('#6b7260') },
     uEnvTintStrength: { value: 0.0 },
-    uDebugNeutralShading: { value: 0.0 },
+    uLegacyRawOutput: { value: 0.0 },
     uTime: { value: 0.0 },
     uWindStrength: { value: initialParams.windStrength ?? 0.95 },
     uPointerLocalPos: { value: new THREE.Vector3(0, 0, 2) },
@@ -134,6 +134,7 @@ export function createGPUFurSystem(
     uniforms: sharedUniforms,
     transparent: false,
     depthWrite: true,
+    toneMapped: true,
     side: THREE.FrontSide
   });
 
@@ -342,6 +343,7 @@ export function createGPUFurSystem(
     uniforms: sharedUniforms,
     transparent: false,
     depthWrite: true,
+    toneMapped: true,
     side: THREE.DoubleSide
   });
 

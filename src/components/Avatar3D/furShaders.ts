@@ -17,7 +17,7 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
   uniform vec3 uEnvSkyColor;
   uniform vec3 uEnvGroundColor;
   uniform float uEnvTintStrength;
-  uniform float uDebugNeutralShading;
+  uniform float uLegacyRawOutput;
 
   // Shift hair tangent along surface normal to model tilted cuticle scales (Marschner 2003)
   vec3 shiftTangent(vec3 T, vec3 N, float shift) {
@@ -37,7 +37,8 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     return hemiVis * pow(sinTH, exponent) * normFactor * 0.095;
   }
 
-  // Evaluate complete Physical Hair Shading (R + TRT + TT + Beer-Lambert Deep Shadow + Follicle AO)
+  // Evaluate complete Physical Hair Shading in Linear Working Space
+  // Output is passed to Three.js standard #include <tonemapping_fragment> and #include <colorspace_fragment>
   vec3 evaluatePhysicalHairShading(
     vec3 worldPos,
     vec3 surfNormal,
@@ -52,78 +53,79 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     vec3 L = normalize(uKeyLightDir);
     vec3 Lrim = normalize(uRimLightDir);
 
-    // 1. Root-to-Tip Melanin / Pigment Gradient with per-strand micro-variation
+    // 1. Root-to-Tip Melanin / Pigment Gradient with subtle per-strand micro-variation
     float rootTipMix = smoothstep(0.05, 0.92, pow(h, 0.82));
-    vec3 strandTint = mix(vec3(0.92), vec3(1.08), fract(strandSeed * 13.37));
+    vec3 strandTint = mix(vec3(0.94), vec3(1.06), fract(strandSeed * 13.37));
     vec3 albedo = mix(uBaseColor, uTipColor, rootTipMix) * strandTint;
 
-    // 2. Follicle Ambient Occlusion (deep warm occlusion near skin roots)
-    float follicleAO = mix(0.22, 1.0, pow(clamp(h, 0.0, 1.0), 0.72));
-
-    // 3. Beer-Lambert Volumetric Hair Self-Shadowing (optical depth through coat)
+    // 2. Beer-Lambert Volumetric Hair Self-Shadowing (optical depth through coat)
     float NdotL = dot(N, L);
     float opticalDepth = (1.0 - h) * (0.45 + 0.55 * uFurDensity) / max(0.22, NdotL * 0.5 + 0.55);
     float deepShadow = exp(-opticalDepth * 1.45);
     float wrapDiffuse = clamp((NdotL + 0.45) / 1.45, 0.0, 1.0);
 
-    // 4. Primary Specular Lobe (R): Cuticle surface reflection shifted toward root (-0.16 rad)
+    // 3. Primary Specular Lobe (R) & Secondary Specular Lobe (TRT)
     float sheenBoost = 1.0 + combMemory * 0.35;
     vec3 tPrimary = shiftTangent(T, N, -0.16 + (strandSeed - 0.5) * 0.05);
     float specR = hairSpecularLobe(tPrimary, N, V, L, uRoughness) * uSpecular * sheenBoost;
     vec3 colorR = specR * uKeyLightColor * mix(vec3(1.0), albedo, 0.15);
 
-    // 5. Secondary Specular Lobe (TRT): Internal reflection shifted toward tip (+0.24 rad), tinted by pigment
     vec3 tSecondary = shiftTangent(T, N, 0.24 + (strandSeed - 0.5) * 0.08);
     float glint = 0.75 + 0.5 * sin(strandSeed * 62.83);
     float specTRT = hairSpecularLobe(tSecondary, N, V, L, min(1.0, uRoughness * 1.35)) * uSpecular * 0.85 * glint;
     vec3 colorTRT = specTRT * mix(albedo, uTipColor, 0.65) * uKeyLightColor * 1.65;
 
-    // 6. Forward Subsurface Scattering / Transmission Lobe (TT) from Key + Rim Backlights
+    // 4. Forward Subsurface Scattering / Transmission Lobe (TT)
     float forwardKey = pow(clamp(dot(V, -L + N * 0.35), 0.0, 1.0), 3.2);
     float forwardRim = pow(clamp(dot(V, -Lrim + N * 0.4), 0.0, 1.0), 2.4);
     float fresnelRim = pow(1.0 - max(0.0, dot(N, V)), 2.6);
-    vec3 scatterTT = (
-      forwardKey * uKeyLightColor * 0.38 +
-      (forwardRim * 0.75 + fresnelRim * 0.65) * uRimLightColor * uRimIntensity
-    ) * mix(uBaseColor, uTipColor, 0.75) * (0.35 + 0.65 * h);
 
-    // 7. Soft Hemisphere Studio & 3D Environment Fill Lighting
-    vec3 baseSkyColor = mix(uTipColor, vec3(0.88, 0.92, 1.0), 0.65);
-    vec3 baseGroundColor = uBaseColor * 0.38;
-    vec3 skyColor = mix(baseSkyColor, uEnvSkyColor, uEnvTintStrength);
-    vec3 groundColor = mix(baseGroundColor, uEnvGroundColor, uEnvTintStrength);
-    vec3 hemiFill = mix(groundColor, skyColor, N.y * 0.5 + 0.5) * uAmbientIntensity;
-
-    // Combine all physical lobes while preserving intrinsic fur pigment hue in linear space
-    vec3 balancedKeyTint = mix(vec3(1.0), uKeyLightColor, 0.58);
-    vec3 directDiffuse = albedo * balancedKeyTint * uKeyLightIntensity * wrapDiffuse * deepShadow;
-    vec3 directSpec = (colorR + colorTRT) * uKeyLightIntensity * deepShadow * (0.25 + 0.75 * h);
-    vec3 ambientTerm = albedo * hemiFill * follicleAO;
-
-    vec3 finalLinear = directDiffuse + directSpec + scatterTT + ambientTerm;
-
-    // Temporary Diagnostic Mode Only (uDebugNeutralShading > 0.5):
-    // Removes purple rim light (#c4b5fd), removes cool blue sky tint, reduces white cuticle desaturation,
-    // and applies linear-to-sRGB gamma encoding so #8F9780/#B8BEA8 displays true sage green
-    if (uDebugNeutralShading > 0.5) {
-      vec3 neutralRimColor = vec3(0.96, 0.95, 0.88);
-      vec3 neutralScatterTT = (
-        forwardKey * uKeyLightColor * 0.25 +
-        (forwardRim * 0.45 + fresnelRim * 0.38) * neutralRimColor * 0.65
-      ) * mix(uBaseColor, uTipColor, 0.85) * (0.35 + 0.65 * h);
-
-      vec3 neutralSky = mix(uTipColor, vec3(0.96, 0.95, 0.90), 0.25);
-      vec3 neutralGround = uBaseColor * 0.62;
-      vec3 neutralHemi = mix(neutralGround, neutralSky, N.y * 0.5 + 0.5) * 0.72;
-      vec3 neutralShadow = mix(vec3(0.52), vec3(1.0), deepShadow);
-      vec3 neutralDiffuse = albedo * balancedKeyTint * (uKeyLightIntensity * 0.78) * wrapDiffuse * neutralShadow;
-      vec3 neutralSpec = (colorR * 0.25 + colorTRT * 0.45) * deepShadow * (0.25 + 0.75 * h);
-      vec3 neutralAmbient = albedo * neutralHemi * mix(0.48, 1.0, pow(clamp(h, 0.0, 1.0), 0.65));
-      vec3 linearClean = neutralDiffuse + neutralSpec + neutralScatterTT + neutralAmbient;
-      return pow(max(linearClean, vec3(0.0)), vec3(1.0 / 2.2));
+    // Legacy "Before" mode (for diagnostic Before/After comparison only)
+    if (uLegacyRawOutput > 0.5) {
+      float legacyAO = mix(0.22, 1.0, pow(clamp(h, 0.0, 1.0), 0.72));
+      vec3 legacyScatterTT = (
+        forwardKey * uKeyLightColor * 0.38 +
+        (forwardRim * 0.75 + fresnelRim * 0.65) * uRimLightColor * uRimIntensity
+      ) * mix(uBaseColor, uTipColor, 0.75) * (0.35 + 0.65 * h);
+      vec3 legacySky = mix(uTipColor, vec3(0.88, 0.92, 1.0), 0.65);
+      vec3 legacyGround = uBaseColor * 0.38;
+      vec3 legacyHemi = mix(
+        mix(legacyGround, uEnvGroundColor, uEnvTintStrength),
+        mix(legacySky, uEnvSkyColor, uEnvTintStrength),
+        N.y * 0.5 + 0.5
+      ) * uAmbientIntensity;
+      vec3 legacyKeyTint = mix(vec3(1.0), uKeyLightColor, 0.58);
+      vec3 legacyDiffuse = albedo * legacyKeyTint * uKeyLightIntensity * wrapDiffuse * deepShadow;
+      vec3 legacySpec = (colorR + colorTRT) * uKeyLightIntensity * deepShadow * (0.25 + 0.75 * h);
+      vec3 legacyAmbient = albedo * legacyHemi * legacyAO;
+      return legacyDiffuse + legacySpec + legacyScatterTT + legacyAmbient;
     }
 
-    return finalLinear;
+    // Formal Physical Plush Shading (Linear Working Space):
+    // Energy-balanced for Three.js toneMapping + sRGB output so #8F9780/#B8BEA8 renders
+    // as a soft, low-saturation gray-sage green without purple cast, yellow cast, or overexposure
+    float follicleAO = mix(0.46, 1.0, pow(clamp(h, 0.0, 1.0), 0.65));
+    float softShadow = mix(0.54, 1.0, deepShadow);
+
+    vec3 scatterTT = (
+      forwardKey * uKeyLightColor * 0.18 +
+      (forwardRim * 0.38 + fresnelRim * 0.30) * uRimLightColor * (uRimIntensity * 0.42)
+    ) * mix(uBaseColor, uTipColor, 0.84) * (0.35 + 0.65 * h);
+
+    vec3 baseSkyColor = mix(uTipColor, vec3(0.92, 0.95, 0.94), 0.34);
+    vec3 baseGroundColor = uBaseColor * 0.60;
+    vec3 skyColor = mix(baseSkyColor, uEnvSkyColor, uEnvTintStrength);
+    vec3 groundColor = mix(baseGroundColor, uEnvGroundColor, uEnvTintStrength);
+    vec3 hemiFill = mix(groundColor, skyColor, N.y * 0.5 + 0.5) * (uAmbientIntensity * 1.08);
+
+    vec3 balancedKeyTint = mix(vec3(1.0), uKeyLightColor, 0.45);
+    vec3 directDiffuse = albedo * balancedKeyTint * (uKeyLightIntensity * 0.56) * wrapDiffuse * softShadow;
+    vec3 directSpec = (colorR * 0.22 + colorTRT * 0.36) * (uKeyLightIntensity * 0.68) * softShadow * (0.25 + 0.75 * h);
+    vec3 ambientTerm = albedo * hemiFill * follicleAO;
+
+    // Subtle cool-neutral studio daylight balance so linear sage pigment stays gray-sage instead of warm olive
+    vec3 linearOut = (directDiffuse + directSpec + scatterTT + ambientTerm) * vec3(0.95, 1.0, 1.04);
+    return max(linearOut, vec3(0.0));
   }
 `;
 
@@ -334,6 +336,10 @@ export const SHELL_FRAGMENT_SHADER = /* glsl */ `
     );
 
     gl_FragColor = vec4(color, 1.0);
+    if (uLegacyRawOutput < 0.5) {
+#include <tonemapping_fragment>
+#include <colorspace_fragment>
+    }
   }
 `;
 
@@ -525,5 +531,9 @@ export const STRAND_FRAGMENT_SHADER = /* glsl */ `
     color *= (0.82 + 0.24 * cylinderRoundness);
 
     gl_FragColor = vec4(color, 1.0);
+    if (uLegacyRawOutput < 0.5) {
+#include <tonemapping_fragment>
+#include <colorspace_fragment>
+    }
   }
 `;

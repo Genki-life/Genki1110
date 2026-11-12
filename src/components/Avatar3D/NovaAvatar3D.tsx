@@ -59,7 +59,13 @@ export function NovaAvatar3D({
     }
     return 'front';
   });
-  const [debugPreset, setDebugPreset] = useState<'formal' | 'colorFix' | 'shortPlush'>('formal');
+  const [debugPreset, setDebugPreset] = useState<'formal' | 'before'>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search).get('preset');
+      if (p === 'before') return 'before';
+    }
+    return 'formal';
+  });
 
   const debugStateRef = useRef({
     open: isDebugOpen,
@@ -76,6 +82,7 @@ export function NovaAvatar3D({
   const creatureRef = useRef<BlobCreature | null>(null);
   const furSystemRef = useRef<FurSystem | null>(null);
   const gpuPhysicsRef = useRef<GPUFurPhysics | null>(null);
+  const keyLightRef = useRef<THREE.DirectionalLight | null>(null);
   const rimLightRef = useRef<THREE.DirectionalLight | null>(null);
   const hemiLightRef = useRef<THREE.HemisphereLight | null>(null);
 
@@ -113,26 +120,43 @@ export function NovaAvatar3D({
 
     const creature = creatureRef.current;
     const furSystem = furSystemRef.current;
+    const keyLight = keyLightRef.current;
     const rimLight = rimLightRef.current;
     const hemiLight = hemiLightRef.current;
     if (!creature || !furSystem) return;
 
     const formal = furParamsRef.current;
 
+    const applyFormalColorsAndLights = () => {
+      furSystem.sharedUniforms.uLegacyRawOutput.value = 0.0;
+      furSystem.sharedUniforms.uKeyLightColor.value.set('#f7f8f6');
+      furSystem.sharedUniforms.uRimLightColor.value.set('#f2f4ef');
+      furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5f7f2');
+      furSystem.sharedUniforms.uEnvGroundColor.value.set('#6b7260');
+      furSystem.sharedUniforms.uFurLength.value = formal.furLength;
+      furSystem.sharedUniforms.uCurliness.value = formal.curliness;
+      furSystem.sharedUniforms.uWindStrength.value = formal.windStrength;
+      creature.skinMaterial.color.set(formal.baseColor).multiplyScalar(0.76);
+      if (keyLight) {
+        keyLight.color.set('#f7f8f6');
+        keyLight.intensity = 1.55;
+      }
+      if (rimLight) {
+        rimLight.color.set('#f2f4ef');
+        rimLight.intensity = 1.15;
+      }
+      if (hemiLight) {
+        hemiLight.color.set('#f5f7f2');
+        hemiLight.groundColor.set('#6b7260');
+        hemiLight.intensity = 0.80;
+      }
+    };
+
     if (!isDebugOpen) {
       // Restore 100% formal state
       furSystem.shellMesh.visible = true;
       furSystem.strandMesh.visible = true;
-      furSystem.sharedUniforms.uDebugNeutralShading.value = 0.0;
-      furSystem.sharedUniforms.uFurLength.value = formal.furLength;
-      furSystem.sharedUniforms.uCurliness.value = formal.curliness;
-      furSystem.sharedUniforms.uWindStrength.value = formal.windStrength;
-      creature.skinMaterial.color.set(formal.baseColor).multiplyScalar(0.55);
-      if (rimLight) rimLight.color.set('#c4b5fd');
-      if (hemiLight) {
-        hemiLight.color.set('#f5d0fe');
-        hemiLight.groundColor.set('#1e1b4b');
-      }
+      applyFormalColorsAndLights();
       return;
     }
 
@@ -143,27 +167,34 @@ export function NovaAvatar3D({
 
     if (!showFur) {
       // In View A (bare mesh), show true #8F9780 base color and neutral light on bodyMesh so silhouette is clear
+      applyFormalColorsAndLights();
       creature.skinMaterial.color.set(formal.baseColor);
-      if (rimLight) rimLight.color.set('#fff7ed');
+    } else if (debugPreset === 'before') {
+      // Legacy "Before" comparison: pre-fix purple rim light, pink/indigo hemisphere, and raw un-converted linear output
+      furSystem.sharedUniforms.uLegacyRawOutput.value = 1.0;
+      furSystem.sharedUniforms.uKeyLightColor.value.set('#fff7ed');
+      furSystem.sharedUniforms.uRimLightColor.value.set('#c4b5fd');
+      furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5d0fe');
+      furSystem.sharedUniforms.uEnvGroundColor.value.set('#1e1b4b');
+      furSystem.sharedUniforms.uFurLength.value = formal.furLength;
+      furSystem.sharedUniforms.uCurliness.value = formal.curliness;
+      furSystem.sharedUniforms.uWindStrength.value = formal.windStrength;
+      creature.skinMaterial.color.set(formal.baseColor).multiplyScalar(0.55);
+      if (keyLight) {
+        keyLight.color.set('#fff7ed');
+        keyLight.intensity = 1.8;
+      }
+      if (rimLight) {
+        rimLight.color.set('#c4b5fd');
+        rimLight.intensity = 1.5;
+      }
       if (hemiLight) {
-        hemiLight.color.set('#ffffff');
-        hemiLight.groundColor.set('#5c6352');
+        hemiLight.color.set('#f5d0fe');
+        hemiLight.groundColor.set('#1e1b4b');
+        hemiLight.intensity = 0.85;
       }
     } else {
-      const useNeutralColor = debugPreset === 'colorFix' || debugPreset === 'shortPlush';
-      const useShortPlush = debugPreset === 'shortPlush';
-      furSystem.sharedUniforms.uDebugNeutralShading.value = useNeutralColor ? 1.0 : 0.0;
-      furSystem.sharedUniforms.uFurLength.value = useShortPlush ? 0.075 : formal.furLength;
-      furSystem.sharedUniforms.uCurliness.value = useShortPlush ? 0.06 : formal.curliness;
-      furSystem.sharedUniforms.uWindStrength.value = useShortPlush ? 0.15 : formal.windStrength;
-      creature.skinMaterial.color
-        .set(formal.baseColor)
-        .multiplyScalar(useNeutralColor ? 0.78 : 0.55);
-      if (rimLight) rimLight.color.set(useNeutralColor ? '#fff7ed' : '#c4b5fd');
-      if (hemiLight) {
-        hemiLight.color.set(useNeutralColor ? '#ffffff' : '#f5d0fe');
-        hemiLight.groundColor.set(useNeutralColor ? '#5c6352' : '#1e1b4b');
-      }
+      applyFormalColorsAndLights();
     }
   }, [isDebugOpen, debugFurMode, debugAngle, debugPreset]);
 
@@ -341,8 +372,9 @@ export function NovaAvatar3D({
       renderer.setPixelRatio(dpr);
       renderer.setSize(width, height);
       renderer.setClearColor(0x000000, 0); // 100% transparent
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.08;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.NeutralToneMapping;
+      renderer.toneMappingExposure = 0.98;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -383,25 +415,26 @@ export function NovaAvatar3D({
 
       updateFraming(width, height);
 
-      // 4. Studio 3-Point Lighting Rig
-      const keyLight = new THREE.DirectionalLight('#fff7ed', 1.8);
+      // 4. Studio 3-Point Neutral Lighting Rig (eliminates purple/yellow cast & overexposure)
+      const keyLight = new THREE.DirectionalLight('#f7f8f6', 1.55);
       keyLight.position.set(1.8, 2.1, 2.2);
       keyLight.castShadow = true;
       keyLight.shadow.mapSize.set(1024, 1024);
       keyLight.shadow.bias = -0.0005;
       keyLight.shadow.radius = 2.0;
+      keyLightRef.current = keyLight;
       scene.add(keyLight);
 
-      const rimLight = new THREE.DirectionalLight('#c4b5fd', 1.5);
+      const rimLight = new THREE.DirectionalLight('#f2f4ef', 1.15);
       rimLight.position.set(-2.4, 1.8, -3.2);
       rimLightRef.current = rimLight;
       scene.add(rimLight);
 
-      const hemiLight = new THREE.HemisphereLight('#f5d0fe', '#1e1b4b', 0.85);
+      const hemiLight = new THREE.HemisphereLight('#f5f7f2', '#6b7260', 0.80);
       hemiLightRef.current = hemiLight;
       scene.add(hemiLight);
 
-      // 5. Procedural Mochi-Puff Blob Creature (Sculpted organic mesh + eyes + mouth + blush)
+      // 5. Procedural Mochi-Puff Blob Creature (Sculpted organic mesh + eyes)
       const creature = createBlobCreature();
       creatureRef.current = creature;
       scene.add(creature.root);
@@ -427,11 +460,22 @@ export function NovaAvatar3D({
         furSystem.shellMesh.visible = false;
         furSystem.strandMesh.visible = false;
         creature.skinMaterial.color.set(furParams.baseColor);
-        rimLight.color.set('#fff7ed');
-        hemiLight.color.set('#ffffff');
-        hemiLight.groundColor.set('#5c6352');
-      } else {
+      } else if (debugStateRef.current.open && debugStateRef.current.preset === 'before') {
+        furSystem.sharedUniforms.uLegacyRawOutput.value = 1.0;
+        furSystem.sharedUniforms.uKeyLightColor.value.set('#fff7ed');
+        furSystem.sharedUniforms.uRimLightColor.value.set('#c4b5fd');
+        furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5d0fe');
+        furSystem.sharedUniforms.uEnvGroundColor.value.set('#1e1b4b');
         creature.skinMaterial.color.set(furParams.baseColor).multiplyScalar(0.55);
+        keyLight.color.set('#fff7ed');
+        keyLight.intensity = 1.8;
+        rimLight.color.set('#c4b5fd');
+        rimLight.intensity = 1.5;
+        hemiLight.color.set('#f5d0fe');
+        hemiLight.groundColor.set('#1e1b4b');
+        hemiLight.intensity = 0.85;
+      } else {
+        creature.skinMaterial.color.set(furParams.baseColor).multiplyScalar(0.76);
       }
 
       // 7. Raycaster for Petting & Boop Interactions
@@ -554,6 +598,7 @@ export function NovaAvatar3D({
         rendererRef.current = null;
         sceneRef.current = null;
         cameraRef.current = null;
+        keyLightRef.current = null;
         rimLightRef.current = null;
         hemiLightRef.current = null;
 
@@ -733,30 +778,21 @@ export function NovaAvatar3D({
                   type="button"
                   onClick={() => setDebugPreset('formal')}
                   className={`px-1.5 py-0.5 rounded ${
-                    debugPreset === 'formal' ? 'bg-sky-300 text-black font-semibold' : 'bg-white/10 text-white/80'
+                    debugPreset === 'formal' ? 'bg-emerald-400 text-black font-semibold' : 'bg-white/10 text-white/80'
                   }`}
+                  title="修改后正式效果：柔和中性光 + 标准Three.js ToneMapping & sRGB输出"
                 >
-                  正式色
+                  修改后(正式)
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDebugPreset('colorFix')}
+                  onClick={() => setDebugPreset('before')}
                   className={`px-1.5 py-0.5 rounded ${
-                    debugPreset === 'colorFix' ? 'bg-lime-300 text-black font-semibold' : 'bg-white/10 text-white/80'
+                    debugPreset === 'before' ? 'bg-amber-300 text-black font-semibold' : 'bg-white/10 text-white/80'
                   }`}
-                  title="仅调试：去除紫色边缘光/冷蓝天光并启用sRGB输出"
+                  title="修改前对照：旧版紫色边缘光/冷色环境光 + 未转sRGB线性直出"
                 >
-                  去紫sRGB
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDebugPreset('shortPlush')}
-                  className={`px-1.5 py-0.5 rounded ${
-                    debugPreset === 'shortPlush' ? 'bg-lime-300 text-black font-semibold' : 'bg-white/10 text-white/80'
-                  }`}
-                  title="仅调试：毛长0.075短绒+去紫sRGB"
-                >
-                  短绒对照
+                  修改前(对照)
                 </button>
               </div>
             )}

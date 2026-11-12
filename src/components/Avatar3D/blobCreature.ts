@@ -480,9 +480,9 @@ export function createBlobCreature(): BlobCreature {
 
   const bodyGeometry = createOrganicBlobGeometry(56, 44);
 
-  // Under-skin velvety material (visible at roots and around eyes/mouth)
+  // Under-skin velvety material (visible at roots and around eyes)
   const skinMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#4a3248'),
+    color: new THREE.Color('#6b7260'),
     roughness: 0.78,
     metalness: 0.02
   });
