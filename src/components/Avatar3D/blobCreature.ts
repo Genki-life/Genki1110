@@ -8,29 +8,22 @@ import * as THREE from 'three';
  * - Slightly longer/fluffier (1.15) on the cheek tufts, chest fluff, and ear tips
  */
 export function evaluateFollicleMask(x: number, y: number, z: number): number {
-  // Left and right eye centers in local space (aligned to flush vertical oval face)
-  const lx = x + 0.25;
-  const rx = x - 0.25;
-  const ey = y - 0.22;
-  const ez = z - 0.66;
+  // Left and right small round eye centers in local space (aligned to flush vertical oval face)
+  const lx = x + 0.24;
+  const rx = x - 0.24;
+  const ey = y - 0.21;
+  const ez = z - 0.695;
 
-  const distLeftEye = Math.sqrt(lx * lx + ey * ey * 1.1 + ez * ez);
-  const distRightEye = Math.sqrt(rx * rx + ey * ey * 1.1 + ez * ez);
+  const distLeftEye = Math.hypot(lx, ey, ez);
+  const distRightEye = Math.hypot(rx, ey, ez);
   const minEyeDist = Math.min(distLeftEye, distRightEye);
 
-  // Tightly match the cornea radius (r < 0.145 = 0), then transition smoothly
-  // into short velvety eyelash/brow fuzz so eyes are never buried by 0.31 fur
-  if (minEyeDist < 0.145) {
+  // Tightly match the small round cornea radius (r < 0.092 = 0) so no fur pokes through or hides the eye in Side view,
+  // then transition smoothly across a compact rim (0.092 -> 0.165) so there are no bald gaps around the eyes
+  if (minEyeDist < 0.092) {
     return 0.0;
   }
-  const eyeMask = 0.18 + 0.82 * smoothstep(0.145, 0.30, minEyeDist);
-
-  // Small mask right under the pink nose button & mouth
-  const mx = x / 1.25;
-  const my = (y - 0.11) * 1.4;
-  const mz = z - 0.76;
-  const distMouth = Math.sqrt(mx * mx + my * my + mz * mz);
-  const mouthMask = 0.16 + 0.84 * smoothstep(0.06, 0.20, distMouth);
+  const eyeMask = 0.25 + 0.75 * smoothstep(0.092, 0.165, minEyeDist);
 
   // Bottom belly contact pad taper so the base sits flat and level
   const bottomMask = smoothstep(-0.92, -0.62, y);
@@ -54,7 +47,7 @@ export function evaluateFollicleMask(x: number, y: number, z: number): number {
     (0.68 + 0.32 * smoothstep(0.0, 0.45, rightEarDist)) *
     (0.72 + 0.28 * smoothstep(0.0, 0.38, armDist));
 
-  return Math.max(0.0, Math.min(1.20, eyeMask * mouthMask * bottomMask * cheekFluff * extremityTaper));
+  return Math.max(0.0, Math.min(1.20, eyeMask * bottomMask * cheekFluff * extremityTaper));
 }
 
 /**
@@ -70,28 +63,38 @@ export function evaluateGroomFlow(
   ny: number,
   nz: number
 ): [number, number, number] {
-  // Base gravity/growth direction from crown
+  // Base gravity/growth direction flowing smoothly from crown to base
   let fx = x * 0.22;
   let fy = -0.85;
   let fz = (z - 0.12) * 0.22;
 
-  // On the upright left ear (x < -0.15, y > 0.75), groom gently upward-outward along ear axis
-  if (x < -0.15 && y > 0.75) {
-    fx = -0.22;
-    fy = 0.88;
-    fz = 0.06;
-  } else if (x > 0.20 && y > 0.42) {
-    // On the outward-folded drooping right ear, follow the arch-to-droop curve
-    const tDroop = smoothstep(0.35, 0.78, x);
-    fx = 0.65 * (1.0 - 0.45 * tDroop);
-    fy = 0.35 * (1.0 - tDroop) - 0.82 * tDroop;
-    fz = 0.08;
+  // Smooth C1-continuous blend on the upright left ear (no hard step seam)
+  const wLeftEar =
+    (1.0 - smoothstep(-0.42, -0.12, x)) *
+    smoothstep(0.68, 0.92, y);
+  if (wLeftEar > 0.0) {
+    fx = fx * (1.0 - wLeftEar) + (-0.18) * wLeftEar;
+    fy = fy * (1.0 - wLeftEar) + (-0.55) * wLeftEar;
+    fz = fz * (1.0 - wLeftEar) + 0.06 * wLeftEar;
   }
 
-  // Sweep tangentially around the left and right eyes like real facial fur
+  // Smooth C1-continuous blend on the outward-folded drooping right ear (no hard step seam)
+  const wRightEar =
+    smoothstep(0.32, 0.56, x) *
+    smoothstep(0.38, 0.62, y);
+  if (wRightEar > 0.0) {
+    const tDroop = smoothstep(0.38, 0.82, x);
+    const rx = 0.45 * (1.0 - 0.35 * tDroop);
+    const ry = -0.78;
+    fx = fx * (1.0 - wRightEar) + rx * wRightEar;
+    fy = fy * (1.0 - wRightEar) + ry * wRightEar;
+    fz = fz * (1.0 - wRightEar) + 0.06 * wRightEar;
+  }
+
+  // Sweep tangentially around the left and right small round eyes
   const eyeCenters: [number, number, number][] = [
-    [-0.25, 0.22, 0.66],
-    [0.25, 0.22, 0.66]
+    [-0.24, 0.21, 0.695],
+    [0.24, 0.21, 0.695]
   ];
 
   for (let i = 0; i < 2; i++) {
@@ -100,8 +103,8 @@ export function evaluateGroomFlow(
     const dy = y - ey;
     const dz = z - ez;
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-5;
-    if (d < 0.46) {
-      const influence = (1.0 - d / 0.46) * 0.85;
+    if (d < 0.24) {
+      const influence = (1.0 - d / 0.24) * 0.70;
       fx += (dx / d) * influence;
       fy += (dy / d) * influence * 0.6;
       fz += (dz / d) * influence * 0.3;
@@ -156,28 +159,23 @@ function sculptMainBodyVertex(u: number, v: number, w: number): [number, number,
     backCurve;
   let z = w * rz;
 
-  // Vertical mapping: broad rounded crown at top (+0.95), gently flattened base at bottom (-0.86)
-  let y = v * 1.04;
-  if (y > 0.66) {
-    const tc = (y - 0.66) / 0.38;
-    y = 0.66 + Math.tanh(tc * 1.12) * 0.30;
-  }
-  if (y < -0.48) {
-    const tb = (-0.48 - y) / 0.56;
-    y = -0.48 - Math.tanh(tb * 1.55) * 0.39;
-  }
+  // C2-continuous vertical mapping: broad rounded crown at top (+0.93), gently flattened base at bottom (-0.86)
+  // Avoids any piecewise slope discontinuity that would create a horizontal normal crease on the forehead
+  const topSoft = Math.pow(Math.max(0.0, (v - 0.35) / 0.65), 2.2) * 0.09;
+  const botFlat = Math.pow(Math.max(0.0, (-v - 0.30) / 0.70), 2.2) * 0.16;
+  const y = v * 1.02 - topSoft + botFlat;
 
-  // Smooth anatomical eye socket recess so eyes sit flush in Side view without protruding
-  const lx = x + 0.25;
-  const rxEye = x - 0.25;
-  const ey = y - 0.22;
-  const ez = z - 0.67;
+  // Compact anatomical eye socket recess sized to the small round eyes so side view stays flush
+  const lx = x + 0.24;
+  const rxEye = x - 0.24;
+  const ey = y - 0.21;
+  const ez = z - 0.695;
   const dEye = Math.min(
-    Math.sqrt(lx * lx + ey * ey + ez * ez),
-    Math.sqrt(rxEye * rxEye + ey * ey + ez * ez)
+    Math.hypot(lx, ey, ez),
+    Math.hypot(rxEye, ey, ez)
   );
-  if (dEye < 0.25) {
-    const indent = (1.0 - smoothstep(0.0, 0.25, dEye)) * 0.038;
+  if (dEye < 0.135) {
+    const indent = (1.0 - smoothstep(0.0, 0.135, dEye)) * 0.026;
     z -= indent;
   }
 
@@ -480,7 +478,7 @@ export function createBlobCreature(): BlobCreature {
   const root = new THREE.Group();
   root.name = 'MochiPuffCreature';
 
-  const bodyGeometry = createOrganicBlobGeometry(72, 56);
+  const bodyGeometry = createOrganicBlobGeometry(56, 44);
 
   // Under-skin velvety material (visible at roots and around eyes/mouth)
   const skinMaterial = new THREE.MeshStandardMaterial({
@@ -495,30 +493,39 @@ export function createBlobCreature(): BlobCreature {
   bodyMesh.receiveShadow = true;
   root.add(bodyMesh);
 
-  // Facial features container so eyes, blush, and nose move with head tilt
+  // Facial features container so eyes move with head tilt
   const faceGroup = new THREE.Group();
   faceGroup.name = 'FacialFeatures';
   root.add(faceGroup);
 
+  // Deep-brown near-black glossy plush bead eye material matching reference turnaround
   const eyeMaterial = new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color('#120d1a'),
-    roughness: 0.04,
-    metalness: 0.05,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.03,
-    reflectivity: 1.0
+    color: new THREE.Color('#1d130e'),
+    emissive: new THREE.Color('#120b07'),
+    emissiveIntensity: 0.35,
+    roughness: 0.14,
+    metalness: 0.02,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.08,
+    reflectivity: 0.9
   });
 
+  // Subtle warm dark espresso-brown lower depth
   const irisMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color('#3d285c')
+    color: new THREE.Color('#2c1d16')
   });
 
+  // Soft small catchlight materials
   const highlightMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color('#ffffff')
+    color: new THREE.Color('#fffaf5'),
+    transparent: true,
+    opacity: 0.88
   });
 
   const warmHighlightMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color('#ffe4f2')
+    color: new THREE.Color('#f5ebe1'),
+    transparent: true,
+    opacity: 0.42
   });
 
   const eyes: EyeItem[] = [];
@@ -526,36 +533,36 @@ export function createBlobCreature(): BlobCreature {
 
   for (const side of eyeSides) {
     const eyePivot = new THREE.Group();
-    // Recessed snugly into the eye socket at z=0.635 so side profile never bulges out
-    eyePivot.position.set(side * 0.25, 0.22, 0.635);
-    eyePivot.rotation.y = side * 0.24;
-    eyePivot.rotation.x = -0.05;
+    // Recessed into the eye socket at z=0.704 so side profile sits flush with the short fur contour
+    eyePivot.position.set(side * 0.24, 0.21, 0.704);
+    eyePivot.rotation.y = side * 0.22;
+    eyePivot.rotation.x = -0.04;
 
-    // Dark glossy cornea flattened along Z (0.52) to follow facial curvature
-    const eyeballGeo = new THREE.SphereGeometry(0.17, 32, 24);
-    eyeballGeo.scale(0.94, 1.06, 0.52);
+    // Small round deep-brown near-black eye flattened along Z (0.52) to sit flush in Side view
+    const eyeballGeo = new THREE.SphereGeometry(0.088, 28, 22);
+    eyeballGeo.scale(1.0, 1.0, 0.52);
     const eyeball = new THREE.Mesh(eyeballGeo, eyeMaterial);
     eyePivot.add(eyeball);
 
-    // Warm violet-amber lower iris crescent
-    const irisGeo = new THREE.SphereGeometry(0.12, 24, 16);
-    irisGeo.scale(0.90, 0.94, 0.30);
+    // Subtle warm espresso inner depth disc
+    const irisGeo = new THREE.SphereGeometry(0.062, 20, 14);
+    irisGeo.scale(0.95, 0.95, 0.28);
     const iris = new THREE.Mesh(irisGeo, irisMaterial);
-    iris.position.set(0, -0.02, 0.066);
+    iris.position.set(0, -0.006, 0.036);
     eyePivot.add(iris);
 
-    // Primary large anime catchlight (top-inner)
-    const catchlightMainGeo = new THREE.SphereGeometry(0.044, 16, 12);
-    catchlightMainGeo.scale(1.0, 1.18, 0.26);
+    // Soft small primary catchlight (upper-left / top-inner)
+    const catchlightMainGeo = new THREE.SphereGeometry(0.019, 14, 10);
+    catchlightMainGeo.scale(1.0, 1.0, 0.28);
     const catchlightMain = new THREE.Mesh(catchlightMainGeo, highlightMat);
-    catchlightMain.position.set(-side * 0.042, 0.052, 0.086);
+    catchlightMain.position.set(-side * 0.022, 0.024, 0.047);
     eyePivot.add(catchlightMain);
 
-    // Secondary lower rim catchlight
-    const catchlightSubGeo = new THREE.SphereGeometry(0.022, 14, 10);
-    catchlightSubGeo.scale(1.0, 1.0, 0.26);
+    // Tiny soft secondary catchlight
+    const catchlightSubGeo = new THREE.SphereGeometry(0.009, 12, 8);
+    catchlightSubGeo.scale(1.0, 1.0, 0.25);
     const catchlightSub = new THREE.Mesh(catchlightSubGeo, warmHighlightMat);
-    catchlightSub.position.set(side * 0.048, -0.052, 0.084);
+    catchlightSub.position.set(side * 0.020, -0.022, 0.046);
     eyePivot.add(catchlightSub);
 
     faceGroup.add(eyePivot);
@@ -567,45 +574,6 @@ export function createBlobCreature(): BlobCreature {
       catchlightSub,
       side
     });
-  }
-
-  // Rosy glowing blush ovals nestled right below the eyes on the plush cheeks
-  const blushMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color('#ff5c93'),
-    transparent: true,
-    opacity: 0.55,
-    depthWrite: false
-  });
-
-  for (const side of eyeSides) {
-    const blushGeo = new THREE.SphereGeometry(0.12, 20, 16);
-    blushGeo.scale(1.35, 0.72, 0.25);
-    const blush = new THREE.Mesh(blushGeo, blushMat);
-    blush.position.set(side * 0.36, 0.07, 0.676);
-    blush.rotation.y = side * 0.36;
-    blush.rotation.z = -side * 0.1;
-    faceGroup.add(blush);
-  }
-
-  // Cute bright pink nose button + W-shaped cat smile positioned flush on the muzzle surface
-  const noseMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color('#ff94b8')
-  });
-  const noseGeo = new THREE.SphereGeometry(0.046, 18, 14);
-  noseGeo.scale(1.25, 0.85, 0.55);
-  const nose = new THREE.Mesh(noseGeo, noseMat);
-  nose.position.set(0, 0.13, 0.768);
-  faceGroup.add(nose);
-
-  // Cute W-mouth made from two torus arcs
-  const mouthMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#3a102e') });
-  for (const side of [-1, 1]) {
-    const arcGeo = new THREE.TorusGeometry(0.044, 0.012, 10, 20, Math.PI * 0.92);
-    const arc = new THREE.Mesh(arcGeo, mouthMat);
-    arc.position.set(side * 0.042, 0.09, 0.772);
-    arc.rotation.x = Math.PI + 0.15;
-    arc.rotation.y = side * 0.14;
-    faceGroup.add(arc);
   }
 
   // Animation & physics state for creature motion (coupled to GPGPU fur inertia)
@@ -879,8 +847,8 @@ export function createBlobCreature(): BlobCreature {
 
     for (const eye of eyes) {
       eye.pivot.scale.y = blinkScaleY;
-      eye.catchlightMain.position.x = -eye.side * 0.042 + animState.currentLook.x * 0.028;
-      eye.catchlightMain.position.y = 0.052 + animState.currentLook.y * 0.025;
+      eye.catchlightMain.position.x = -eye.side * 0.022 + animState.currentLook.x * 0.012;
+      eye.catchlightMain.position.y = 0.024 + animState.currentLook.y * 0.010;
     }
   }
 

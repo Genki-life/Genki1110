@@ -260,12 +260,10 @@ export function createGPUFurSystem(
 
     const [gx, gy, gz] = evaluateGroomFlow(px, py, pz, nx, ny, nz);
 
-    // Find nearest clump centroid
+    // Find true nearest clump centroid across all multi-part surface tufts
     let nearestIdx = 0;
     let minDistSq = Infinity;
-    const startC = Math.floor(((py + 1.1) / 2.2) * (CLUMP_COUNT - 40));
-    const searchStart = Math.max(0, Math.min(CLUMP_COUNT - 40, startC));
-    for (let c = searchStart; c < searchStart + 40; c++) {
+    for (let c = 0; c < CLUMP_COUNT; c++) {
       const dx = clumpCenters[c * 3] - px;
       const dy = clumpCenters[c * 3 + 1] - py;
       const dz = clumpCenters[c * 3 + 2] - pz;
@@ -283,6 +281,13 @@ export function createGPUFurSystem(
     cx -= dotCN * nx;
     cy -= dotCN * ny;
     cz -= dotCN * nz;
+    const cLen = Math.hypot(cx, cy, cz);
+    if (cLen > 0.16) {
+      const scale = 0.16 / cLen;
+      cx *= scale;
+      cy *= scale;
+      cz *= scale;
+    }
 
     const idx3 = validCount * 3;
     rootPosArray[idx3] = px;

@@ -86,11 +86,11 @@ export function NovaAvatar3D({
   const isLoopRunningRef = useRef<boolean>(false);
   const staticFramesLeftRef = useRef<number>(2);
 
-  // Full quality fur configuration parameters (Formal config - untouched)
+  // Full quality fur configuration parameters (Formal config)
   const furParamsRef = useRef({
     baseColor: '#8F9780',
     tipColor: '#B8BEA8',
-    furLength: 0.31,
+    furLength: 0.075,
     furDensity: 0.75,
     roughness: 0.77,
     specular: 0.24,
@@ -651,7 +651,7 @@ export function NovaAvatar3D({
       ) : (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="absolute -bottom-2 inset-x-0 z-30 mx-auto max-w-[268px] rounded-xl bg-black/75 backdrop-blur-md p-1.5 text-[10px] text-white shadow-lg border border-white/15 flex flex-col gap-1"
+          className="absolute -bottom-14 inset-x-0 z-30 mx-auto max-w-[268px] rounded-xl bg-black/80 backdrop-blur-md p-1.5 text-[10px] text-white shadow-lg border border-white/15 flex flex-col gap-1"
         >
           <div className="flex items-center justify-between gap-1">
             <div className="flex items-center gap-1">
