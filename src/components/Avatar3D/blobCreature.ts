@@ -459,7 +459,10 @@ export function createBlobCreature(): BlobCreature {
   const skinMaterial = new THREE.MeshStandardMaterial({
     color: new THREE.Color('#6b7260'),
     roughness: 0.78,
-    metalness: 0.02
+    metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: 2.0,
+    polygonOffsetUnits: 2.0
   });
 
   const bodyMesh = new THREE.Mesh(bodyGeometry, skinMaterial);

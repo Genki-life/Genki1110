@@ -108,96 +108,6 @@ export function NovaAvatar3D({
     rimIntensity: 1.35
   });
 
-  // Sync debug state to Three.js objects without modifying formal config when debug is closed
-  useEffect(() => {
-    debugStateRef.current = {
-      open: isDebugOpen,
-      furMode: debugFurMode,
-      angle: debugAngle,
-      preset: debugPreset
-    };
-    staticFramesLeftRef.current = 2;
-
-    const creature = creatureRef.current;
-    const furSystem = furSystemRef.current;
-    const keyLight = keyLightRef.current;
-    const rimLight = rimLightRef.current;
-    const hemiLight = hemiLightRef.current;
-    if (!creature || !furSystem) return;
-
-    const formal = furParamsRef.current;
-
-    const applyFormalColorsAndLights = () => {
-      furSystem.sharedUniforms.uLegacyRawOutput.value = 0.0;
-      furSystem.sharedUniforms.uKeyLightColor.value.set('#f7f8f6');
-      furSystem.sharedUniforms.uRimLightColor.value.set('#f2f4ef');
-      furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5f7f2');
-      furSystem.sharedUniforms.uEnvGroundColor.value.set('#6b7260');
-      furSystem.sharedUniforms.uFurLength.value = formal.furLength;
-      furSystem.sharedUniforms.uCurliness.value = formal.curliness;
-      furSystem.sharedUniforms.uWindStrength.value = formal.windStrength;
-      creature.skinMaterial.color.set(formal.baseColor).multiplyScalar(0.76);
-      if (keyLight) {
-        keyLight.color.set('#f7f8f6');
-        keyLight.intensity = 1.55;
-      }
-      if (rimLight) {
-        rimLight.color.set('#f2f4ef');
-        rimLight.intensity = 1.15;
-      }
-      if (hemiLight) {
-        hemiLight.color.set('#f5f7f2');
-        hemiLight.groundColor.set('#6b7260');
-        hemiLight.intensity = 0.80;
-      }
-    };
-
-    if (!isDebugOpen) {
-      // Restore 100% formal state
-      furSystem.shellMesh.visible = true;
-      furSystem.strandMesh.visible = true;
-      applyFormalColorsAndLights();
-      return;
-    }
-
-    // View A (Hide Fur) vs View B (Show Full Fur)
-    const showFur = debugFurMode === 'B';
-    furSystem.shellMesh.visible = showFur;
-    furSystem.strandMesh.visible = showFur;
-
-    if (!showFur) {
-      // In View A (bare mesh), show true #8F9780 base color and neutral light on bodyMesh so silhouette is clear
-      applyFormalColorsAndLights();
-      creature.skinMaterial.color.set(formal.baseColor);
-    } else if (debugPreset === 'before') {
-      // Legacy "Before" comparison: pre-fix purple rim light, pink/indigo hemisphere, and raw un-converted linear output
-      furSystem.sharedUniforms.uLegacyRawOutput.value = 1.0;
-      furSystem.sharedUniforms.uKeyLightColor.value.set('#fff7ed');
-      furSystem.sharedUniforms.uRimLightColor.value.set('#c4b5fd');
-      furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5d0fe');
-      furSystem.sharedUniforms.uEnvGroundColor.value.set('#1e1b4b');
-      furSystem.sharedUniforms.uFurLength.value = formal.furLength;
-      furSystem.sharedUniforms.uCurliness.value = formal.curliness;
-      furSystem.sharedUniforms.uWindStrength.value = formal.windStrength;
-      creature.skinMaterial.color.set(formal.baseColor).multiplyScalar(0.55);
-      if (keyLight) {
-        keyLight.color.set('#fff7ed');
-        keyLight.intensity = 1.8;
-      }
-      if (rimLight) {
-        rimLight.color.set('#c4b5fd');
-        rimLight.intensity = 1.5;
-      }
-      if (hemiLight) {
-        hemiLight.color.set('#f5d0fe');
-        hemiLight.groundColor.set('#1e1b4b');
-        hemiLight.intensity = 0.85;
-      }
-    } else {
-      applyFormalColorsAndLights();
-    }
-  }, [isDebugOpen, debugFurMode, debugAngle, debugPreset]);
-
   // Interaction tracking state
   const isPointerDownRef = useRef(false);
   const pointerStartPosRef = useRef({ x: 0, y: 0 });
@@ -321,11 +231,13 @@ export function NovaAvatar3D({
       renderer.render(scene, camera);
 
       if (dbg.open && dbg.angle !== 'live') {
-        setTimeout(() => {
-          if (!isDisposedRef.current && isLoopRunningRef.current) {
-            animFrameIdRef.current = requestAnimationFrame(loop);
-          }
-        }, 80);
+        if (staticFramesLeftRef.current > 0) {
+          staticFramesLeftRef.current -= 1;
+          animFrameIdRef.current = requestAnimationFrame(loop);
+        } else {
+          isLoopRunningRef.current = false;
+          animFrameIdRef.current = null;
+        }
       } else {
         animFrameIdRef.current = requestAnimationFrame(loop);
       }
@@ -333,6 +245,84 @@ export function NovaAvatar3D({
 
     animFrameIdRef.current = requestAnimationFrame(loop);
   }, []);
+
+  // Sync debug state to Three.js objects without modifying formal config when debug is closed
+  useEffect(() => {
+    debugStateRef.current = {
+      open: isDebugOpen,
+      furMode: debugFurMode,
+      angle: debugAngle,
+      preset: debugPreset
+    };
+    staticFramesLeftRef.current = 2;
+
+    const creature = creatureRef.current;
+    const furSystem = furSystemRef.current;
+    const keyLight = keyLightRef.current;
+    const rimLight = rimLightRef.current;
+    const hemiLight = hemiLightRef.current;
+    if (!creature || !furSystem) return;
+
+    const formal = furParamsRef.current;
+
+    const applyFormalColorsAndLights = () => {
+      furSystem.sharedUniforms.uLegacyRawOutput.value = 0.0;
+      furSystem.sharedUniforms.uBellyEnabled.value = 1.0;
+      furSystem.sharedUniforms.uKeyLightColor.value.set('#f7f8f6');
+      furSystem.sharedUniforms.uRimLightColor.value.set('#f2f4ef');
+      furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5f7f2');
+      furSystem.sharedUniforms.uEnvGroundColor.value.set('#6b7260');
+      furSystem.sharedUniforms.uFurLength.value = formal.furLength;
+      furSystem.sharedUniforms.uCurliness.value = formal.curliness;
+      furSystem.sharedUniforms.uWindStrength.value = formal.windStrength;
+      creature.skinMaterial.color.set(formal.baseColor).multiplyScalar(0.76);
+      if (keyLight) {
+        keyLight.color.set('#f7f8f6');
+        keyLight.intensity = 1.55;
+      }
+      if (rimLight) {
+        rimLight.color.set('#f2f4ef');
+        rimLight.intensity = 1.15;
+      }
+      if (hemiLight) {
+        hemiLight.color.set('#f5f7f2');
+        hemiLight.groundColor.set('#6b7260');
+        hemiLight.intensity = 0.80;
+      }
+    };
+
+    if (!isDebugOpen) {
+      // Restore 100% formal state
+      furSystem.shellMesh.visible = true;
+      furSystem.strandMesh.visible = true;
+      applyFormalColorsAndLights();
+      if (!isLoopRunningRef.current) {
+        startAnimationLoop();
+      }
+      return;
+    }
+
+    // View A (Hide Fur) vs View B (Show Full Fur)
+    const showFur = debugFurMode === 'B';
+    furSystem.shellMesh.visible = showFur;
+    furSystem.strandMesh.visible = showFur;
+
+    if (!showFur) {
+      // In View A (bare mesh), show true #8F9780 base color and neutral light on bodyMesh so silhouette is clear
+      applyFormalColorsAndLights();
+      creature.skinMaterial.color.set(formal.baseColor);
+    } else if (debugPreset === 'before') {
+      // Pre-belly formal baseline comparison: identical formal sage-green lighting & sRGB, without the belly patch
+      applyFormalColorsAndLights();
+      furSystem.sharedUniforms.uBellyEnabled.value = 0.0;
+    } else {
+      applyFormalColorsAndLights();
+    }
+
+    if (!isLoopRunningRef.current) {
+      startAnimationLoop();
+    }
+  }, [isDebugOpen, debugFurMode, debugAngle, debugPreset, startAnimationLoop]);
 
   // Main 3D Scene Initialization Effect (Runs once on mount or when mode toggles)
   useEffect(() => {
@@ -461,20 +451,10 @@ export function NovaAvatar3D({
         furSystem.strandMesh.visible = false;
         creature.skinMaterial.color.set(furParams.baseColor);
       } else if (debugStateRef.current.open && debugStateRef.current.preset === 'before') {
-        furSystem.sharedUniforms.uLegacyRawOutput.value = 1.0;
-        furSystem.sharedUniforms.uKeyLightColor.value.set('#fff7ed');
-        furSystem.sharedUniforms.uRimLightColor.value.set('#c4b5fd');
-        furSystem.sharedUniforms.uEnvSkyColor.value.set('#f5d0fe');
-        furSystem.sharedUniforms.uEnvGroundColor.value.set('#1e1b4b');
-        creature.skinMaterial.color.set(furParams.baseColor).multiplyScalar(0.55);
-        keyLight.color.set('#fff7ed');
-        keyLight.intensity = 1.8;
-        rimLight.color.set('#c4b5fd');
-        rimLight.intensity = 1.5;
-        hemiLight.color.set('#f5d0fe');
-        hemiLight.groundColor.set('#1e1b4b');
-        hemiLight.intensity = 0.85;
+        furSystem.sharedUniforms.uBellyEnabled.value = 0.0;
+        creature.skinMaterial.color.set(furParams.baseColor).multiplyScalar(0.76);
       } else {
+        furSystem.sharedUniforms.uBellyEnabled.value = 1.0;
         creature.skinMaterial.color.set(furParams.baseColor).multiplyScalar(0.76);
       }
 

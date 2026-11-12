@@ -4,6 +4,9 @@
 const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
   uniform vec3 uBaseColor;
   uniform vec3 uTipColor;
+  uniform vec3 uBellyBaseColor;
+  uniform vec3 uBellyTipColor;
+  uniform float uBellyEnabled;
   uniform float uRoughness;
   uniform float uSpecular;
   uniform float uFurDensity;
@@ -37,9 +40,34 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     return hemiVis * pow(sinTH, exponent) * normFactor * 0.095;
   }
 
+  // Evaluates the soft, feathered vertical-oval belly pigment blend in local follicle root space.
+  // Locked to localRootPos so character rotation, breathing, and wind never cause edge shimmering.
+  float evaluateBellyMask(vec3 localRootPos, float strandSeed) {
+    if (uBellyEnabled < 0.5 || localRootPos.z <= 0.30) {
+      return 0.0;
+    }
+    // Rounded vertical oval on the front mid-lower torso: center (0.0, -0.355), ry = 0.415, rx = 0.39
+    float dy = (localRootPos.y - (-0.355)) / 0.415;
+    float pearShape = 1.0 - 0.10 * clamp(dy, -1.0, 1.0);
+    float dx = localRootPos.x / (0.39 * pearShape);
+    float radialDist = sqrt(dx * dx + dy * dy);
+
+    // Subtle per-strand follicle feathering at the transition rim so green & warm-white tufts interleave naturally
+    float tuftJitter = (fract(strandSeed * 31.73) - 0.5) * 0.075;
+    float featheredDist = radialDist + tuftJitter;
+
+    // Wide, soft gradient from core (r < 0.62 = 1.0) to outer feathered rim (r > 1.08 = 0.0)
+    float ovalMask = 1.0 - smoothstep(0.62, 1.08, featheredDist);
+    // Smoothly fade on forward-facing Z (0.35..0.55) so Side view shows only a gentle edge transition and Back is 0.0
+    float frontMask = smoothstep(0.35, 0.55, localRootPos.z);
+
+    return ovalMask * frontMask;
+  }
+
   // Evaluate complete Physical Hair Shading in Linear Working Space
   // Output is passed to Three.js standard #include <tonemapping_fragment> and #include <colorspace_fragment>
   vec3 evaluatePhysicalHairShading(
+    vec3 localRootPos,
     vec3 worldPos,
     vec3 surfNormal,
     vec3 hairTangent,
@@ -53,10 +81,15 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     vec3 L = normalize(uKeyLightDir);
     vec3 Lrim = normalize(uRimLightDir);
 
+    // Smoothly blend root and tip pigments between sage-green body fur and warm gray-white belly fur
+    float bellyMask = evaluateBellyMask(localRootPos, strandSeed);
+    vec3 activeBaseColor = mix(uBaseColor, uBellyBaseColor, bellyMask);
+    vec3 activeTipColor = mix(uTipColor, uBellyTipColor, bellyMask);
+
     // 1. Root-to-Tip Melanin / Pigment Gradient with subtle per-strand micro-variation
     float rootTipMix = smoothstep(0.05, 0.92, pow(h, 0.82));
     vec3 strandTint = mix(vec3(0.94), vec3(1.06), fract(strandSeed * 13.37));
-    vec3 albedo = mix(uBaseColor, uTipColor, rootTipMix) * strandTint;
+    vec3 albedo = mix(activeBaseColor, activeTipColor, rootTipMix) * strandTint;
 
     // 2. Beer-Lambert Volumetric Hair Self-Shadowing (optical depth through coat)
     float NdotL = dot(N, L);
@@ -73,7 +106,7 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     vec3 tSecondary = shiftTangent(T, N, 0.24 + (strandSeed - 0.5) * 0.08);
     float glint = 0.75 + 0.5 * sin(strandSeed * 62.83);
     float specTRT = hairSpecularLobe(tSecondary, N, V, L, min(1.0, uRoughness * 1.35)) * uSpecular * 0.85 * glint;
-    vec3 colorTRT = specTRT * mix(albedo, uTipColor, 0.65) * uKeyLightColor * 1.65;
+    vec3 colorTRT = specTRT * mix(albedo, activeTipColor, 0.65) * uKeyLightColor * 1.65;
 
     // 4. Forward Subsurface Scattering / Transmission Lobe (TT)
     float forwardKey = pow(clamp(dot(V, -L + N * 0.35), 0.0, 1.0), 3.2);
@@ -86,9 +119,9 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
       vec3 legacyScatterTT = (
         forwardKey * uKeyLightColor * 0.38 +
         (forwardRim * 0.75 + fresnelRim * 0.65) * uRimLightColor * uRimIntensity
-      ) * mix(uBaseColor, uTipColor, 0.75) * (0.35 + 0.65 * h);
-      vec3 legacySky = mix(uTipColor, vec3(0.88, 0.92, 1.0), 0.65);
-      vec3 legacyGround = uBaseColor * 0.38;
+      ) * mix(activeBaseColor, activeTipColor, 0.75) * (0.35 + 0.65 * h);
+      vec3 legacySky = mix(activeTipColor, vec3(0.88, 0.92, 1.0), 0.65);
+      vec3 legacyGround = activeBaseColor * 0.38;
       vec3 legacyHemi = mix(
         mix(legacyGround, uEnvGroundColor, uEnvTintStrength),
         mix(legacySky, uEnvSkyColor, uEnvTintStrength),
@@ -102,18 +135,19 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     }
 
     // Formal Physical Plush Shading (Linear Working Space):
-    // Energy-balanced for Three.js toneMapping + sRGB output so #8F9780/#B8BEA8 renders
-    // as a soft, low-saturation gray-sage green without purple cast, yellow cast, or overexposure
-    float follicleAO = mix(0.46, 1.0, pow(clamp(h, 0.0, 1.0), 0.65));
-    float softShadow = mix(0.54, 1.0, deepShadow);
+    // Light cream-white belly fibers have higher subsurface multiple scattering (softer root AO & shadow)
+    float rootAOBase = mix(0.46, 0.68, bellyMask);
+    float shadowFloor = mix(0.54, 0.68, bellyMask);
+    float follicleAO = mix(rootAOBase, 1.0, pow(clamp(h, 0.0, 1.0), 0.65));
+    float softShadow = mix(shadowFloor, 1.0, deepShadow);
 
     vec3 scatterTT = (
       forwardKey * uKeyLightColor * 0.18 +
       (forwardRim * 0.38 + fresnelRim * 0.30) * uRimLightColor * (uRimIntensity * 0.42)
-    ) * mix(uBaseColor, uTipColor, 0.84) * (0.35 + 0.65 * h);
+    ) * mix(activeBaseColor, activeTipColor, 0.84) * (0.35 + 0.65 * h);
 
-    vec3 baseSkyColor = mix(uTipColor, vec3(0.92, 0.95, 0.94), 0.34);
-    vec3 baseGroundColor = uBaseColor * 0.60;
+    vec3 baseSkyColor = mix(activeTipColor, vec3(0.92, 0.95, 0.94), 0.34);
+    vec3 baseGroundColor = activeBaseColor * 0.60;
     vec3 skyColor = mix(baseSkyColor, uEnvSkyColor, uEnvTintStrength);
     vec3 groundColor = mix(baseGroundColor, uEnvGroundColor, uEnvTintStrength);
     vec3 hemiFill = mix(groundColor, skyColor, N.y * 0.5 + 0.5) * (uAmbientIntensity * 1.08);
@@ -123,8 +157,9 @@ const COMMON_HAIR_BSDF_GLSL = /* glsl */ `
     vec3 directSpec = (colorR * 0.22 + colorTRT * 0.36) * (uKeyLightIntensity * 0.68) * softShadow * (0.25 + 0.75 * h);
     vec3 ambientTerm = albedo * hemiFill * follicleAO;
 
-    // Subtle cool-neutral studio daylight balance so linear sage pigment stays gray-sage instead of warm olive
-    vec3 linearOut = (directDiffuse + directSpec + scatterTT + ambientTerm) * vec3(0.95, 1.0, 1.04);
+    // Cool-neutral balance on sage-green coat; warm-neutral balance on the warm gray-white belly
+    vec3 studioBalance = mix(vec3(0.95, 1.0, 1.04), vec3(1.01, 0.995, 0.965), bellyMask);
+    vec3 linearOut = (directDiffuse + directSpec + scatterTT + ambientTerm) * studioBalance;
     return max(linearOut, vec3(0.0));
   }
 `;
@@ -327,6 +362,7 @@ export const SHELL_FRAGMENT_SHADER = /* glsl */ `
     }
 
     vec3 color = evaluatePhysicalHairShading(
+      vLocalPos,
       vWorldPos,
       vSurfNormal,
       vHairTangent,
@@ -367,6 +403,7 @@ export const STRAND_VERTEX_SHADER = /* glsl */ `
   varying float vHeight;
   varying float vRibbonU;
   varying float vStrandSeed;
+  varying vec3 vLocalRootPos;
   varying vec3 vWorldPos;
   varying vec3 vSurfNormal;
   varying vec3 vHairTangent;
@@ -384,6 +421,7 @@ export const STRAND_VERTEX_SHADER = /* glsl */ `
     vHeight = h;
     vRibbonU = position.x; // [-1..1] across ribbon width
     vStrandSeed = aStrandSeed;
+    vLocalRootPos = aRootPos;
 
     // Density culling in vertex shader (collapse inactive strands to zero area)
     if (aStrandSeed > uFurDensity || aMaskValue < 0.05) {
@@ -508,6 +546,7 @@ export const STRAND_FRAGMENT_SHADER = /* glsl */ `
   varying float vHeight;
   varying float vRibbonU;
   varying float vStrandSeed;
+  varying vec3 vLocalRootPos;
   varying vec3 vWorldPos;
   varying vec3 vSurfNormal;
   varying vec3 vHairTangent;
@@ -515,6 +554,7 @@ export const STRAND_FRAGMENT_SHADER = /* glsl */ `
 
   void main() {
     vec3 color = evaluatePhysicalHairShading(
+      vLocalRootPos,
       vWorldPos,
       vSurfNormal,
       vHairTangent,
