@@ -1517,13 +1517,13 @@ export default function App() {
                   id="today-sun-warm-glow"
                   aria-hidden="true"
                   style={{
-                    top: frameSize.height < 700 ? '44px' : '54px',
-                    right: '24px',
-                    width: '188px',
-                    height: '156px',
+                    top: frameSize.height < 700 ? '42px' : '48px',
+                    right: frameSize.height < 700 ? '20px' : '24px',
+                    width: '184px',
+                    height: '152px',
                     transform: 'rotate(-32deg)',
                     background:
-                      'radial-gradient(ellipse at 68% 28%, rgba(244, 201, 129, 0.16) 0%, rgba(244, 201, 129, 0.06) 46%, rgba(244, 201, 129, 0) 76%)',
+                      'radial-gradient(ellipse at 68% 28%, rgba(233, 183, 106, 0.14) 0%, rgba(233, 183, 106, 0.05) 46%, rgba(233, 183, 106, 0) 76%)',
                   }}
                   className="absolute rounded-full blur-xl pointer-events-none"
                 />
@@ -1533,8 +1533,8 @@ export default function App() {
                   id="today-sun-watermark-wrap"
                   aria-hidden="true"
                   style={{
-                    top: frameSize.height < 700 ? '20px' : '26px',
-                    right: '8px',
+                    top: frameSize.height < 700 ? '18px' : '22px',
+                    right: frameSize.height < 700 ? '6px' : '10px',
                     width: '104px',
                     height: '104px',
                   }}
@@ -1554,8 +1554,8 @@ export default function App() {
                       cx="60"
                       cy="60"
                       r="25"
-                      fill="#F4C981"
-                      fillOpacity="0.22"
+                      fill="#E9B76A"
+                      fillOpacity="0.38"
                     />
                     {Array.from({ length: 12 }).map((_, idx) => {
                       const angleRad = (idx * 30 * Math.PI) / 180;
@@ -1570,8 +1570,8 @@ export default function App() {
                           y1={y1}
                           x2={x2}
                           y2={y2}
-                          stroke="#F4C981"
-                          strokeOpacity="0.20"
+                          stroke="#E9B76A"
+                          strokeOpacity="0.35"
                           strokeWidth="3.5"
                           strokeLinecap="round"
                         />
@@ -1582,43 +1582,31 @@ export default function App() {
               </>
             )}
 
-            {/* Upper-Right Text Block: Line 1 = Temperature & Steps, Line 2 = Short Greeting (Right-Aligned, avoids Status Bar & Genki Title) */}
+            {/* Upper-Right Text Block: Separated from Sun rays; Line 1 = 18°C · 3,420 steps, Line 2 = Hope your morning feels easy. */}
             <div
               id="today-top-right-info"
               style={{
-                top: frameSize.height < 700 ? '52px' : '62px',
-                right: '20px',
+                top: frameSize.height < 700 ? '50px' : '120px',
+                right: frameSize.height < 700 ? '102px' : '20px',
               }}
               className="absolute flex flex-col items-end text-right pointer-events-none"
             >
-              {/* Line 1: Temperature & Steps on the same row (Heart rate removed; temperature hidden if weather unavailable) */}
-              <div className="flex items-center justify-end gap-2 whitespace-nowrap leading-none">
+              {/* Line 1: Temperature & Steps unified in font size, weight, and color; no step icon */}
+              <div className="flex items-center justify-end whitespace-nowrap leading-none text-[13.5px] font-medium text-[#3C3C43]/80 tabular-nums tracking-[-0.01em]">
                 {isWeatherAvailable && (
                   <>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="text-[13.5px] sm:text-[14px] font-medium text-[#3C3C43]/85 tabular-nums tracking-tight">
-                        18°C
-                      </span>
-                    </span>
-                    <span className="text-[#3C3C43]/25 text-[12px]" aria-hidden="true">
+                    <span>18°C</span>
+                    <span className="mx-1.5 text-[#3C3C43]/40 select-none" aria-hidden="true">
                       ·
                     </span>
                   </>
                 )}
-                <span className="inline-flex items-center gap-1">
-                  <Footprints className="w-3.5 h-3.5 text-[#6C6C70]/75 stroke-[1.7] shrink-0" />
-                  <span className="text-[13.5px] sm:text-[14px] font-medium text-[#3C3C43]/85 tabular-nums tracking-tight">
-                    3,420
-                  </span>
-                  <span className="text-[11.5px] sm:text-[12px] font-normal text-[#6C6C70]/85">
-                    steps
-                  </span>
-                </span>
+                <span>3,420 steps</span>
               </div>
 
-              {/* Line 2: Short Greeting right-aligned below Temperature & Steps */}
-              <p className="mt-1 text-[12.5px] sm:text-[13px] font-normal text-[#6C6C70] leading-snug tracking-[-0.01em] max-w-[248px]">
-                Hope your morning is going a little easier.
+              {/* Line 2: Shorter greeting right-aligned below data row, slightly smaller font size */}
+              <p className="mt-1.5 text-[12px] font-normal text-[#6C6C70]/90 leading-snug tracking-[-0.01em] whitespace-nowrap">
+                Hope your morning feels easy.
               </p>
             </div>
           </div>
