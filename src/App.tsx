@@ -278,10 +278,10 @@ export default function App() {
 
   // Live tracked position for the single persistent Avatar on Today home
   const [homeAvatarRect, setHomeAvatarRect] = useState<{ top: number; left: number; width: number; height: number }>({
-    top: 145,
-    left: (393 - 230) / 2,
-    width: 230,
-    height: 230,
+    top: 253,
+    left: (393 - 248) / 2,
+    width: 248,
+    height: 248,
   });
 
   // Typing posture state for Nova
@@ -303,9 +303,9 @@ export default function App() {
       }
     }
     const fWidth = phoneFrameRef.current?.clientWidth || 393;
-    const defaultSize = frameSize.height < 700 ? 200 : 230;
+    const defaultSize = frameSize.height < 700 ? 204 : 248;
     return {
-      top: frameSize.height < 700 ? 120 : 145,
+      top: frameSize.height < 700 ? 158 : 253,
       left: (fWidth - defaultSize) / 2,
       width: defaultSize,
       height: defaultSize,
@@ -1536,11 +1536,18 @@ export default function App() {
           </AnimatePresence>
 
           {/* Unified Companion Cluster (Bubble + Nova + Greeting + Telemetry naturally balanced between Header & Bottom Input) */}
-          <div className="w-full flex-1 min-h-0 flex flex-col items-center justify-center -mt-3 sm:-mt-4 relative z-20">
-            
-            {/* 1. Today's Suggestion Speech Bubble: Tightly unified above Nova, fades out when card expands */}
+          <div
+            style={{
+              marginTop: frameSize.height < 700 ? '-18px' : '-28px',
+            }}
+            className="w-full flex-1 min-h-0 flex flex-col items-center justify-center relative z-20"
+          >
+            {/* 1. Today's Suggestion Speech Bubble: 12–16px visual gap above Nova's ears, fades out when card expands */}
             <div 
-              className={`w-full flex justify-center shrink-0 -mb-2.5 sm:-mb-3 transition-all duration-200 ${
+              style={{
+                marginBottom: frameSize.height < 700 ? '-7px' : '-6px',
+              }}
+              className={`w-full flex justify-center shrink-0 transition-all duration-200 ${
                 isPlanCardOpen ? 'opacity-0 scale-95 pointer-events-none' : 'opacity-100 scale-100 pointer-events-auto'
               }`}
             >
@@ -1590,70 +1597,83 @@ export default function App() {
             <div 
               ref={homeAvatarRef}
               aria-hidden="true"
-              className={`relative flex items-center justify-center shrink-0 pointer-events-none opacity-0 select-none ${
-                frameSize.height < 700 
-                  ? 'w-[216px] h-[216px]' 
-                  : 'w-[248px] h-[248px] sm:w-[254px] sm:h-[254px]'
-              }`}
+              style={{
+                width: frameSize.height < 700 ? '204px' : '248px',
+                height: frameSize.height < 700 ? '204px' : '248px',
+              }}
+              className="relative flex items-center justify-center shrink-0 pointer-events-none opacity-0 select-none"
             />
 
-            {/* 3. Nova Nickname & Greeting (Tightly unified beneath Nova) */}
-            <div className="flex flex-col items-center text-center -mt-2 sm:-mt-2.5 shrink-0">
-              <div className="flex items-center justify-center gap-1.5">
-                <h2 className="text-[20px] font-bold text-[#1C1C1E] tracking-[-0.024em] select-none leading-none">
-                  Nova
-                </h2>
-                {/* 弱化 3D 调试开关: Discreet, understated pill (hidden) */}
-                <button
-                  type="button"
-                  onClick={() => setAvatarMode(prev => prev === '3d' ? '2d' : '3d')}
-                  className="hidden px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#8E8E93]/70 hover:text-[#5E5BAE] bg-black/[0.03] hover:bg-[#5E5BAE]/10 active:scale-95 transition-all cursor-pointer select-none border border-black/[0.04]"
-                  title={avatarMode === '3d' ? "Switch to 2D Nova" : "Switch to 3D Fur Avatar"}
-                  aria-label="Toggle 3D/2D Avatar"
-                >
-                  {avatarMode === '3d' ? '3D' : '2D'}
-                </button>
+            {/* 3 & 4. Nova Nickname, Greeting & Ambient Telemetry Group: Fades out smoothly when cards expand without shifting layout */}
+            <div
+              id="today-companion-text-group"
+              aria-hidden={isPlanCardOpen}
+              style={{
+                marginTop: frameSize.height < 700 ? '-18px' : '-22px',
+                opacity: isPlanCardOpen ? 0 : 1,
+                transition: shouldReduceMotion ? 'opacity 75ms linear' : 'opacity 200ms ease-out',
+                pointerEvents: isPlanCardOpen ? 'none' : 'auto',
+              }}
+              className="w-full flex flex-col items-center shrink-0 select-none"
+            >
+              {/* Nova Nickname & Greeting (Tightly unified beneath Nova) */}
+              <div className="flex flex-col items-center text-center shrink-0">
+                <div className="flex items-center justify-center gap-1.5">
+                  <h2 className="text-[20px] font-bold text-[#1C1C1E] tracking-[-0.024em] select-none leading-none">
+                    Nova
+                  </h2>
+                  {/* 弱化 3D 调试开关: Discreet, understated pill (hidden) */}
+                  <button
+                    type="button"
+                    onClick={() => setAvatarMode(prev => prev === '3d' ? '2d' : '3d')}
+                    className="hidden px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#8E8E93]/70 hover:text-[#5E5BAE] bg-black/[0.03] hover:bg-[#5E5BAE]/10 active:scale-95 transition-all cursor-pointer select-none border border-black/[0.04]"
+                    title={avatarMode === '3d' ? "Switch to 2D Nova" : "Switch to 3D Fur Avatar"}
+                    aria-label="Toggle 3D/2D Avatar"
+                  >
+                    {avatarMode === '3d' ? '3D' : '2D'}
+                  </button>
+                </div>
+
+                <div className="mt-1 px-4 max-w-[320px]">
+                  <p className="text-[13.5px] sm:text-[14px] font-normal text-[#6C6C70] leading-snug tracking-[-0.01em]">
+                    Hope your morning is going a little easier.
+                  </p>
+                </div>
               </div>
 
-              <div className="mt-1 px-4 max-w-[320px]">
-                <p className="text-[13.5px] sm:text-[14px] font-normal text-[#6C6C70] leading-snug tracking-[-0.01em]">
-                  Hope your morning is going a little easier.
-                </p>
-              </div>
-            </div>
+              {/* Ambient Telemetry: Single-line Weather, Steps & Heart Rate (understated yet clearly legible) */}
+              <div className="w-full flex flex-col items-center mt-2.5 sm:mt-3 shrink-0">
+                <div className="flex items-center justify-center flex-nowrap whitespace-nowrap gap-x-3 sm:gap-x-3.5 select-none">
+                  {/* Weather */}
+                  <span className="inline-flex items-center gap-1.5 shrink-0">
+                    <CloudSun className="w-3.5 h-3.5 text-[#8E8E93]/70 stroke-[1.6] shrink-0" />
+                    <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">18°C</span>
+                    <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">Cloudy</span>
+                  </span>
 
-            {/* 4. Ambient Telemetry: Single-line Weather, Steps & Heart Rate (understated yet clearly legible) */}
-            <div className="w-full flex flex-col items-center mt-2.5 sm:mt-3 shrink-0">
-              <div className="flex items-center justify-center flex-nowrap whitespace-nowrap gap-x-3 sm:gap-x-3.5 select-none">
-                {/* Weather */}
-                <span className="inline-flex items-center gap-1.5 shrink-0">
-                  <CloudSun className="w-3.5 h-3.5 text-[#8E8E93]/70 stroke-[1.6] shrink-0" />
-                  <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">18°C</span>
-                  <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">Cloudy</span>
-                </span>
+                  <span className="text-black/12 select-none shrink-0" aria-hidden="true">·</span>
 
-                <span className="text-black/12 select-none shrink-0" aria-hidden="true">·</span>
+                  {/* Steps */}
+                  <span className="inline-flex items-center gap-1.5 shrink-0">
+                    <Footprints className="w-3.5 h-3.5 text-[#8E8E93]/70 stroke-[1.6] shrink-0" />
+                    <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">3,420</span>
+                    <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">steps</span>
+                  </span>
 
-                {/* Steps */}
-                <span className="inline-flex items-center gap-1.5 shrink-0">
-                  <Footprints className="w-3.5 h-3.5 text-[#8E8E93]/70 stroke-[1.6] shrink-0" />
-                  <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">3,420</span>
-                  <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">steps</span>
-                </span>
+                  <span className="text-black/12 select-none shrink-0" aria-hidden="true">·</span>
 
-                <span className="text-black/12 select-none shrink-0" aria-hidden="true">·</span>
-
-                {/* Heart rate */}
-                <span className="inline-flex items-center gap-1.5 shrink-0">
-                  <Heart className="w-3.5 h-3.5 text-[#FF2D55]/50 stroke-[1.6] shrink-0" />
-                  <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">68</span>
-                  <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">bpm</span>
-                </span>
+                  {/* Heart rate */}
+                  <span className="inline-flex items-center gap-1.5 shrink-0">
+                    <Heart className="w-3.5 h-3.5 text-[#FF2D55]/50 stroke-[1.6] shrink-0" />
+                    <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">68</span>
+                    <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">bpm</span>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* 3. Floating Suggestion Card Carousel: Compacted below Nova so Nova's face, ears & upper body remain visible */}
+          {/* 3. Floating Suggestion Card Carousel: Positioned 8–12px below Nova's visible bottom so Nova's full body & face remain clear */}
           <AnimatePresence>
             {isPlanCardOpen && (
               <motion.div
@@ -1662,13 +1682,13 @@ export default function App() {
                 initial={
                   shouldReduceMotion
                     ? { opacity: 0 }
-                    : { opacity: 0, y: 28, scale: 0.96 }
+                    : { opacity: 0, y: 24, scale: 0.96 }
                 }
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={
                   shouldReduceMotion
                     ? { opacity: 0 }
-                    : { opacity: 0, y: 18, scale: 0.96 }
+                    : { opacity: 0, y: 16, scale: 0.96 }
                 }
                 transition={
                   shouldReduceMotion
@@ -1676,7 +1696,10 @@ export default function App() {
                     : { duration: 0.32, ease: [0.32, 0.72, 0, 1] }
                 }
                 style={{
-                  bottom: `${Math.max(bottomBarHeight + 10, 142)}px`,
+                  bottom:
+                    frameSize.height < 700
+                      ? `${Math.max(bottomBarHeight - 2, 124)}px`
+                      : `${Math.max(bottomBarHeight + 6, 140)}px`,
                 }}
                 className="absolute inset-x-0 w-full z-30 flex flex-col items-center justify-end pointer-events-none"
               >
@@ -1751,6 +1774,7 @@ export default function App() {
                         }}
                         style={{
                           width: `${carouselCardWidth}px`,
+                          minHeight: frameSize.height < 700 ? '184px' : '206px',
                           transform: `translate3d(${translateX.toFixed(2)}px, ${translateY.toFixed(2)}px, 0) scale(${scale.toFixed(4)}) rotate(${rotate.toFixed(2)}deg)`,
                           opacity,
                           zIndex,
@@ -1761,7 +1785,7 @@ export default function App() {
                             : 'transform 430ms cubic-bezier(0.22, 1, 0.36, 1), opacity 300ms ease-out',
                           willChange: 'transform, opacity',
                         }}
-                        className={`col-start-1 row-start-1 min-h-[200px] rounded-[26px] overflow-hidden today-suggestion-card border border-white/95 flex flex-col justify-between ${
+                        className={`col-start-1 row-start-1 rounded-[26px] overflow-hidden today-suggestion-card border border-white/95 flex flex-col justify-between ${
                           isCenterCard
                             ? 'shadow-[0_14px_36px_rgba(38,38,63,0.16)] pointer-events-auto'
                             : isSideNeighbor
@@ -1887,7 +1911,7 @@ export default function App() {
                         >
                           {/* 2. SUGGESTED EXTRA: Subtitle + Initial Action Buttons */}
                           {cardState === 'suggested' ? (
-                            <div className="flex-1 flex flex-col justify-between gap-2.5">
+                            <div className="flex-1 flex flex-col justify-between gap-2">
                               <p className="text-[13px] text-[#6C6C70] leading-snug">
                                 {cardPlan.subtitle}
                               </p>
@@ -1903,7 +1927,7 @@ export default function App() {
                                         handleSoundsGood(slotCardIdx);
                                       }
                                     }}
-                                    className="h-10 sm:h-[42px] px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
+                                    className="h-10 px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
                                   >
                                     Sounds good
                                   </button>
@@ -1916,7 +1940,7 @@ export default function App() {
                                         handleInitialPlanB(slotCardIdx);
                                       }
                                     }}
-                                    className="h-10 sm:h-[42px] w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
+                                    className="h-10 w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
                                   >
                                     Plan B
                                   </button>
@@ -1930,10 +1954,13 @@ export default function App() {
                             </div>
                           ) : (
                             /* 3. ACCEPTED / COMPLETED EXTRA: Circular Done Button + Auxiliary Operations */
-                            <div className="flex-1 flex flex-col justify-between gap-1.5 pt-0.5">
+                            <div className="flex-1 flex flex-col justify-between gap-1 pt-0.5">
                               {/* Horizontally Centered Circular Done Button + "Hold to complete" */}
                               <div className="flex flex-col items-center justify-center">
-                                <div className="relative w-[62px] h-[62px] flex items-center justify-center">
+                                <div
+                                  style={{ width: '58px', height: '58px' }}
+                                  className="relative flex items-center justify-center"
+                                >
                                   <svg className="w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 76 76">
                                     <circle
                                       cx="38"
@@ -1963,6 +1990,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     tabIndex={isCenterCard ? 0 : -1}
+                                    style={{ width: '46px', height: '46px' }}
                                     onMouseDown={isCenterCard ? startHold : undefined}
                                     onMouseUp={isCenterCard ? cancelHold : undefined}
                                     onMouseLeave={isCenterCard ? cancelHold : undefined}
@@ -1979,7 +2007,7 @@ export default function App() {
                                         ? 'Plan completed'
                                         : 'Press and hold for 3 seconds to complete, or press Enter for confirmation dialog'
                                     }
-                                    className={`absolute w-[48px] h-[48px] rounded-full flex items-center justify-center font-bold transition-all duration-200 select-none shadow-sm touch-none border border-white/20 cursor-pointer ${
+                                    className={`absolute rounded-full flex items-center justify-center font-bold transition-all duration-200 select-none shadow-sm touch-none border border-white/20 cursor-pointer ${
                                       cardState === 'completed'
                                         ? 'bg-[#54519E] text-white shadow-[0_4px_16px_rgba(84,81,158,0.25)]'
                                         : isCenterCard && isHolding
@@ -1990,7 +2018,7 @@ export default function App() {
                                     {cardState === 'completed' ? (
                                       <Check className="w-5 h-5 stroke-[3] text-white" />
                                     ) : (
-                                      <span className="font-bold text-[13.5px] tracking-tight text-white">
+                                      <span className="font-bold text-[13px] tracking-tight text-white">
                                         Done
                                       </span>
                                     )}
@@ -2007,7 +2035,7 @@ export default function App() {
                               </div>
 
                               {/* Bottom Section: Side-by-Side "Plan B" and "Not today" (or Undo completion) */}
-                              <div className="flex items-center justify-center gap-6 pt-1 border-t border-black/[0.05]">
+                              <div className="flex items-center justify-center gap-6 pt-0.5 border-t border-black/[0.05]">
                                 {cardState === 'completed' ? (
                                   <button
                                     type="button"
@@ -2021,7 +2049,7 @@ export default function App() {
                                         setHoldProgress(0);
                                       }
                                     }}
-                                    className="text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] py-0.5 px-3 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer min-h-[28px] flex items-center"
+                                    className="text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] py-0.5 px-3 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer min-h-[26px] flex items-center"
                                   >
                                     Undo completion
                                   </button>
@@ -2036,7 +2064,7 @@ export default function App() {
                                           handleAcceptedPlanB(slotCardIdx);
                                         }
                                       }}
-                                      className="text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] py-0.5 px-3 rounded-full hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap cursor-pointer active:scale-95 min-h-[28px] flex items-center"
+                                      className="text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] py-0.5 px-3 rounded-full hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap cursor-pointer active:scale-95 min-h-[26px] flex items-center"
                                     >
                                       Plan B
                                     </button>
@@ -2049,7 +2077,7 @@ export default function App() {
                                           handleNotToday(slotCardIdx);
                                         }
                                       }}
-                                      className="text-xs font-semibold text-[#6C6C70] hover:text-[#1C1C1E] py-0.5 px-3 rounded-full hover:bg-black/[0.04] transition-colors whitespace-nowrap cursor-pointer active:scale-95 min-h-[28px] flex items-center"
+                                      className="text-xs font-semibold text-[#6C6C70] hover:text-[#1C1C1E] py-0.5 px-3 rounded-full hover:bg-black/[0.04] transition-colors whitespace-nowrap cursor-pointer active:scale-95 min-h-[26px] flex items-center"
                                     >
                                       Not today
                                     </button>
@@ -2067,7 +2095,7 @@ export default function App() {
                 {/* Pagination Indicator Dots: Clear spacing from card bottom above and Talk to Nova below */}
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className="mt-3 mb-0.5 flex items-center justify-center gap-1.5 pointer-events-auto z-30 py-0.5 px-2"
+                  className="mt-2.5 mb-0 flex items-center justify-center gap-1.5 pointer-events-auto z-30 py-0.5 px-2"
                   role="tablist"
                   aria-label="Suggestion cards pagination"
                 >
