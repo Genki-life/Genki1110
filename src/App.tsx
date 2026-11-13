@@ -181,6 +181,9 @@ export default function App() {
     );
   }, []);
 
+  // Demo sunny weather availability (hides sun watermark & temperature when unavailable)
+  const [isWeatherAvailable] = useState<boolean>(true);
+
   // Carousel drag & swipe states
   const [dragDeltaX, setDragDeltaX] = useState<number>(0);
   const [isDraggingCarousel, setIsDraggingCarousel] = useState<boolean>(false);
@@ -1475,8 +1478,11 @@ export default function App() {
           }}
           className="px-5 pt-1 pb-1.5 flex items-center justify-between shrink-0 z-20"
         >
-          <span className="text-[28px] sm:text-[30px] font-bold tracking-[-0.024em] text-[#1C1C1E] leading-tight">
-            {activeTab === 'Today' ? 'Plan B' : activeTab}
+          <span
+            id="today-brand-title"
+            className="text-[28px] sm:text-[30px] font-bold tracking-[-0.024em] text-[#1C1C1E] leading-tight"
+          >
+            {activeTab === 'Today' ? 'Genki' : activeTab}
           </span>
           {activeTab === 'Discover' && (
             <button
@@ -1491,6 +1497,132 @@ export default function App() {
             </button>
           )}
         </header>
+
+        {/* 2b. Today Upper-Right Ambient Sun Watermark, Warm Sunlight Glow & Right-Aligned Weather/Steps/Greeting */}
+        {activeTab === 'Today' && (
+          <div
+            id="today-upper-right-ambient"
+            aria-hidden={isPlanCardOpen}
+            style={{
+              opacity: isPlanCardOpen ? 0 : 1,
+              transition: shouldReduceMotion ? 'opacity 75ms linear' : 'opacity 200ms ease-out',
+            }}
+            className="absolute inset-x-0 top-0 pointer-events-none select-none z-15"
+          >
+            {/* Sunny Weather Watermark & Soft Warm Glow toward Nova (Hidden automatically if weather is unavailable) */}
+            {isWeatherAvailable && (
+              <>
+                {/* Very light warm soft glow on lower-left of the sun angled toward Nova */}
+                <div
+                  id="today-sun-warm-glow"
+                  aria-hidden="true"
+                  style={{
+                    top: frameSize.height < 700 ? '44px' : '54px',
+                    right: '24px',
+                    width: '188px',
+                    height: '156px',
+                    transform: 'rotate(-32deg)',
+                    background:
+                      'radial-gradient(ellipse at 68% 28%, rgba(244, 201, 129, 0.16) 0%, rgba(244, 201, 129, 0.06) 46%, rgba(244, 201, 129, 0) 76%)',
+                  }}
+                  className="absolute rounded-full blur-xl pointer-events-none"
+                />
+
+                {/* Watermark Sunny Sun SVG (104×104px, viewBox 0 0 120 120, center (60,60), r=25 circle + 12 rays r=34..43) */}
+                <div
+                  id="today-sun-watermark-wrap"
+                  aria-hidden="true"
+                  style={{
+                    top: frameSize.height < 700 ? '20px' : '26px',
+                    right: '8px',
+                    width: '104px',
+                    height: '104px',
+                  }}
+                  className="absolute pointer-events-none"
+                >
+                  <svg
+                    id="today-sun-watermark-svg"
+                    viewBox="0 0 120 120"
+                    width="104"
+                    height="104"
+                    style={{ width: '104px', height: '104px' }}
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="w-full h-full pointer-events-none"
+                  >
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="25"
+                      fill="#F4C981"
+                      fillOpacity="0.22"
+                    />
+                    {Array.from({ length: 12 }).map((_, idx) => {
+                      const angleRad = (idx * 30 * Math.PI) / 180;
+                      const x1 = Number((60 + 34 * Math.cos(angleRad)).toFixed(3));
+                      const y1 = Number((60 + 34 * Math.sin(angleRad)).toFixed(3));
+                      const x2 = Number((60 + 43 * Math.cos(angleRad)).toFixed(3));
+                      const y2 = Number((60 + 43 * Math.sin(angleRad)).toFixed(3));
+                      return (
+                        <line
+                          key={idx}
+                          x1={x1}
+                          y1={y1}
+                          x2={x2}
+                          y2={y2}
+                          stroke="#F4C981"
+                          strokeOpacity="0.20"
+                          strokeWidth="3.5"
+                          strokeLinecap="round"
+                        />
+                      );
+                    })}
+                  </svg>
+                </div>
+              </>
+            )}
+
+            {/* Upper-Right Text Block: Line 1 = Temperature & Steps, Line 2 = Short Greeting (Right-Aligned, avoids Status Bar & Genki Title) */}
+            <div
+              id="today-top-right-info"
+              style={{
+                top: frameSize.height < 700 ? '52px' : '62px',
+                right: '20px',
+              }}
+              className="absolute flex flex-col items-end text-right pointer-events-none"
+            >
+              {/* Line 1: Temperature & Steps on the same row (Heart rate removed; temperature hidden if weather unavailable) */}
+              <div className="flex items-center justify-end gap-2 whitespace-nowrap leading-none">
+                {isWeatherAvailable && (
+                  <>
+                    <span className="inline-flex items-center gap-1">
+                      <span className="text-[13.5px] sm:text-[14px] font-medium text-[#3C3C43]/85 tabular-nums tracking-tight">
+                        18°C
+                      </span>
+                    </span>
+                    <span className="text-[#3C3C43]/25 text-[12px]" aria-hidden="true">
+                      ·
+                    </span>
+                  </>
+                )}
+                <span className="inline-flex items-center gap-1">
+                  <Footprints className="w-3.5 h-3.5 text-[#6C6C70]/75 stroke-[1.7] shrink-0" />
+                  <span className="text-[13.5px] sm:text-[14px] font-medium text-[#3C3C43]/85 tabular-nums tracking-tight">
+                    3,420
+                  </span>
+                  <span className="text-[11.5px] sm:text-[12px] font-normal text-[#6C6C70]/85">
+                    steps
+                  </span>
+                </span>
+              </div>
+
+              {/* Line 2: Short Greeting right-aligned below Temperature & Steps */}
+              <p className="mt-1 text-[12.5px] sm:text-[13px] font-normal text-[#6C6C70] leading-snug tracking-[-0.01em] max-w-[248px]">
+                Hope your morning is going a little easier.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* 3. Main Body Content: Today View */}
         <div 
@@ -1535,7 +1667,7 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          {/* Unified Companion Cluster (Bubble + Nova + Greeting + Telemetry naturally balanced between Header & Bottom Input) */}
+          {/* Unified Companion Cluster (Bubble + Nova + Nickname naturally balanced between Header & Bottom Input) */}
           <div
             style={{
               marginTop: frameSize.height < 700 ? '-18px' : '-28px',
@@ -1604,7 +1736,7 @@ export default function App() {
               className="relative flex items-center justify-center shrink-0 pointer-events-none opacity-0 select-none"
             />
 
-            {/* 3 & 4. Nova Nickname, Greeting & Ambient Telemetry Group: Fades out smoothly when cards expand without shifting layout */}
+            {/* 3. Nova Nickname beneath Nova (Preserves exact layout height so Nova's position & size remain unchanged) */}
             <div
               id="today-companion-text-group"
               aria-hidden={isPlanCardOpen}
@@ -1616,7 +1748,6 @@ export default function App() {
               }}
               className="w-full flex flex-col items-center shrink-0 select-none"
             >
-              {/* Nova Nickname & Greeting (Tightly unified beneath Nova) */}
               <div className="flex flex-col items-center text-center shrink-0">
                 <div className="flex items-center justify-center gap-1.5">
                   <h2 className="text-[20px] font-bold text-[#1C1C1E] tracking-[-0.024em] select-none leading-none">
@@ -1633,43 +1764,14 @@ export default function App() {
                     {avatarMode === '3d' ? '3D' : '2D'}
                   </button>
                 </div>
-
-                <div className="mt-1 px-4 max-w-[320px]">
-                  <p className="text-[13.5px] sm:text-[14px] font-normal text-[#6C6C70] leading-snug tracking-[-0.01em]">
-                    Hope your morning is going a little easier.
-                  </p>
-                </div>
               </div>
 
-              {/* Ambient Telemetry: Single-line Weather, Steps & Heart Rate (understated yet clearly legible) */}
-              <div className="w-full flex flex-col items-center mt-2.5 sm:mt-3 shrink-0">
-                <div className="flex items-center justify-center flex-nowrap whitespace-nowrap gap-x-3 sm:gap-x-3.5 select-none">
-                  {/* Weather */}
-                  <span className="inline-flex items-center gap-1.5 shrink-0">
-                    <CloudSun className="w-3.5 h-3.5 text-[#8E8E93]/70 stroke-[1.6] shrink-0" />
-                    <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">18°C</span>
-                    <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">Cloudy</span>
-                  </span>
-
-                  <span className="text-black/12 select-none shrink-0" aria-hidden="true">·</span>
-
-                  {/* Steps */}
-                  <span className="inline-flex items-center gap-1.5 shrink-0">
-                    <Footprints className="w-3.5 h-3.5 text-[#8E8E93]/70 stroke-[1.6] shrink-0" />
-                    <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">3,420</span>
-                    <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">steps</span>
-                  </span>
-
-                  <span className="text-black/12 select-none shrink-0" aria-hidden="true">·</span>
-
-                  {/* Heart rate */}
-                  <span className="inline-flex items-center gap-1.5 shrink-0">
-                    <Heart className="w-3.5 h-3.5 text-[#FF2D55]/50 stroke-[1.6] shrink-0" />
-                    <span className="text-[14px] sm:text-[14.5px] font-light text-[#3C3C43]/75 tabular-nums tracking-tight">68</span>
-                    <span className="text-[11.5px] sm:text-[12px] font-light text-[#8E8E93]/80">bpm</span>
-                  </span>
-                </div>
-              </div>
+              {/* Layout height preserver so moving greeting & telemetry to top-right keeps Nova at the exact same vertical coordinates */}
+              <div
+                aria-hidden="true"
+                style={{ height: frameSize.height < 700 ? '54px' : '54px' }}
+                className="w-full shrink-0 pointer-events-none"
+              />
             </div>
           </div>
 
