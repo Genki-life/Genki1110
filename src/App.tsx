@@ -328,7 +328,7 @@ export default function App() {
     const initH = typeof window !== 'undefined' && window.innerHeight > 0 ? Math.min(window.innerHeight, 852) : 844;
     const initSize = initH < 700 ? 204 : 248;
     return {
-      top: initH < 700 ? 186 : 253,
+      top: initH < 700 ? 152 : 228,
       left: (initW - initSize) / 2,
       width: initSize,
       height: initSize,
@@ -356,7 +356,7 @@ export default function App() {
     const fWidth = phoneFrameRef.current?.clientWidth || 393;
     const defaultSize = frameSize.height < 700 ? 204 : 248;
     return {
-      top: frameSize.height < 700 ? 158 : 253,
+      top: frameSize.height < 700 ? 152 : 228,
       left: (fWidth - defaultSize) / 2,
       width: defaultSize,
       height: defaultSize,
@@ -1830,18 +1830,15 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          {/* Unified Companion Cluster (Nova + Conversational Suggestion Bubble or Today with Nova List below Nova) */}
+          {/* Unified Companion Cluster (Top-anchored so Nova stays stationary while Bubble or 3-Row List grows naturally below Nova) */}
           <div
-            style={{
-              marginTop: frameSize.height < 700 ? '-64px' : '-28px',
-            }}
-            className="w-full flex-1 min-h-0 flex flex-col items-center justify-center relative z-20"
+            className="w-full flex-1 min-h-0 flex flex-col items-center justify-start relative z-20"
           >
-            {/* 1. Top layout balance spacer so Nova's vertical position remains completely stable across states */}
+            {/* 1. Top layout spacer anchoring Nova at a stable vertical position across all states */}
             <div
               aria-hidden="true"
               style={{
-                height: frameSize.height < 700 ? '0px' : '32px',
+                height: frameSize.height < 700 ? '69px' : '145px',
               }}
               className="w-full shrink-0 pointer-events-none"
             />
@@ -1857,23 +1854,23 @@ export default function App() {
               className="relative flex items-center justify-center shrink-0 pointer-events-none opacity-0 select-none"
             />
 
-            {/* 3. Below Nova: Single Suggestion Carousel Bubble (when all 3 are unaccepted) OR Lightweight "Today with Nova" List (when >= 1 is In progress or Done) */}
+            {/* 3. Below Nova: Content-sized container (Bubble ~58px OR 3-Row "Today with Nova" List ~168px) */}
             <div
               id="today-companion-text-group"
               aria-hidden={isPlanCardOpen}
               style={{
-                marginTop: frameSize.height < 700 ? '-10px' : '-12px',
-                height: frameSize.height < 700 ? '54px' : '58px',
+                marginTop: frameSize.height < 700 ? '-14px' : '-12px',
+                height: 'auto',
                 opacity: isPlanCardOpen ? 0 : 1,
                 transition: shouldReduceMotion ? 'opacity 75ms linear' : 'opacity 200ms ease-out',
                 pointerEvents: isPlanCardOpen ? 'none' : 'auto',
               }}
-              className={`w-full flex flex-col items-center justify-start shrink-0 select-none overflow-visible ${
+              className={`w-full flex flex-col items-center justify-start shrink-0 select-none ${
                 isPlanCardOpen ? 'scale-95 pointer-events-none' : 'scale-100 pointer-events-auto'
               }`}
             >
               {!hasAnyAcceptedOrCompleted ? (
-                <div id="today-suggestion-bubble-container" className="relative flex justify-center">
+                <div id="today-suggestion-bubble-container" className="relative flex justify-center shrink-0">
                   {/* Upward Speech Bubble Tail pointing towards Nova */}
                   <div
                     className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-4 h-2 overflow-hidden pointer-events-none z-20"
@@ -1974,29 +1971,31 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                /* Lightweight 3-Row Suggestion List ("Today with Nova") when >= 1 suggestion is In progress or Done */
+                /* Lightweight 3-Row Suggestion List ("Today with Nova") sized naturally to show header + all 3 rows with >= 44px touch targets */
                 <div
                   id="today-with-nova-list"
                   role="region"
                   aria-label="Today with Nova"
                   style={{
                     width: '100%',
-                    maxWidth: frameSize.width < 360 ? '312px' : '336px',
+                    maxWidth: frameSize.width < 360 ? '316px' : '336px',
+                    height: 'auto',
+                    overflow: 'visible',
                   }}
-                  className="liquid-glass-bubble relative z-10 px-3.5 py-2 rounded-[20px] shadow-[0_6px_20px_rgba(94,91,174,0.08)] flex flex-col select-none"
+                  className="liquid-glass-bubble relative z-10 px-4 pt-2.5 pb-1.5 rounded-[22px] shadow-[0_6px_20px_rgba(94,91,174,0.08)] flex flex-col shrink-0 select-none"
                 >
                   {/* List Header: "Today with Nova" only — no description text or completion counters */}
-                  <div className="px-1 pb-1 flex items-center">
+                  <div className="px-1 pb-1 flex items-center shrink-0">
                     <span
                       id="today-with-nova-title"
-                      className="text-[11px] font-semibold text-[#5E5BAE] tracking-[-0.01em] leading-none"
+                      className="text-[11.5px] font-semibold text-[#5E5BAE] tracking-[-0.01em] leading-none"
                     >
                       Today with Nova
                     </span>
                   </div>
 
-                  {/* 3 Clickable Suggestion Rows */}
-                  <div className="flex flex-col divide-y divide-black/[0.045]">
+                  {/* 3 Clickable Suggestion Rows: Each row >= 44px touch target, all 3 fully visible without internal scroll */}
+                  <div className="flex flex-col divide-y divide-black/[0.05] shrink-0">
                     {cardsState.map((item, idx) => {
                       const statusLabel =
                         item.planState === 'completed'
@@ -2014,13 +2013,13 @@ export default function App() {
                           type="button"
                           onClick={() => handleSelectListRow(idx)}
                           style={{
-                            minHeight: frameSize.height < 700 ? '30px' : '33px',
+                            minHeight: '44px',
                           }}
-                          className="w-full px-1 py-1 flex items-center justify-between gap-2.5 text-left cursor-pointer hover:bg-black/[0.025] active:scale-[0.99] transition-all group"
+                          className="w-full min-h-[44px] px-1 py-2 flex items-center justify-between gap-2.5 text-left cursor-pointer hover:bg-black/[0.025] active:scale-[0.99] transition-all group shrink-0"
                         >
                           <span
                             data-list-row-title={idx}
-                            className="text-[13px] font-medium text-[#1C1C1E] tracking-[-0.01em] leading-tight truncate flex-1 min-w-0"
+                            className="text-[13.5px] font-medium text-[#1C1C1E] tracking-[-0.01em] leading-snug truncate flex-1 min-w-0"
                           >
                             {item.plan.title}
                           </span>
@@ -2029,7 +2028,7 @@ export default function App() {
                             {item.planState === 'completed' ? (
                               <span
                                 data-list-row-badge={idx}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#5E5BAE]/14 text-[#484591] text-[10.5px] font-semibold leading-none whitespace-nowrap"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#5E5BAE]/14 text-[#484591] text-[11px] font-semibold leading-none whitespace-nowrap"
                               >
                                 <Check className="w-2.5 h-2.5 stroke-[2.8]" />
                                 <span>Done</span>
@@ -2037,19 +2036,19 @@ export default function App() {
                             ) : item.planState === 'accepted' ? (
                               <span
                                 data-list-row-badge={idx}
-                                className="inline-flex items-center px-2 py-0.5 rounded-full bg-[#5E5BAE]/10 text-[#5E5BAE] text-[10.5px] font-semibold leading-none whitespace-nowrap"
+                                className="inline-flex items-center px-2.5 py-1 rounded-full bg-[#5E5BAE]/10 text-[#5E5BAE] text-[11px] font-semibold leading-none whitespace-nowrap"
                               >
                                 In progress
                               </span>
                             ) : (
                               <span
                                 data-list-row-badge={idx}
-                                className="inline-flex items-center px-2 py-0.5 rounded-full bg-black/[0.04] text-[#6C6C70] text-[10.5px] font-medium leading-none whitespace-nowrap"
+                                className="inline-flex items-center px-2.5 py-1 rounded-full bg-black/[0.045] text-[#6C6C70] text-[11px] font-medium leading-none whitespace-nowrap"
                               >
                                 To try
                               </span>
                             )}
-                            <ChevronRight className="w-3 h-3 text-[#8E8E93]/60 group-hover:text-[#5E5BAE] transition-colors shrink-0" />
+                            <ChevronRight className="w-3.5 h-3.5 text-[#8E8E93]/60 group-hover:text-[#5E5BAE] transition-colors shrink-0" />
                           </div>
                         </button>
                       );
