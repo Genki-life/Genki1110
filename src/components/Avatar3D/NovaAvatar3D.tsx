@@ -20,6 +20,8 @@ export interface NovaAvatar3DProps {
   onToggleMode?: () => void;
   /** Whether Nova is in active listening/typing posture */
   isListening?: boolean;
+  /** Whether the outer avatar container is currently animating position/size (e.g. chat open/close transition) */
+  isTransitioning?: boolean;
 }
 
 export function NovaAvatar3D({
@@ -30,12 +32,44 @@ export function NovaAvatar3D({
   mode = '3d',
   onToggleMode,
   isListening = false,
+  isTransitioning = false,
 }: NovaAvatar3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const isActiveTabRef = useRef(isActiveTab);
+  useEffect(() => {
+    isActiveTabRef.current = isActiveTab;
+    if (!isActiveTab) {
+      isPointerDownRef.current = false;
+      isPointerOverCreatureRef.current = false;
+      pointerVelocityRef.current.set(0, 0, 0);
+      pointerNDCRef.current.set(0, 0);
+    }
+  }, [isActiveTab]);
+
   const isListeningRef = useRef(isListening);
   useEffect(() => {
     isListeningRef.current = isListening;
   }, [isListening]);
+
+  const onBoopRef = useRef(onBoop);
+  useEffect(() => {
+    onBoopRef.current = onBoop;
+  }, [onBoop]);
+
+  const isTransitioningRef = useRef(isTransitioning);
+  const syncViewportSizeRef = useRef<((w: number, h: number, allowBufferResize: boolean) => void) | null>(null);
+  useEffect(() => {
+    const wasTransitioning = isTransitioningRef.current;
+    isTransitioningRef.current = isTransitioning;
+    // When transition finishes, apply any pending container framing / buffer adjustment on demand
+    if (wasTransitioning && !isTransitioning && containerRef.current && syncViewportSizeRef.current) {
+      const w = Math.floor(containerRef.current.clientWidth);
+      const h = Math.floor(containerRef.current.clientHeight);
+      if (w >= 80 && h >= 80) {
+        syncViewportSizeRef.current(w, h, true);
+      }
+    }
+  }, [isTransitioning]);
   const [hasError, setHasError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -360,7 +394,13 @@ export function NovaAvatar3D({
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       renderer.setPixelRatio(dpr);
-      renderer.setSize(width, height);
+      const initMinSide = Math.min(width, height);
+      const initScale = initMinSide < 230 ? 230 / Math.max(1, initMinSide) : 1;
+      let lastRenderW = Math.round(width * initScale);
+      let lastRenderH = Math.round(height * initScale);
+      let lastAspect = Math.max(0.5, width / Math.max(1, height));
+
+      renderer.setSize(lastRenderW, lastRenderH, false);
       renderer.setClearColor(0x000000, 0); // 100% transparent
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.NeutralToneMapping;
@@ -380,30 +420,57 @@ export function NovaAvatar3D({
       const scene = new THREE.Scene();
       sceneRef.current = scene;
 
-      const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 40);
+      const camera = new THREE.PerspectiveCamera(38, lastAspect, 0.1, 40);
       cameraRef.current = camera;
 
-      // Frame Mochi-Puff with safe padding for perky ears, plush side fur, and jump bounce
-      const updateFraming = (w: number, h: number) => {
+      // Frame Mochi-Puff with safe padding for perky ears, plush side fur, and jump bounce.
+      // During CSS/Framer Motion size transitions (230x230 <-> 124x124), allowBufferResize is false
+      // so the WebGL drawing buffer is never cleared/reallocated mid-flight.
+      const updateFraming = (w: number, h: number, allowBufferResize: boolean, forceCamera = false) => {
         const aspect = Math.max(0.5, w / Math.max(1, h));
-        camera.aspect = aspect;
+        if (forceCamera || Math.abs(aspect - lastAspect) > 0.002) {
+          lastAspect = aspect;
+          camera.aspect = aspect;
 
-        // Bounding requirements: half-width ~1.95, half-height ~1.65 (center Y at 0.16)
-        const vFovRad = (camera.fov * Math.PI) / 180;
-        const tanHalfV = Math.tan(vFovRad / 2);
-        const tanHalfH = tanHalfV * aspect;
+          // Bounding requirements for short-fur plush Nova: half-width ~1.32, half-height ~1.38 (center Y at 0.19)
+          const vFovRad = (camera.fov * Math.PI) / 180;
+          const tanHalfV = Math.tan(vFovRad / 2);
+          const tanHalfH = tanHalfV * aspect;
 
-        const distV = 1.65 / tanHalfV;
-        const distH = 1.95 / tanHalfH;
-        const targetDist = Math.max(distV, distH, 6.2);
+          const distV = 1.38 / tanHalfV;
+          const distH = 1.32 / tanHalfH;
+          const targetDist = Math.max(distV, distH, 4.65);
 
-        camera.position.set(0.0, 0.28, targetDist);
-        camera.lookAt(0.0, 0.16, 0.0);
-        camera.updateProjectionMatrix();
-        renderer.setSize(w, h);
+          camera.position.set(0.0, 0.24, targetDist);
+          camera.lookAt(0.0, 0.19, 0.0);
+          camera.updateProjectionMatrix();
+        }
+
+        if (allowBufferResize) {
+          // Maintain at least a 230px short-side internal buffer so docked 124x124 chat view stays super crisp
+          // and transitions between 230x230 and 124x124 require zero buffer reallocation.
+          const minSide = Math.min(w, h);
+          const scale = minSide < 230 ? 230 / Math.max(1, minSide) : 1;
+          const targetRenderW = Math.round(w * scale);
+          const targetRenderH = Math.round(h * scale);
+
+          if (targetRenderW !== lastRenderW || targetRenderH !== lastRenderH) {
+            lastRenderW = targetRenderW;
+            lastRenderH = targetRenderH;
+            renderer.setSize(targetRenderW, targetRenderH, false);
+            // Render immediately in the same synchronous tick so resized buffer is never blank
+            if (creatureRef.current && furSystemRef.current) {
+              renderer.render(scene, camera);
+            }
+          }
+        }
       };
 
-      updateFraming(width, height);
+      syncViewportSizeRef.current = (w: number, h: number, allowBufferResize: boolean) => {
+        updateFraming(w, h, allowBufferResize, false);
+      };
+
+      updateFraming(width, height, false, true);
 
       // 4. Studio 3-Point Neutral Lighting Rig (eliminates purple/yellow cast & overexposure)
       const keyLight = new THREE.DirectionalLight('#f7f8f6', 1.55);
@@ -491,16 +558,19 @@ export function NovaAvatar3D({
       };
 
       const handlePointerDown = (e: PointerEvent) => {
+        if (!isActiveTabRef.current) return;
         isPointerDownRef.current = true;
         pointerStartPosRef.current = { x: e.clientX, y: e.clientY };
         updatePointer(e.clientX, e.clientY);
       };
 
       const handlePointerMove = (e: PointerEvent) => {
+        if (!isActiveTabRef.current) return;
         updatePointer(e.clientX, e.clientY);
       };
 
       const handlePointerUp = (e: PointerEvent) => {
+        if (!isActiveTabRef.current) return;
         const dist = Math.hypot(
           e.clientX - pointerStartPosRef.current.x,
           e.clientY - pointerStartPosRef.current.y
@@ -510,7 +580,7 @@ export function NovaAvatar3D({
         if (dist < 12 && isPointerOverCreatureRef.current) {
           creature.triggerBoop();
           boopShockwaveRef.current = 1.0;
-          if (onBoop) onBoop();
+          if (onBoopRef.current) onBoopRef.current();
         }
 
         isPointerDownRef.current = false;
@@ -534,16 +604,19 @@ export function NovaAvatar3D({
       let lastW = width;
       let lastH = height;
       const resizeObserver = new ResizeObserver((entries) => {
-        if (!entries || entries.length === 0 || isDisposedRef.current) return;
+        if (!entries || entries.length === 0 || isDisposedRef.current || !isActiveTabRef.current) return;
         const entry = entries[0];
-        const newWidth = Math.max(80, Math.floor(entry.contentRect.width));
-        const newHeight = Math.max(80, Math.floor(entry.contentRect.height));
-        if (newWidth !== lastW || newHeight !== lastH) {
-          lastW = newWidth;
-          lastH = newHeight;
-          updateFraming(newWidth, newHeight);
+        const rawW = Math.floor(entry.contentRect.width);
+        const rawH = Math.floor(entry.contentRect.height);
+        if (rawW < 60 || rawH < 60) return;
+
+        if (rawW !== lastW || rawH !== lastH) {
+          lastW = rawW;
+          lastH = rawH;
+          // During chat open/close transition, keep WebGL buffer size stable and only scale via CSS
+          updateFraming(rawW, rawH, !isTransitioningRef.current, false);
           staticFramesLeftRef.current = 3;
-          if (!isLoopRunningRef.current && isActiveTab && document.visibilityState === 'visible') {
+          if (!isLoopRunningRef.current && isActiveTabRef.current && document.visibilityState === 'visible') {
             startAnimationLoop();
           }
         }
@@ -552,13 +625,14 @@ export function NovaAvatar3D({
 
       // If active and document is visible, start the loop
       staticFramesLeftRef.current = 3;
-      if (isActiveTab && document.visibilityState === 'visible') {
+      if (isActiveTabRef.current && document.visibilityState === 'visible') {
         startAnimationLoop();
       }
 
       // Cleanup on component unmount or 2D mode switch
       return () => {
         isDisposedRef.current = true;
+        syncViewportSizeRef.current = null;
         stopAnimationLoop();
 
         resizeObserver.disconnect();
@@ -591,7 +665,7 @@ export function NovaAvatar3D({
       setHasError(true);
       setErrorMessage(err?.message || '3D initialization error');
     }
-  }, [mode, onBoop, startAnimationLoop, stopAnimationLoop]);
+  }, [mode, startAnimationLoop, stopAnimationLoop]);
 
   // Tab Activation / Background Page Visibility Loop Controller
   useEffect(() => {
@@ -668,7 +742,7 @@ export function NovaAvatar3D({
             e.stopPropagation();
             setIsDebugOpen(true);
           }}
-          className="absolute top-1 right-1 z-30 px-2 py-0.5 rounded-md bg-black/45 hover:bg-black/65 text-white/90 text-[10px] font-medium backdrop-blur-xs transition"
+          className="hidden absolute top-1 right-1 z-30 px-2 py-0.5 rounded-md bg-black/45 hover:bg-black/65 text-white/90 text-[10px] font-medium backdrop-blur-xs transition"
           title="打开临时诊断视图 (A/B毛发切换 & 正侧背对照)"
         >
           诊断视图
