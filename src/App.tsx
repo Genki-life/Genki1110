@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { 
   Mic, 
@@ -264,7 +264,7 @@ function SuggestionMediaThumbnail({
       }`}
     >
       <div
-        className={`w-full h-full relative transition-opacity duration-150 ${
+        className={`w-full h-full relative ${
           isHiddenForTransition ? 'opacity-0' : 'opacity-100'
         }`}
       >
@@ -277,7 +277,7 @@ function SuggestionMediaThumbnail({
             referrerPolicy="no-referrer"
             onLoad={() => setImgLoaded(true)}
             onError={() => setImgError(true)}
-            className={`w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105 ${
+            className={`w-full h-full object-cover object-center transition-opacity duration-200 group-hover:scale-105 ${
               imgLoaded ? 'opacity-100' : 'opacity-0'
             }`}
           />
@@ -314,6 +314,460 @@ interface SuggestionCardItemState {
   plan: PlanItem;
   planState: 'suggested' | 'accepted' | 'completed';
   showPlanBHint: boolean;
+}
+
+const preloadedPlanImages = new Set<string>();
+
+function preloadPlanThumbnail(src: string): Promise<void> {
+  if (!src || preloadedPlanImages.has(src) || typeof Image === 'undefined') {
+    if (src) preloadedPlanImages.add(src);
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (ok) preloadedPlanImages.add(src);
+      resolve();
+    };
+    const img = new Image();
+    img.referrerPolicy = 'no-referrer';
+    img.onload = () => {
+      if (typeof img.decode === 'function') {
+        img.decode().catch(() => {}).finally(() => finish(true));
+      } else {
+        finish(true);
+      }
+    };
+    img.onerror = () => finish(false);
+    img.src = src;
+    if (img.complete) {
+      finish(img.naturalWidth > 0);
+    } else {
+      window.setTimeout(() => finish(false), 700);
+    }
+  });
+}
+
+// Deterministic cubic-bezier(0.22, 1, 0.36, 1) solver for frame-accurate wipe progress
+function evaluateOutQuintBezier(t: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  if (clamped === 0 || clamped === 1) return clamped;
+  const cx = 3 * 0.22;
+  const bx = 3 * (0.36 - 0.22) - cx;
+  const ax = 1 - cx - bx;
+  const cy = 3 * 1;
+  const by = 3 * (1 - 1) - cy;
+  const ay = 1 - cy - by;
+
+  let u = clamped;
+  for (let i = 0; i < 6; i++) {
+    const x = ((ax * u + bx) * u + cx) * u - clamped;
+    const dx = (3 * ax * u + 2 * bx) * u + cx;
+    if (Math.abs(dx) < 1e-6) break;
+    u = Math.max(0, Math.min(1, u - x / dx));
+  }
+  return ((ay * u + by) * u + cy) * u;
+}
+
+interface CardStaticThumbPreviewProps {
+  src: string;
+  title: string;
+  squareSize?: number;
+}
+
+function CardStaticThumbPreview({ src, title, squareSize = 40 }: CardStaticThumbPreviewProps) {
+  const [imgError, setImgError] = useState(false);
+
+  return (
+    <div
+      style={{
+        width: `${squareSize}px`,
+        height: `${squareSize}px`,
+        borderRadius: '11px',
+      }}
+      className="relative shrink-0 overflow-hidden bg-[#EBEBF0] border border-black/[0.06] shadow-[0_2px_8px_rgba(38,38,63,0.06)] select-none"
+    >
+      {!imgError ? (
+        <>
+          <img
+            src={src}
+            alt={title}
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onError={() => setImgError(true)}
+            className="w-full h-full object-cover object-center"
+          />
+          <div
+            style={{ width: '18px', height: '18px', right: '5px', bottom: '5px' }}
+            className="absolute rounded-[5px] bg-black/36 backdrop-blur-[2px] flex items-center justify-center pointer-events-none"
+          >
+            <Maximize2
+              style={{ width: '10px', height: '10px' }}
+              className="text-white stroke-[2.3]"
+              aria-hidden="true"
+            />
+          </div>
+        </>
+      ) : (
+        <div className="w-full h-full bg-[#EAEAF0] flex items-center justify-center text-[#8E8E93]">
+          <FileText className="w-5 h-5 stroke-[1.8]" aria-hidden="true" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface CardWipeAnimState {
+  cardId: string;
+  runId: number;
+  oldPlan: PlanItem;
+  newPlan: PlanItem;
+}
+
+interface CardContentWipeRowProps {
+  displayPlan: PlanItem;
+  wipeAnim: CardWipeAnimState | null;
+  shouldReduceMotion: boolean;
+  isCenterCard: boolean;
+  cardState: 'suggested' | 'accepted' | 'completed';
+  isThumbnailHiddenForDetail: boolean;
+  cardThumbnailRef: React.Ref<HTMLButtonElement>;
+  didSwipeCarouselRef: React.MutableRefObject<boolean>;
+  lastCarouselSwipeTimeRef: React.MutableRefObject<number>;
+  onOpenDetail: () => void;
+  onWipeComplete: (runId: number) => void;
+}
+
+const SPARKLE_STAR_PATH =
+  'M12 1 C13.1 7.6 16.4 10.9 23 12 C16.4 13.1 13.1 16.4 12 23 C10.9 16.4 7.6 13.1 1 12 C7.6 10.9 10.9 7.6 12 1 Z';
+
+function CardContentWipeRow({
+  displayPlan,
+  wipeAnim,
+  shouldReduceMotion,
+  isCenterCard,
+  cardState,
+  isThumbnailHiddenForDetail,
+  cardThumbnailRef,
+  didSwipeCarouselRef,
+  lastCarouselSwipeTimeRef,
+  onOpenDetail,
+  onWipeComplete,
+}: CardContentWipeRowProps) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const newLayerRef = useRef<HTMLDivElement>(null);
+  const oldLayerRef = useRef<HTMLDivElement>(null);
+  const glowRef = useRef<HTMLDivElement>(null);
+  const [showSparkles, setShowSparkles] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!wipeAnim) {
+      setShowSparkles(false);
+      return;
+    }
+
+    const stage = stageRef.current;
+    const newLayer = newLayerRef.current;
+    const oldLayer = oldLayerRef.current;
+    const glow = glowRef.current;
+    if (!stage || !newLayer || !oldLayer) return;
+
+    setShowSparkles(false);
+    let rafId = 0;
+    let settleTimer = 0;
+    let completeTimer = 0;
+    let cancelled = false;
+    const runId = wipeAnim.runId;
+
+    if (shouldReduceMotion) {
+      stage.style.height = '';
+      stage.style.transition = '';
+      newLayer.style.maskImage = '';
+      newLayer.style.webkitMaskImage = '';
+      oldLayer.style.maskImage = '';
+      oldLayer.style.webkitMaskImage = '';
+      newLayer.style.transition = 'opacity 150ms ease-out';
+      oldLayer.style.transition = 'opacity 150ms ease-out';
+      newLayer.style.opacity = '0';
+      oldLayer.style.opacity = '1';
+      void stage.offsetHeight;
+      newLayer.style.opacity = '1';
+      oldLayer.style.opacity = '0';
+
+      completeTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        newLayer.style.transition = '';
+        newLayer.style.opacity = '';
+        onWipeComplete(runId);
+      }, 165);
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(completeTimer);
+      };
+    }
+
+    const oldHeight = oldLayer.scrollHeight;
+    const newHeight = newLayer.scrollHeight;
+    const maxHeight = Math.max(oldHeight, newHeight);
+
+    stage.style.transition = 'none';
+    stage.style.height = `${maxHeight}px`;
+
+    const applyEdgeMask = (edgeX: number, glowOpacity: number) => {
+      const featherStart = (edgeX - 6).toFixed(2);
+      const featherEnd = (edgeX + 6).toFixed(2);
+      const newMask = `linear-gradient(90deg, rgba(0,0,0,1) ${featherStart}px, rgba(0,0,0,0) ${featherEnd}px)`;
+      const oldMask = `linear-gradient(90deg, rgba(0,0,0,0) ${featherStart}px, rgba(0,0,0,1) ${featherEnd}px)`;
+      newLayer.style.maskImage = newMask;
+      newLayer.style.webkitMaskImage = newMask;
+      oldLayer.style.maskImage = oldMask;
+      oldLayer.style.webkitMaskImage = oldMask;
+      if (glow) {
+        glow.style.transform = `translate3d(${(edgeX - 9).toFixed(2)}px, 0, 0)`;
+        glow.style.opacity = glowOpacity.toFixed(3);
+      }
+    };
+
+    newLayer.style.transition = '';
+    oldLayer.style.transition = '';
+    newLayer.style.opacity = '1';
+    oldLayer.style.opacity = '1';
+    applyEdgeMask(-16, 0);
+
+    const startTime = performance.now();
+    const WIPE_DURATION_MS = 600;
+    const HEIGHT_SETTLE_MS = 180;
+    let sparklesTriggered = false;
+
+    const tick = (now: number) => {
+      if (cancelled) return;
+      const elapsed = now - startTime;
+      const raw = Math.min(1, elapsed / WIPE_DURATION_MS);
+
+      if (raw >= 0.7 && !sparklesTriggered) {
+        sparklesTriggered = true;
+        setShowSparkles(true);
+      }
+
+      const eased = evaluateOutQuintBezier(raw);
+      const width = stage.clientWidth || 272;
+      const edgeX = -16 + eased * (width + 32);
+      const glowOpacity =
+        raw < 0.08 ? raw / 0.08 : raw > 0.88 ? Math.max(0, (1 - raw) / 0.12) : 1;
+
+      applyEdgeMask(edgeX, glowOpacity);
+
+      if (raw < 1) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        newLayer.style.maskImage = '';
+        newLayer.style.webkitMaskImage = '';
+        oldLayer.style.opacity = '0';
+        if (glow) glow.style.opacity = '0';
+
+        const targetHeight = newLayer.scrollHeight;
+        if (Math.abs(targetHeight - maxHeight) > 0.5) {
+          stage.style.transition = `height ${HEIGHT_SETTLE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+          void stage.offsetHeight;
+          stage.style.height = `${targetHeight}px`;
+          settleTimer = window.setTimeout(() => {
+            if (cancelled) return;
+            stage.style.transition = '';
+            stage.style.height = '';
+          }, HEIGHT_SETTLE_MS + 16);
+        } else {
+          stage.style.transition = '';
+          stage.style.height = '';
+        }
+
+        // Wait until staggered sparkles (started at 420ms, 160ms delay + 360ms dur = 940ms) finish cleanly
+        const remainingSparkleMs = Math.max(HEIGHT_SETTLE_MS + 20, 350);
+        completeTimer = window.setTimeout(() => {
+          if (cancelled) return;
+          onWipeComplete(runId);
+        }, remainingSparkleMs);
+      }
+    };
+
+    rafId = requestAnimationFrame(tick);
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+      window.clearTimeout(settleTimer);
+      window.clearTimeout(completeTimer);
+      if (stage) {
+        stage.style.transition = '';
+        stage.style.height = '';
+      }
+      if (newLayer) {
+        newLayer.style.maskImage = '';
+        newLayer.style.webkitMaskImage = '';
+        newLayer.style.opacity = '';
+        newLayer.style.transition = '';
+      }
+      if (oldLayer) {
+        oldLayer.style.maskImage = '';
+        oldLayer.style.webkitMaskImage = '';
+        oldLayer.style.opacity = '';
+        oldLayer.style.transition = '';
+      }
+    };
+  }, [wipeAnim?.runId, shouldReduceMotion, onWipeComplete]);
+
+  if (!wipeAnim) {
+    return (
+      <div className="flex items-center justify-between gap-2.5">
+        <h2
+          style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+          }}
+          className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+        >
+          {displayPlan.title}
+        </h2>
+
+        {cardState !== 'suggested' && (
+          <SuggestionMediaThumbnail
+            src={displayPlan.thumbnailUrl}
+            title={displayPlan.title}
+            mediaType={displayPlan.mediaType}
+            squareSize={40}
+            isHiddenForTransition={isThumbnailHiddenForDetail}
+            isInteractive={isCenterCard}
+            buttonRef={isCenterCard ? cardThumbnailRef : undefined}
+            didSwipeCarouselRef={didSwipeCarouselRef}
+            lastCarouselSwipeTimeRef={lastCarouselSwipeTimeRef}
+            onOpenDetail={onOpenDetail}
+          />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="relative"
+      data-card-wipe-state={shouldReduceMotion ? 'reduced-fade' : 'wiping'}
+    >
+      <div ref={stageRef} className="relative overflow-hidden">
+        {/* Bottom layer: Final new plan content */}
+        <div ref={newLayerRef} className="flex items-center justify-between gap-2.5">
+          <h2
+            style={{
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+            className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+          >
+            {wipeAnim.newPlan.title}
+          </h2>
+
+          {cardState !== 'suggested' && (
+            <SuggestionMediaThumbnail
+              src={wipeAnim.newPlan.thumbnailUrl}
+              title={wipeAnim.newPlan.title}
+              mediaType={wipeAnim.newPlan.mediaType}
+              squareSize={40}
+              isHiddenForTransition={isThumbnailHiddenForDetail}
+              isInteractive={isCenterCard}
+              buttonRef={isCenterCard ? cardThumbnailRef : undefined}
+              didSwipeCarouselRef={didSwipeCarouselRef}
+              lastCarouselSwipeTimeRef={lastCarouselSwipeTimeRef}
+              onOpenDetail={onOpenDetail}
+            />
+          )}
+        </div>
+
+        {/* Top layer: Initial old plan content (masked left-to-right during wipe) */}
+        <div
+          ref={oldLayerRef}
+          aria-hidden="true"
+          className="absolute top-0 inset-x-0 pointer-events-none select-none flex items-center justify-between gap-2.5"
+        >
+          <h2
+            style={{
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+            className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+          >
+            {wipeAnim.oldPlan.title}
+          </h2>
+
+          {cardState !== 'suggested' && (
+            <CardStaticThumbPreview
+              src={wipeAnim.oldPlan.thumbnailUrl}
+              title={wipeAnim.oldPlan.title}
+              squareSize={40}
+            />
+          )}
+        </div>
+
+        {/* 18px soft wipe boundary glow contained strictly inside content region */}
+        {!shouldReduceMotion && (
+          <div
+            ref={glowRef}
+            aria-hidden="true"
+            data-card-wipe-glow="true"
+            style={{
+              width: '18px',
+              background:
+                'linear-gradient(90deg, transparent, rgba(203,191,243,0.40), rgba(255,255,255,0.70), transparent)',
+            }}
+            className="absolute top-0 bottom-0 left-0 pointer-events-none z-10"
+          />
+        )}
+      </div>
+
+      {/* 3 Staggered 4-pointed SVG sparkles near upper-right thumbnail, inside card bounds */}
+      {showSparkles && !shouldReduceMotion && (
+        <div
+          aria-hidden="true"
+          data-card-sparkles="true"
+          className="absolute inset-0 pointer-events-none z-20"
+        >
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 24 24"
+            style={{ top: '-5px', right: '-4px', animationDelay: '0ms' }}
+            className="absolute genki-sparkle-item"
+          >
+            <path d={SPARKLE_STAR_PATH} fill="#B9A7E8" />
+          </svg>
+          <svg
+            width="7"
+            height="7"
+            viewBox="0 0 24 24"
+            style={{ top: '-6px', right: '38px', animationDelay: '80ms' }}
+            className="absolute genki-sparkle-item"
+          >
+            <path d={SPARKLE_STAR_PATH} fill="#D4C7F2" />
+          </svg>
+          <svg
+            width="5"
+            height="5"
+            viewBox="0 0 24 24"
+            style={{ top: '12px', right: '-8px', animationDelay: '160ms' }}
+            className="absolute genki-sparkle-item"
+          >
+            <path d={SPARKLE_STAR_PATH} fill="#E8DFF8" />
+          </svg>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Chat Action Chip
@@ -465,25 +919,56 @@ export default function App() {
 
   // Chat modal overlay state
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isChatSheetExited, setIsChatSheetExited] = useState(true);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [sheetInput, setSheetInput] = useState('');
   const [inputPlaceholder, setInputPlaceholder] = useState('Type your response…');
+
+  // Adjust-in-Chat -> Today Card replacement animation state & refs
+  const adjustSessionRef = useRef<{ cardId: string; initialOldPlan: PlanItem } | null>(null);
+  const [pendingPlanUpdate, setPendingPlanUpdate] = useState<{
+    cardId: string;
+    oldPlan: PlanItem;
+    newPlan: PlanItem;
+  } | null>(null);
+  const pendingPlanUpdateRef = useRef<{
+    cardId: string;
+    oldPlan: PlanItem;
+    newPlan: PlanItem;
+  } | null>(null);
+  pendingPlanUpdateRef.current = pendingPlanUpdate;
+  const [activeCardWipeAnim, setActiveCardWipeAnim] = useState<CardWipeAnimState | null>(null);
+  const cardWipeRunIdRef = useRef<number>(0);
+  const cardWipeDelayTimerRef = useRef<number | null>(null);
+  const cardWipeCancelledRef = useRef<boolean>(false);
+  const expectedCardIdDuringWipeRef = useRef<string | null>(null);
+  const expectedVirtualIdxDuringWipeRef = useRef<number | null>(null);
+  const isProgrammaticCenteringRef = useRef<boolean>(false);
   const chatInputRef = useRef<HTMLInputElement>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef<boolean>(true);
 
   // Media Thumbnail continuous transition refs and states
+  interface MediaFrameRect {
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+    borderRadius: number;
+  }
   const cardThumbnailRef = useRef<HTMLButtonElement>(null);
   const detailSheetRef = useRef<HTMLDivElement>(null);
   const detailHeaderRef = useRef<HTMLDivElement>(null);
+  const detailScrollBodyRef = useRef<HTMLDivElement>(null);
   const detailMediaHeroRef = useRef<HTMLDivElement>(null);
   const floatingMediaRef = useRef<HTMLDivElement>(null);
-  const [detailSheetMeasuredHeight, setDetailSheetMeasuredHeight] = useState<number>(0);
-  const [detailHeaderHeight, setDetailHeaderHeight] = useState<number>(74);
+  const transitionRunIdRef = useRef<number>(0);
+  const [detailTransitionRunId, setDetailTransitionRunId] = useState<number>(0);
   const [detailTransitionPhase, setDetailTransitionPhase] = useState<'idle' | 'opening' | 'open' | 'closing'>('idle');
-  const [detailSourceRect, setDetailSourceRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
-  const [detailClosingStartRect, setDetailClosingStartRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const [detailThumbRect, setDetailThumbRect] = useState<MediaFrameRect | null>(null);
+  const [detailFloatingStartRect, setDetailFloatingStartRect] = useState<MediaFrameRect | null>(null);
+  const [detailTargetRect, setDetailTargetRect] = useState<MediaFrameRect | null>(null);
 
   // Layout and transition geometry refs
   const phoneFrameRef = useRef<HTMLDivElement>(null);
@@ -559,55 +1044,55 @@ export default function App() {
     };
   }, [frameSize.height]);
 
-  // Measure live rect of cardThumbnail inside phoneFrame at this exact instant
-  const getLiveThumbnailRect = useCallback(() => {
-    if (cardThumbnailRef.current && phoneFrameRef.current) {
-      const fRect = phoneFrameRef.current.getBoundingClientRect();
-      const tRect = cardThumbnailRef.current.getBoundingClientRect();
-      if (fRect.width > 0 && fRect.height > 0 && tRect.width > 0 && tRect.height > 0) {
-        return {
-          top: tRect.top - fRect.top,
-          left: tRect.left - fRect.left,
-          width: tRect.width,
-          height: tRect.height,
-        };
-      }
+  // Convert any element's viewport rect into phoneFrameRef padding-box local coordinates
+  const toFrameLocalRect = useCallback((el: HTMLElement | null, fallbackRadius: number): MediaFrameRect | null => {
+    const frameEl = phoneFrameRef.current;
+    if (!el || !frameEl) return null;
+    const fRect = frameEl.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    if (fRect.width <= 0 || fRect.height <= 0 || elRect.width <= 0 || elRect.height <= 0) {
+      return null;
     }
-    const fWidth = phoneFrameRef.current?.clientWidth || 393;
+    const radius = parseFloat(window.getComputedStyle(el).borderTopLeftRadius);
     return {
-      top: 360,
-      left: fWidth - 24 - 48,
-      width: 48,
-      height: 48,
+      top: elRect.top - (fRect.top + frameEl.clientTop),
+      left: elRect.left - (fRect.left + frameEl.clientLeft),
+      width: elRect.width,
+      height: elRect.height,
+      borderRadius: Number.isFinite(radius) ? radius : fallbackRadius,
     };
   }, []);
 
-  // Measure live rect of the detail media hero inside phoneFrame
-  const getLiveDetailMediaRect = useCallback(() => {
-    if (detailMediaHeroRef.current && phoneFrameRef.current) {
-      const fRect = phoneFrameRef.current.getBoundingClientRect();
-      const mRect = detailMediaHeroRef.current.getBoundingClientRect();
-      if (fRect.width > 0 && mRect.width > 0 && mRect.height > 0) {
-        return {
-          top: mRect.top - fRect.top,
-          left: mRect.left - fRect.left,
-          width: mRect.width,
-          height: mRect.height,
-        };
-      }
+  // Measure live rect of cardThumbnail inside phoneFrame at this exact instant
+  const getLiveThumbnailRect = useCallback((): MediaFrameRect | null => {
+    return toFrameLocalRect(cardThumbnailRef.current, 12);
+  }, [toFrameLocalRect]);
+
+  // Measure settled (y = 0) rect of detailMediaHeroRef inside phoneFrame, canceling drawer slide transform
+  const measureSettledDetailHeroRect = useCallback((): MediaFrameRect | null => {
+    const frameEl = phoneFrameRef.current;
+    const sheetEl = detailSheetRef.current;
+    const heroEl = detailMediaHeroRef.current;
+    if (!frameEl || !sheetEl || !heroEl) return null;
+
+    const heroRect = heroEl.getBoundingClientRect();
+    const sheetRect = sheetEl.getBoundingClientRect();
+    if (heroRect.width <= 0 || heroRect.height <= 0 || sheetRect.height <= 0) {
+      return null;
     }
-    const fWidth = phoneFrameRef.current?.clientWidth || 393;
-    const effHeight = detailSheetMeasuredHeight > 0
-      ? detailSheetMeasuredHeight
-      : Math.min(frameSize.height * 0.75, 580);
-    const sTop = frameSize.height - effHeight;
+
+    const settledSheetTop = frameEl.clientHeight - sheetRect.height;
+    const settledSheetLeft = sheetEl.offsetLeft;
+    const radius = parseFloat(window.getComputedStyle(heroEl).borderTopLeftRadius);
+
     return {
-      top: sTop + detailHeaderHeight + 16,
-      left: 24,
-      width: Math.max(fWidth - 48, 200),
-      height: 144,
+      top: settledSheetTop + (heroRect.top - sheetRect.top),
+      left: settledSheetLeft + (heroRect.left - sheetRect.left),
+      width: heroRect.width,
+      height: heroRect.height,
+      borderRadius: Number.isFinite(radius) ? radius : 22,
     };
-  }, [detailSheetMeasuredHeight, detailHeaderHeight, frameSize]);
+  }, []);
 
   // Update frame dimensions and bottom bar whenever phoneFrameRef or bottomBarRef resizes
   useEffect(() => {
@@ -676,35 +1161,44 @@ export default function App() {
     return () => ro.disconnect();
   }, [isChatOpen]);
 
-  // Dynamically observe detailSheet height when open or resizing
-  useEffect(() => {
-    const sheetEl = detailSheetRef.current;
-    if (!sheetEl) return;
-    const updateSheet = () => {
-      if (sheetEl.clientHeight > 0) {
-        setDetailSheetMeasuredHeight(sheetEl.clientHeight);
-      }
-    };
-    updateSheet();
-    const ro = new ResizeObserver(() => updateSheet());
-    ro.observe(sheetEl);
-    return () => ro.disconnect();
-  }, [isDetailOpen]);
+  // Pre-paint DOM measurement for settled detail hero target rect while opening
+  useLayoutEffect(() => {
+    if (!isDetailOpen || detailTransitionPhase !== 'opening') return;
 
-  // Dynamically observe detailHeader height to accommodate long titles
-  useEffect(() => {
-    const headerEl = detailHeaderRef.current;
-    if (!headerEl) return;
-    const updateHeader = () => {
-      if (headerEl.clientHeight > 0) {
-        setDetailHeaderHeight(headerEl.clientHeight);
-      }
+    const scrollEl = detailScrollBodyRef.current;
+    if (scrollEl && scrollEl.scrollTop !== 0) {
+      scrollEl.scrollTop = 0;
+    }
+
+    const isSameRect = (a: MediaFrameRect | null, b: MediaFrameRect | null) => {
+      if (a === b) return true;
+      if (!a || !b) return false;
+      return (
+        Math.abs(a.top - b.top) <= 0.25 &&
+        Math.abs(a.left - b.left) <= 0.25 &&
+        Math.abs(a.width - b.width) <= 0.25 &&
+        Math.abs(a.height - b.height) <= 0.25 &&
+        Math.abs(a.borderRadius - b.borderRadius) <= 0.25
+      );
     };
-    updateHeader();
-    const ro = new ResizeObserver(() => updateHeader());
-    ro.observe(headerEl);
+
+    const syncTarget = () => {
+      const measured = measureSettledDetailHeroRect();
+      if (!measured) return;
+      setDetailTargetRect((prev) => (isSameRect(prev, measured) ? prev : measured));
+    };
+
+    syncTarget();
+
+    const ro = new ResizeObserver(() => {
+      syncTarget();
+    });
+    if (detailSheetRef.current) ro.observe(detailSheetRef.current);
+    if (detailHeaderRef.current) ro.observe(detailHeaderRef.current);
+    if (detailMediaHeroRef.current) ro.observe(detailMediaHeroRef.current);
+
     return () => ro.disconnect();
-  }, [isDetailOpen]);
+  }, [isDetailOpen, detailTransitionPhase, currentPlan.id, frameSize, measureSettledDetailHeroRect]);
 
   // Dynamically observe planCard content height to animate height smoothly downward
   useEffect(() => {
@@ -748,61 +1242,114 @@ export default function App() {
   // Nova peeks naturally over the rounded drawer edge: ~52% above, lower body resting inside the pt-14 header space
   const drawerTop = sheetTop - drawerAvatarSize * 0.52;
 
-  // Target coordinates for media banner in detail sheet
-  const effectiveDetailSheetHeight = detailSheetMeasuredHeight > 0
-    ? detailSheetMeasuredHeight
-    : Math.min(frameSize.height * 0.75, 580);
-  const detailSheetTop = frameSize.height - effectiveDetailSheetHeight;
-  const targetMediaTop = detailSheetTop + detailHeaderHeight + 16;
-  const targetMediaLeft = 24;
-  const targetMediaWidth = Math.max(frameSize.width - 48, 200);
-  const targetMediaHeight = 144;
+  const cancelPendingAndActiveCardUpdate = useCallback(() => {
+    cardWipeCancelledRef.current = true;
+    if (cardWipeDelayTimerRef.current !== null) {
+      window.clearTimeout(cardWipeDelayTimerRef.current);
+      cardWipeDelayTimerRef.current = null;
+    }
+    expectedCardIdDuringWipeRef.current = null;
+    expectedVirtualIdxDuringWipeRef.current = null;
+    pendingPlanUpdateRef.current = null;
+    setPendingPlanUpdate(null);
+    setActiveCardWipeAnim(null);
+  }, []);
+
+  const cancelHoldImmediate = useCallback(() => {
+    if (holdTimerRef.current) {
+      cancelAnimationFrame(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (fallTimerRef.current) {
+      cancelAnimationFrame(fallTimerRef.current);
+      fallTimerRef.current = null;
+    }
+    isHoldingRef.current = false;
+    hasCompletedRef.current = false;
+    holdStartRef.current = 0;
+    holdProgressRef.current = 0;
+    setIsHolding(false);
+    setHoldProgress(0);
+  }, []);
+
+  const centerCarouselOnCardIdx = useCallback((targetIdx: number) => {
+    isProgrammaticCenteringRef.current = true;
+    setActiveVirtualIndex((prev) => {
+      const currentMod = ((prev % 3) + 3) % 3;
+      let diff = targetIdx - currentMod;
+      if (diff > 1) diff -= 3;
+      if (diff < -1) diff += 3;
+      const nextVal = prev + diff;
+      expectedVirtualIdxDuringWipeRef.current = nextVal;
+      return nextVal;
+    });
+    setIsPlanCardOpen(true);
+    window.setTimeout(() => {
+      isProgrammaticCenteringRef.current = false;
+    }, 0);
+  }, []);
 
   // Open & Close triggers for Continuous Detail Transition
   const openDetailWithTransition = useCallback(() => {
-    // If mid-flight during closing, measure current floating position or thumbnail
-    let startRect = getLiveThumbnailRect();
-    if (floatingMediaRef.current && detailTransitionPhase === 'closing' && phoneFrameRef.current) {
-      const fRect = phoneFrameRef.current.getBoundingClientRect();
-      const mRect = floatingMediaRef.current.getBoundingClientRect();
-      if (mRect.width > 0 && mRect.height > 0) {
-        startRect = {
-          top: mRect.top - fRect.top,
-          left: mRect.left - fRect.left,
-          width: mRect.width,
-          height: mRect.height,
-        };
+    cancelPendingAndActiveCardUpdate();
+    const thumbRect = getLiveThumbnailRect();
+    let startRect = thumbRect;
+
+    // If re-opening mid-flight during closing, continue from current floating visual rect
+    if (detailTransitionPhase === 'closing' && floatingMediaRef.current) {
+      const midFlightRect = toFrameLocalRect(floatingMediaRef.current, 16);
+      if (midFlightRect) {
+        startRect = midFlightRect;
       }
     }
-    setDetailSourceRect(startRect);
-    setDetailClosingStartRect(null);
+
+    if (!thumbRect || !startRect) {
+      setIsDetailOpen(true);
+      setDetailTransitionPhase('open');
+      return;
+    }
+
+    const nextRunId = transitionRunIdRef.current + 1;
+    transitionRunIdRef.current = nextRunId;
+    setDetailTransitionRunId(nextRunId);
+    setDetailThumbRect(thumbRect);
+    setDetailFloatingStartRect(startRect);
+    setDetailTargetRect(null);
     setIsDetailOpen(true);
     setDetailTransitionPhase('opening');
-  }, [getLiveThumbnailRect, detailTransitionPhase]);
+  }, [cancelPendingAndActiveCardUpdate, getLiveThumbnailRect, toFrameLocalRect, detailTransitionPhase]);
 
   const closeDetailWithTransition = useCallback(() => {
-    const liveThumbRect = getLiveThumbnailRect();
-    let liveMediaRect = getLiveDetailMediaRect();
+    const thumbRect = getLiveThumbnailRect();
+    let startRect: MediaFrameRect | null = null;
 
-    // If mid-flight during opening, capture live mid-flight position
-    if (floatingMediaRef.current && detailTransitionPhase === 'opening' && phoneFrameRef.current) {
-      const fRect = phoneFrameRef.current.getBoundingClientRect();
-      const mRect = floatingMediaRef.current.getBoundingClientRect();
-      if (mRect.width > 0 && mRect.height > 0) {
-        liveMediaRect = {
-          top: mRect.top - fRect.top,
-          left: mRect.left - fRect.left,
-          width: mRect.width,
-          height: mRect.height,
-        };
-      }
+    if (detailTransitionPhase === 'opening' && floatingMediaRef.current) {
+      // Mid-flight during opening: capture current live floating position
+      startRect = toFrameLocalRect(floatingMediaRef.current, 16);
+    }
+    if (!startRect) {
+      // Open (possibly scrolled): capture actual current visual rect of detailMediaHeroRef
+      startRect = toFrameLocalRect(detailMediaHeroRef.current, 22) ?? detailTargetRect;
     }
 
-    setDetailSourceRect(liveThumbRect);
-    setDetailClosingStartRect(liveMediaRect);
+    const nextRunId = transitionRunIdRef.current + 1;
+    transitionRunIdRef.current = nextRunId;
+    setDetailTransitionRunId(nextRunId);
+
+    if (!thumbRect || !startRect) {
+      setIsDetailOpen(false);
+      setDetailTransitionPhase('idle');
+      setDetailThumbRect(null);
+      setDetailFloatingStartRect(null);
+      setDetailTargetRect(null);
+      return;
+    }
+
+    setDetailThumbRect(thumbRect);
+    setDetailFloatingStartRect(startRect);
     setIsDetailOpen(false);
     setDetailTransitionPhase('closing');
-  }, [getLiveThumbnailRect, getLiveDetailMediaRect, detailTransitionPhase]);
+  }, [getLiveThumbnailRect, toFrameLocalRect, detailTransitionPhase, detailTargetRect]);
 
   // Handle escape key to close detail modal or expanded suggestion card
   useEffect(() => {
@@ -821,14 +1368,16 @@ export default function App() {
 
   // Coordinated Transition Open / Close triggers
   const openChatWithTransition = useCallback((chatSetup?: () => void) => {
+    cancelPendingAndActiveCardUpdate();
     const liveRect = getLiveHomeAvatarRect();
     if (liveRect && liveRect.width > 0) {
       setHomeAvatarRect(liveRect);
     }
     if (chatSetup) chatSetup();
+    setIsChatSheetExited(false);
     setIsChatOpen(true);
     setTransitionPhase('opening');
-  }, [getLiveHomeAvatarRect]);
+  }, [cancelPendingAndActiveCardUpdate, getLiveHomeAvatarRect]);
 
   const closeChatWithTransition = useCallback(() => {
     const liveRect = getLiveHomeAvatarRect();
@@ -889,13 +1438,20 @@ export default function App() {
   const handleInitialPlanB = (targetCardIdx?: number) => {
     const idx = typeof targetCardIdx === 'number' ? targetCardIdx : activeCardIndexRef.current;
     chatTargetCardIdxRef.current = idx;
-    const targetPlan = cardsState[idx]?.plan || currentPlan;
+    const targetCard = cardsState[idx];
+    const targetPlan = targetCard?.plan || currentPlan;
     const alternative = targetPlan.id === 'walk' ? STRETCH_PLAN : BREATH_RESET_PLAN;
     const alternativeText = targetPlan.id === 'walk'
       ? 'How about a 5-minute stretch at home instead?'
       : 'How about a 3-minute seated breath reset instead?';
 
     openChatWithTransition(() => {
+      if (targetCard) {
+        adjustSessionRef.current = {
+          cardId: targetCard.id,
+          initialOldPlan: targetPlan,
+        };
+      }
       setShowPlanBHint(false, idx);
       setInputPlaceholder('Tell Nova what changed…');
       isNearBottomRef.current = true;
@@ -929,9 +1485,16 @@ export default function App() {
   const handleAcceptedPlanB = (targetCardIdx?: number) => {
     const idx = typeof targetCardIdx === 'number' ? targetCardIdx : activeCardIndexRef.current;
     chatTargetCardIdxRef.current = idx;
-    const targetPlan = cardsState[idx]?.plan || currentPlan;
+    const targetCard = cardsState[idx];
+    const targetPlan = targetCard?.plan || currentPlan;
 
     openChatWithTransition(() => {
+      if (targetCard) {
+        adjustSessionRef.current = {
+          cardId: targetCard.id,
+          initialOldPlan: targetPlan,
+        };
+      }
       setInputPlaceholder('Tell Nova what changed…');
       isNearBottomRef.current = true;
       const alternative = targetPlan.id === 'walk'
@@ -976,6 +1539,7 @@ export default function App() {
     chatTargetCardIdxRef.current = idx;
 
     openChatWithTransition(() => {
+      adjustSessionRef.current = null;
       setInputPlaceholder('Tell Nova what changed…');
       isNearBottomRef.current = true;
       setChatMessages([
@@ -1009,12 +1573,27 @@ export default function App() {
     if (option.action === 'accept' && option.targetPlan) {
       // User accepts alternative: update target card's plan in background, switch to accepted state, keep drawer open
       const targetIdx = chatTargetCardIdxRef.current ?? activeCardIndexRef.current;
-      hasCompletedRef.current = false;
-      isHoldingRef.current = false;
-      holdProgressRef.current = 0;
+      const targetCard = cardsState[targetIdx];
+      cancelHoldImmediate();
       setCurrentPlan(option.targetPlan, targetIdx);
       setPlanState('accepted', targetIdx);
-      setHoldProgress(0);
+
+      const activeAdjust = adjustSessionRef.current;
+      if (targetCard && activeAdjust && activeAdjust.cardId === targetCard.id) {
+        if (option.targetPlan.id !== activeAdjust.initialOldPlan.id) {
+          const nextPending = {
+            cardId: targetCard.id,
+            oldPlan: activeAdjust.initialOldPlan,
+            newPlan: option.targetPlan,
+          };
+          pendingPlanUpdateRef.current = nextPending;
+          setPendingPlanUpdate(nextPending);
+          preloadPlanThumbnail(option.targetPlan.thumbnailUrl);
+        } else {
+          pendingPlanUpdateRef.current = null;
+          setPendingPlanUpdate(null);
+        }
+      }
 
       // Determine Nova confirmation copy matching the accepted alternative
       let replyText = 'Sounds good. I’ve added the 5-minute stretch to your plan.';
@@ -1315,6 +1894,116 @@ export default function App() {
     hasCompletedRef.current = false;
     cancelHold();
   }, [activeVirtualIndex, cancelHold]);
+
+  // Safety guard: ensure transitionPhase returns to idle if Avatar onAnimationComplete doesn't fire
+  useEffect(() => {
+    if (isChatOpen || transitionPhase !== 'closing') return;
+    const fallback = window.setTimeout(() => {
+      setTransitionPhase('idle');
+    }, 450);
+    return () => window.clearTimeout(fallback);
+  }, [isChatOpen, transitionPhase]);
+
+  // Trigger card content wipe animation 100ms after Chat is closed AND Avatar has returned home
+  useEffect(() => {
+    if (
+      isChatOpen ||
+      !isChatSheetExited ||
+      transitionPhase !== 'idle' ||
+      activeTab !== 'Today' ||
+      isDetailOpen ||
+      !pendingPlanUpdate
+    ) {
+      return;
+    }
+
+    const update = pendingPlanUpdate;
+    const targetIdx = cardsState.findIndex((c) => c.id === update.cardId);
+    if (targetIdx === -1) {
+      cancelPendingAndActiveCardUpdate();
+      return;
+    }
+
+    cardWipeCancelledRef.current = false;
+    adjustSessionRef.current = null;
+    expectedCardIdDuringWipeRef.current = update.cardId;
+    cancelHoldImmediate();
+    centerCarouselOnCardIdx(targetIdx);
+
+    const delayTimer = window.setTimeout(() => {
+      cardWipeDelayTimerRef.current = null;
+      if (cardWipeCancelledRef.current) return;
+
+      preloadPlanThumbnail(update.newPlan.thumbnailUrl).then(() => {
+        if (cardWipeCancelledRef.current) return;
+        const nextRunId = cardWipeRunIdRef.current + 1;
+        cardWipeRunIdRef.current = nextRunId;
+        pendingPlanUpdateRef.current = null;
+        setPendingPlanUpdate(null);
+        setActiveCardWipeAnim({
+          cardId: update.cardId,
+          runId: nextRunId,
+          oldPlan: update.oldPlan,
+          newPlan: update.newPlan,
+        });
+      });
+    }, 100);
+
+    cardWipeDelayTimerRef.current = delayTimer;
+
+    return () => {
+      if (cardWipeDelayTimerRef.current !== null) {
+        window.clearTimeout(cardWipeDelayTimerRef.current);
+        cardWipeDelayTimerRef.current = null;
+      }
+    };
+  }, [
+    isChatOpen,
+    isChatSheetExited,
+    transitionPhase,
+    activeTab,
+    isDetailOpen,
+    pendingPlanUpdate,
+    cardsState,
+    cancelHoldImmediate,
+    centerCarouselOnCardIdx,
+    cancelPendingAndActiveCardUpdate,
+  ]);
+
+  // Interrupt and cleanly settle any pending/active card replacement on user navigation or card close
+  useEffect(() => {
+    if (!activeCardWipeAnim && cardWipeDelayTimerRef.current === null) return;
+    const activeSlotMatches =
+      expectedVirtualIdxDuringWipeRef.current === null ||
+      activeVirtualIndex === expectedVirtualIdxDuringWipeRef.current;
+
+    if (
+      activeTab !== 'Today' ||
+      !isPlanCardOpen ||
+      isDetailOpen ||
+      isChatOpen ||
+      (!isProgrammaticCenteringRef.current && !activeSlotMatches)
+    ) {
+      cancelPendingAndActiveCardUpdate();
+    }
+  }, [
+    activeTab,
+    isPlanCardOpen,
+    isDetailOpen,
+    isChatOpen,
+    activeVirtualIndex,
+    activeCardWipeAnim,
+    cancelPendingAndActiveCardUpdate,
+  ]);
+
+  const handleCardWipeComplete = useCallback((completedRunId: number) => {
+    setActiveCardWipeAnim((prev) => {
+      if (!prev || prev.runId !== completedRunId) return prev;
+      expectedCardIdDuringWipeRef.current = null;
+      expectedVirtualIdxDuringWipeRef.current = null;
+      return null;
+    });
+  }, []);
 
   // Carousel card width & horizontal step (leaves ~40px on each side of 393px screen for peeking cards)
   const carouselCardWidth = useMemo(
@@ -1805,87 +2494,129 @@ export default function App() {
         </motion.div>
 
         {/* Continuous Shared-Element Media Transition Element */}
-        {detailTransitionPhase !== 'idle' && detailSourceRect && (
-          <motion.div
-            key={detailTransitionPhase === 'closing' ? 'closing' : 'opening'}
-            ref={floatingMediaRef}
-            initial={
-              detailTransitionPhase === 'opening'
-                ? {
-                    top: detailSourceRect.top,
-                    left: detailSourceRect.left,
-                    width: detailSourceRect.width,
-                    height: detailSourceRect.height,
-                    borderRadius: 12,
-                  }
-                : (detailClosingStartRect
-                    ? {
-                        top: detailClosingStartRect.top,
-                        left: detailClosingStartRect.left,
-                        width: detailClosingStartRect.width,
-                        height: detailClosingStartRect.height,
-                        borderRadius: 22,
-                      }
-                    : {
-                        top: targetMediaTop,
-                        left: targetMediaLeft,
-                        width: targetMediaWidth,
-                        height: targetMediaHeight,
-                        borderRadius: 22,
-                      })
-            }
-            animate={{
-              top: isDetailOpen ? targetMediaTop : detailSourceRect.top,
-              left: isDetailOpen ? targetMediaLeft : detailSourceRect.left,
-              width: isDetailOpen ? targetMediaWidth : detailSourceRect.width,
-              height: isDetailOpen ? targetMediaHeight : detailSourceRect.height,
-              borderRadius: isDetailOpen ? 22 : 12,
-            }}
-            transition={
-              shouldReduceMotion
-                ? { duration: 0.05 }
-                : {
-                    duration: isDetailOpen ? 0.40 : 0.36,
-                    ease: isDetailOpen ? [0.32, 0.72, 0, 1] : [0.25, 1, 0.5, 1],
-                  }
-            }
-            onAnimationComplete={() => {
-              if (isDetailOpen) {
-                setDetailTransitionPhase('open');
-              } else {
-                setDetailTransitionPhase('idle');
-              }
-            }}
-            className={`absolute z-[55] overflow-hidden border border-white/80 shadow-[0_4px_20px_rgba(90,80,140,0.14)] pointer-events-none transition-opacity duration-75 ${
-              detailTransitionPhase === 'open' ? 'opacity-0' : 'opacity-100'
-            }`}
-          >
-            {/* The image */}
-            <img
-              src={currentPlan.thumbnailUrl}
-              alt={currentPlan.title}
-              referrerPolicy="no-referrer"
-              className="w-full h-full object-cover absolute inset-0"
-            />
+        {((detailTransitionPhase === 'opening' && detailFloatingStartRect && detailTargetRect) ||
+          (detailTransitionPhase === 'closing' && detailFloatingStartRect && detailThumbRect)) && (() => {
+          const runIdForElement = detailTransitionRunId;
+          const isOpening = detailTransitionPhase === 'opening';
+          const fromRect = detailFloatingStartRect!;
+          const toRect = isOpening ? detailTargetRect! : detailThumbRect!;
 
-            {/* Detail Media Info (Bottom): fades in as it expands toward target */}
+          return (
             <motion.div
-              animate={{ opacity: isDetailOpen ? 1 : 0 }}
-              transition={{
-                duration: shouldReduceMotion ? 0.05 : 0.24,
-                delay: shouldReduceMotion ? 0 : (isDetailOpen ? 0.16 : 0),
+              key={runIdForElement}
+              ref={floatingMediaRef}
+              data-floating-media="true"
+              data-target-top={toRect.top}
+              data-target-left={toRect.left}
+              data-target-width={toRect.width}
+              data-target-height={toRect.height}
+              data-target-radius={toRect.borderRadius}
+              initial={
+                shouldReduceMotion
+                  ? {
+                      top: isOpening ? toRect.top : fromRect.top,
+                      left: isOpening ? toRect.left : fromRect.left,
+                      width: isOpening ? toRect.width : fromRect.width,
+                      height: isOpening ? toRect.height : fromRect.height,
+                      borderRadius: isOpening ? toRect.borderRadius : fromRect.borderRadius,
+                      borderColor: isOpening ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.04)',
+                      boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+                      opacity: isOpening ? 0 : 1,
+                    }
+                  : {
+                      top: fromRect.top,
+                      left: fromRect.left,
+                      width: fromRect.width,
+                      height: fromRect.height,
+                      borderRadius: fromRect.borderRadius,
+                      borderColor: isOpening ? 'rgba(0, 0, 0, 0.06)' : 'rgba(0, 0, 0, 0.04)',
+                      boxShadow: isOpening
+                        ? '0 2px 8px rgba(38, 38, 63, 0.06)'
+                        : '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+                      opacity: 1,
+                    }
+              }
+              animate={
+                shouldReduceMotion
+                  ? {
+                      top: isOpening ? toRect.top : fromRect.top,
+                      left: isOpening ? toRect.left : fromRect.left,
+                      width: isOpening ? toRect.width : fromRect.width,
+                      height: isOpening ? toRect.height : fromRect.height,
+                      borderRadius: isOpening ? toRect.borderRadius : fromRect.borderRadius,
+                      borderColor: 'rgba(0, 0, 0, 0.04)',
+                      boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+                      opacity: isOpening ? 1 : 0,
+                    }
+                  : {
+                      top: toRect.top,
+                      left: toRect.left,
+                      width: toRect.width,
+                      height: toRect.height,
+                      borderRadius: toRect.borderRadius,
+                      borderColor: isOpening ? 'rgba(0, 0, 0, 0.04)' : 'rgba(0, 0, 0, 0.06)',
+                      boxShadow: isOpening
+                        ? '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
+                        : '0 2px 8px rgba(38, 38, 63, 0.06)',
+                      opacity: 1,
+                    }
+              }
+              transition={
+                shouldReduceMotion
+                  ? { duration: 0.05 }
+                  : {
+                      duration: isOpening ? 0.40 : 0.36,
+                      ease: isOpening ? [0.32, 0.72, 0, 1] : [0.25, 1, 0.5, 1],
+                    }
+              }
+              onAnimationComplete={() => {
+                if (runIdForElement !== transitionRunIdRef.current) return;
+                if (isOpening) {
+                  setDetailTransitionPhase('open');
+                } else {
+                  setDetailTransitionPhase('idle');
+                  setDetailThumbRect(null);
+                  setDetailFloatingStartRect(null);
+                  setDetailTargetRect(null);
+                }
               }}
-              className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent flex items-end p-4 pointer-events-none"
+              className="absolute z-[55] overflow-hidden border pointer-events-none"
             >
-              <div className="flex items-center justify-between w-full text-white">
-                <div>
-                  <div className="text-xs font-bold leading-tight">{currentPlan.audioTitle}</div>
-                  <div className="text-[10.5px] text-white/85 mt-0.5">{currentPlan.audioSubtitle}</div>
+              {/* The image: exact same crop and centering as thumbnail and detail hero */}
+              <img
+                src={currentPlan.thumbnailUrl}
+                alt={currentPlan.title}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover object-center absolute inset-0"
+              />
+
+              {/* Detail Media Info (Bottom): matches detail hero typography & gradient */}
+              <motion.div
+                initial={{ opacity: isOpening ? 0 : 1 }}
+                animate={{ opacity: isOpening ? 1 : 0 }}
+                transition={
+                  shouldReduceMotion
+                    ? { duration: 0.05 }
+                    : isOpening
+                    ? { duration: 0.24, delay: 0.16 }
+                    : { duration: 0.16, delay: 0 }
+                }
+                className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent flex items-end p-4 sm:p-4.5 pointer-events-none"
+              >
+                <div className="flex items-center justify-between w-full text-white">
+                  <div className="flex-1 min-w-0 pr-3">
+                    <div className="text-[13.5px] sm:text-[14px] font-bold leading-tight tracking-[-0.01em]">
+                      {currentPlan.audioTitle}
+                    </div>
+                    <div className="text-[11px] sm:text-[11.5px] text-white/85 mt-0.5 font-normal">
+                      {currentPlan.audioSubtitle}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
+          );
+        })()}
 
         {/* 1. iOS Status Bar (44px Height Standard Safe Area) */}
         <div className="pt-3.5 pb-1 px-7 flex items-center justify-between text-xs font-semibold text-[#1C1C1E] select-none shrink-0 z-30">
@@ -2796,38 +3527,41 @@ export default function App() {
                             </span>
                           </button>
 
-                          {/* Title Row: Full width in suggested state (max 2 lines, never shares width with thumbnail) */}
-                          <div className="flex items-center justify-between gap-2.5">
-                            <h2
-                              style={{
-                                display: '-webkit-box',
-                                WebkitLineClamp: 2,
-                                WebkitBoxOrient: 'vertical',
-                                overflow: 'hidden',
-                              }}
-                              className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
-                            >
-                              {cardPlan.title}
-                            </h2>
+                          {/* Title Row: Full width in suggested state; during/before Adjust wipe holds old snapshot then wipes to new */}
+                          {(() => {
+                            const isPendingOldPreview =
+                              isCenterCard &&
+                              !isChatOpen &&
+                              pendingPlanUpdate?.cardId === cardItem.id;
+                            const rowDisplayPlan = isPendingOldPreview
+                              ? pendingPlanUpdate.oldPlan
+                              : cardPlan;
+                            const rowWipeAnim =
+                              isCenterCard && activeCardWipeAnim?.cardId === cardItem.id
+                                ? activeCardWipeAnim
+                                : null;
 
-                            {/* Rich Media Thumbnail Entry in Accepted/Completed State */}
-                            {cardState !== 'suggested' && (
-                              <SuggestionMediaThumbnail
-                                src={cardPlan.thumbnailUrl}
-                                title={cardPlan.title}
-                                mediaType={cardPlan.mediaType}
-                                squareSize={40}
-                                isHiddenForTransition={
-                                  isCenterCard && (detailTransitionPhase !== 'idle' || isDetailOpen)
+                            return (
+                              <CardContentWipeRow
+                                displayPlan={rowDisplayPlan}
+                                wipeAnim={rowWipeAnim}
+                                shouldReduceMotion={Boolean(shouldReduceMotion)}
+                                isCenterCard={isCenterCard}
+                                cardState={cardState}
+                                isThumbnailHiddenForDetail={
+                                  isCenterCard &&
+                                  ((detailTransitionPhase === 'opening' && detailTargetRect !== null) ||
+                                    detailTransitionPhase === 'open' ||
+                                    detailTransitionPhase === 'closing')
                                 }
-                                isInteractive={isCenterCard}
-                                buttonRef={isCenterCard ? cardThumbnailRef : undefined}
+                                cardThumbnailRef={cardThumbnailRef}
                                 didSwipeCarouselRef={didSwipeCarouselRef}
                                 lastCarouselSwipeTimeRef={lastCarouselSwipeTimeRef}
                                 onOpenDetail={openDetailWithTransition}
+                                onWipeComplete={handleCardWipeComplete}
                               />
-                            )}
-                          </div>
+                            );
+                          })()}
                         </div>
 
                         {/* Card Body Content: 20px horizontal padding */}
@@ -2874,7 +3608,10 @@ export default function App() {
                                   mediaType={cardPlan.mediaType}
                                   compact={frameSize.width <= 375}
                                   isHiddenForTransition={
-                                    isCenterCard && (detailTransitionPhase !== 'idle' || isDetailOpen)
+                                    isCenterCard &&
+                                    ((detailTransitionPhase === 'opening' && detailTargetRect !== null) ||
+                                      detailTransitionPhase === 'open' ||
+                                      detailTransitionPhase === 'closing')
                                   }
                                   isInteractive={isCenterCard}
                                   buttonRef={isCenterCard ? cardThumbnailRef : undefined}
@@ -3207,6 +3944,7 @@ export default function App() {
               id="bottom-talk-to-nova-btn"
               onClick={() => {
                 openChatWithTransition(() => {
+                  adjustSessionRef.current = null;
                   setInputPlaceholder('Type your response…');
                   setChatMessages([
                     {
@@ -3323,14 +4061,18 @@ export default function App() {
                 </div>
 
                 {/* Sheet Content: Media & Clean Guideline Rows (No Nested Card-in-Card) */}
-                <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-4 space-y-5">
+                <div
+                  ref={detailScrollBodyRef}
+                  className="flex-1 overflow-y-auto px-5 sm:px-6 py-4 space-y-5"
+                >
                   {/* Media Hero Banner: Clean guide/article cover with matching resource */}
                   <div
                     ref={detailMediaHeroRef}
+                    data-detail-media-hero="true"
                     className="relative w-full h-40 sm:h-44 rounded-[22px] overflow-hidden border border-black/[0.04] shadow-xs shrink-0"
                   >
                     <div
-                      className={`w-full h-full relative transition-opacity duration-150 ${
+                      className={`w-full h-full relative ${
                         detailTransitionPhase === 'open' ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
                       }`}
                     >
@@ -3338,7 +4080,7 @@ export default function App() {
                         src={currentPlan.thumbnailUrl}
                         alt={currentPlan.title}
                         referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
+                        className="w-full h-full object-cover object-center"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent flex items-end p-4 sm:p-4.5">
                         <div className="flex items-center justify-between w-full text-white">
@@ -3427,7 +4169,7 @@ export default function App() {
         </AnimatePresence>
 
         {/* 7. AI Conversation Drawer / Sheet with smooth entrance and exit */}
-        <AnimatePresence>
+        <AnimatePresence onExitComplete={() => setIsChatSheetExited(true)}>
           {isChatOpen && (
             <div className="absolute inset-0 z-40 overflow-hidden flex flex-col justify-end pointer-events-auto">
               {/* Dimmed Backdrop (Softened to bg-black/16 backdrop-blur-[1.5px] so Home contours remain discernible) */}

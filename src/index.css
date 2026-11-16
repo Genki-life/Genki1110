@@ -189,4 +189,27 @@
     scrollbar-width: thin;
     scrollbar-color: rgba(60, 60, 67, 0.18) transparent;
   }
+
+  /* 7. Sparkle pop animation for Today card content replacement */
+  @keyframes genki-sparkle-pop {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, 3px, 0) scale(0.5);
+    }
+    35% {
+      opacity: 0.85;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translate3d(0, -5px, 0) scale(0.7);
+    }
+  }
+
+  .genki-sparkle-item {
+    animation-name: genki-sparkle-pop;
+    animation-duration: 360ms;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    animation-fill-mode: both;
+  }
 }
