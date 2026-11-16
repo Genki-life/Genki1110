@@ -193,7 +193,7 @@ export function DiscoverView({
 
       {/* Vertical Rich Media Content Stream */}
       <div className="flex flex-col gap-3.5">
-        {DISCOVER_ITEMS.map((item) => {
+        {DISCOVER_ITEMS.map((item, idx) => {
           const isSaved = savedItemIds.includes(item.id);
 
           return (
@@ -211,6 +211,8 @@ export function DiscoverView({
                 <img
                   src={item.coverUrl}
                   alt={item.title}
+                  loading={idx < 2 ? 'eager' : 'lazy'}
+                  decoding="async"
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover group-hover:scale-103 transition-transform duration-500"
                 />

@@ -7,4 +7,9 @@ coverage/
 .env*
 !.env.example
 public/screenshots/
+public/assets/aistudio/
+screenshots/
+test-results/
+playwright-report/
 .aistudio/
+**/.tempmediaStorage/

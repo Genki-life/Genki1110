@@ -22,10 +22,15 @@ import {
   Heart
 } from 'lucide-react';
 
-import { MyPlanView } from './components/MyPlanView';
-import { DiscoverView } from './components/DiscoverView';
 import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
 import { FurryNovaStaticAvatar } from './components/Avatar3D/FurryNovaStaticAvatar';
+
+const LazyMyPlanView = React.lazy(() =>
+  import('./components/MyPlanView').then((module) => ({ default: module.MyPlanView }))
+);
+const LazyDiscoverView = React.lazy(() =>
+  import('./components/DiscoverView').then((module) => ({ default: module.DiscoverView }))
+);
 
 import thumbImageUrl from './assets/images/mindful_walk_thumb_1793264566501.jpg';
 
@@ -149,6 +154,8 @@ interface ChatMessage {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>('Today');
+  const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(false);
+  const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(false);
   
   // 3 independent suggestion cards state (starts at index 0 -> 1 / 3: "How about a 5-minute stretch?")
   const [cardsState, setCardsState] = useState<SuggestionCardItemState[]>([
@@ -298,6 +305,8 @@ export default function App() {
   const planCardRef = useRef<HTMLDivElement>(null);
   const cardContentRef = useRef<HTMLDivElement>(null);
   const [cardContentHeight, setCardContentHeight] = useState<number | null>(null);
+  const companionContentRef = useRef<HTMLDivElement>(null);
+  const [companionGroupHeight, setCompanionGroupHeight] = useState<number | null>(null);
   const bottomBarRef = useRef<HTMLDivElement>(null);
   const [bottomBarHeight, setBottomBarHeight] = useState<number>(136);
   const shouldReduceMotion = useReducedMotion();
@@ -328,7 +337,7 @@ export default function App() {
     const initH = typeof window !== 'undefined' && window.innerHeight > 0 ? Math.min(window.innerHeight, 852) : 844;
     const initSize = initH < 700 ? 204 : 248;
     return {
-      top: initH < 700 ? 152 : 228,
+      top: initH < 700 ? 117 : 228,
       left: (initW - initSize) / 2,
       width: initSize,
       height: initSize,
@@ -356,7 +365,7 @@ export default function App() {
     const fWidth = phoneFrameRef.current?.clientWidth || 393;
     const defaultSize = frameSize.height < 700 ? 204 : 248;
     return {
-      top: frameSize.height < 700 ? 152 : 228,
+      top: frameSize.height < 700 ? 117 : 228,
       left: (fWidth - defaultSize) / 2,
       width: defaultSize,
       height: defaultSize,
@@ -524,6 +533,21 @@ export default function App() {
     ro.observe(el);
     return () => ro.disconnect();
   }, [planState, currentPlan, isPlanCardOpen]);
+
+  // Dynamically observe companion bubble/board content height for 240ms ease-in-out transition
+  useEffect(() => {
+    const el = companionContentRef.current;
+    if (!el) return;
+    const updateCompanionHeight = () => {
+      if (el.offsetHeight > 0) {
+        setCompanionGroupHeight(el.offsetHeight);
+      }
+    };
+    updateCompanionHeight();
+    const ro = new ResizeObserver(() => updateCompanionHeight());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasAnyAcceptedOrCompleted, activeCardIndex, cardsState, frameSize]);
 
   // Target coordinates for Nova docked at top edge of chat sheet
   const drawerAvatarSize = frameSize.height < 700 ? 112 : 124;
@@ -1788,8 +1812,20 @@ export default function App() {
         )}
 
         {/* 3. Main Body Content: Today View */}
-        <div 
-          className={`flex-1 relative overflow-hidden px-4 sm:px-6 pt-1 pb-[132px] flex-col items-center justify-start ${
+        <div
+          id="today-scroll-container"
+          onScroll={() => {
+            const liveRect = getLiveHomeAvatarRect();
+            if (liveRect && liveRect.width > 0 && liveRect.height > 0) {
+              setHomeAvatarRect(liveRect);
+            }
+          }}
+          style={{
+            paddingBottom: `${Math.max(bottomBarHeight + 16, 152)}px`,
+          }}
+          className={`flex-1 relative ${
+            isPlanCardOpen ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden no-scrollbar'
+          } pt-1 flex-col items-center justify-start ${
             activeTab === 'Today' ? 'flex' : 'hidden'
           }`}
         >
@@ -1830,21 +1866,19 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          {/* Unified Companion Cluster (Top-anchored so Nova stays stationary while Bubble or 3-Row List grows naturally below Nova) */}
-          <div
-            className="w-full flex-1 min-h-0 flex flex-col items-center justify-start relative z-20"
-          >
+          {/* Unified Companion Cluster (Top-anchored so Nova stays stationary while Bubble or 3-Row Board grows naturally below Nova) */}
+          <div className="w-full flex flex-col items-center justify-start shrink-0 relative z-20">
             {/* 1. Top layout spacer anchoring Nova at a stable vertical position across all states */}
             <div
               aria-hidden="true"
               style={{
-                height: frameSize.height < 700 ? '69px' : '145px',
+                height: frameSize.height < 700 ? '34px' : '145px',
               }}
               className="w-full shrink-0 pointer-events-none"
             />
 
             {/* 2. 3D Nova Avatar Layout Anchor / Spacer (Single persistent 3D Avatar is rendered in today-unified-avatar-container) */}
-            <div 
+            <div
               ref={homeAvatarRef}
               aria-hidden="true"
               style={{
@@ -1854,208 +1888,445 @@ export default function App() {
               className="relative flex items-center justify-center shrink-0 pointer-events-none opacity-0 select-none"
             />
 
-            {/* 3. Below Nova: Content-sized container (Bubble ~58px OR 3-Row "Today with Nova" List ~168px) */}
+            {/* 3. Below Nova: Content-sized container (16px below Nova visible bottom on normal screen, 12px on 375x667 short screen) */}
             <div
               id="today-companion-text-group"
               aria-hidden={isPlanCardOpen}
               style={{
-                marginTop: frameSize.height < 700 ? '-14px' : '-12px',
-                height: 'auto',
+                marginTop: '-5px',
+                height: companionGroupHeight !== null ? `${companionGroupHeight}px` : 'auto',
                 opacity: isPlanCardOpen ? 0 : 1,
-                transition: shouldReduceMotion ? 'opacity 75ms linear' : 'opacity 200ms ease-out',
+                transition: shouldReduceMotion
+                  ? 'opacity 75ms linear'
+                  : 'height 240ms ease-in-out, opacity 200ms ease-out',
                 pointerEvents: isPlanCardOpen ? 'none' : 'auto',
+                overflow: 'visible',
               }}
               className={`w-full flex flex-col items-center justify-start shrink-0 select-none ${
                 isPlanCardOpen ? 'scale-95 pointer-events-none' : 'scale-100 pointer-events-auto'
               }`}
             >
-              {!hasAnyAcceptedOrCompleted ? (
-                <div id="today-suggestion-bubble-container" className="relative flex justify-center shrink-0">
-                  {/* Upward Speech Bubble Tail pointing towards Nova */}
-                  <div
-                    className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-4 h-2 overflow-hidden pointer-events-none z-20"
-                    aria-hidden="true"
-                  >
-                    <div className="w-2.5 h-2.5 bg-white/90 backdrop-blur-md rotate-45 mx-auto translate-y-1 border-l border-t border-black/[0.05] shadow-2xs" />
-                  </div>
-
-                  <button
-                    id="today-top-suggestion-btn"
-                    type="button"
-                    onPointerDown={handleBubblePointerDown}
-                    onTouchStart={handleBubbleTouchStart}
-                    onWheel={handleBubbleWheel}
-                    onClick={(e) => {
-                      if (
-                        didSwipeBubbleRef.current ||
-                        performance.now() - lastBubbleSwipeTimeRef.current < 260
-                      ) {
-                        didSwipeBubbleRef.current = false;
-                        e.preventDefault();
-                        e.stopPropagation();
-                        return;
-                      }
-                      setIsPlanCardOpen(true);
-                    }}
-                    aria-expanded={isPlanCardOpen}
-                    aria-label={`Nova suggestion ${activeCardIndex + 1} of ${cardsState.length}: ${currentPlan.bubblePrompt}. Swipe up or down to switch, tap to open card.`}
-                    style={{
-                      touchAction: 'pan-y',
-                      minWidth: frameSize.width < 360 ? '256px' : '284px',
-                      maxWidth: '336px',
-                    }}
-                    className="liquid-glass-bubble relative z-10 px-4 py-2.5 rounded-[22px] text-left flex items-center justify-between gap-3 cursor-pointer active:scale-[0.98] transition-all shadow-[0_6px_20px_rgba(94,91,174,0.08)] group select-none"
-                  >
-                    <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                      {/* Top Row: Small Speaker Identifier "Nova" + Understated "1 / 3" Index Counter */}
-                      <div className="flex items-center justify-between gap-2 pr-0.5">
-                        <span
-                          id="today-bubble-speaker"
-                          className="text-[11px] font-semibold text-[#5E5BAE] tracking-[-0.01em] leading-none"
-                        >
-                          Nova
-                        </span>
-
-                        <span
-                          id="today-bubble-counter"
-                          className="text-[10.5px] font-medium text-[#8E8E93]/85 tabular-nums tracking-tight leading-none select-none"
-                        >
-                          {activeCardIndex + 1} / {cardsState.length}
-                        </span>
-                      </div>
-
-                      {/* Bottom Row: Current Suggestion Prompt (Smooth vertical transition on swipe) */}
-                      <div className="relative overflow-hidden min-h-[20px] flex items-center">
-                        <AnimatePresence mode="popLayout" initial={false} custom={bubbleSwipeDir}>
-                          <motion.span
-                            key={`${activeCardIndex}-${currentPlan.id}`}
-                            id="today-bubble-suggestion-text"
-                            custom={bubbleSwipeDir}
-                            initial={
-                              shouldReduceMotion
-                                ? { opacity: 0 }
-                                : { opacity: 0, y: bubbleSwipeDir >= 0 ? 12 : -12 }
-                            }
-                            animate={{
-                              opacity: 1,
-                              y: bubbleDragY,
-                            }}
-                            exit={
-                              shouldReduceMotion
-                                ? { opacity: 0 }
-                                : { opacity: 0, y: bubbleSwipeDir >= 0 ? -12 : 12 }
-                            }
-                            transition={
-                              isDraggingBubble
-                                ? { duration: 0 }
-                                : shouldReduceMotion
-                                ? { duration: 0.06 }
-                                : { duration: 0.22, ease: [0.22, 1, 0.36, 1] }
-                            }
-                            className="block text-[13.5px] sm:text-[14px] font-semibold text-[#1C1C1E] tracking-[-0.01em] leading-snug truncate w-full"
-                          >
-                            {currentPlan.bubblePrompt}
-                          </motion.span>
-                        </AnimatePresence>
-                      </div>
-                    </div>
-
-                    {/* Right Expand Cue */}
-                    <div
-                      id="today-bubble-expand-cue"
-                      className="w-6 h-6 rounded-full liquid-glass-icon-well group-hover:bg-[#5E5BAE]/14 text-[#5E5BAE] flex items-center justify-center shrink-0 transition-colors ml-0.5"
-                      aria-hidden="true"
+              <div
+                ref={companionContentRef}
+                className="w-full flex flex-col items-center justify-start shrink-0 relative"
+              >
+                <AnimatePresence mode="popLayout" initial={false}>
+                  {!hasAnyAcceptedOrCompleted ? (
+                    /* 1. All suggestions unaccepted: Nova Dialog Bubble */
+                    <motion.div
+                      key="companion-nova-bubble"
+                      id="today-suggestion-bubble-container"
+                      initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0 }}
+                      animate={{
+                        opacity: 1,
+                        transition: {
+                          duration: shouldReduceMotion ? 0.05 : 0.18,
+                          ease: 'easeOut',
+                        },
+                      }}
+                      exit={{
+                        opacity: 0,
+                        transition: {
+                          duration: shouldReduceMotion ? 0.05 : 0.12,
+                          ease: 'easeOut',
+                        },
+                      }}
+                      className="w-full flex justify-center shrink-0"
                     >
-                      <ChevronRight className="w-3.5 h-3.5 stroke-[2.4]" />
-                    </div>
-                  </button>
-                </div>
-              ) : (
-                /* Lightweight 3-Row Suggestion List ("Today with Nova") sized naturally to show header + all 3 rows with >= 44px touch targets */
-                <div
-                  id="today-with-nova-list"
-                  role="region"
-                  aria-label="Today with Nova"
-                  style={{
-                    width: '100%',
-                    maxWidth: frameSize.width < 360 ? '316px' : '336px',
-                    height: 'auto',
-                    overflow: 'visible',
-                  }}
-                  className="liquid-glass-bubble relative z-10 px-4 pt-2.5 pb-1.5 rounded-[22px] shadow-[0_6px_20px_rgba(94,91,174,0.08)] flex flex-col shrink-0 select-none"
-                >
-                  {/* List Header: "Today with Nova" only — no description text or completion counters */}
-                  <div className="px-1 pb-1 flex items-center shrink-0">
-                    <span
-                      id="today-with-nova-title"
-                      className="text-[11.5px] font-semibold text-[#5E5BAE] tracking-[-0.01em] leading-none"
-                    >
-                      Today with Nova
-                    </span>
-                  </div>
-
-                  {/* 3 Clickable Suggestion Rows: Each row >= 44px touch target, all 3 fully visible without internal scroll */}
-                  <div className="flex flex-col divide-y divide-black/[0.05] shrink-0">
-                    {cardsState.map((item, idx) => {
-                      const statusLabel =
-                        item.planState === 'completed'
-                          ? 'Done'
-                          : item.planState === 'accepted'
-                          ? 'In progress'
-                          : 'To try';
-
-                      return (
-                        <button
-                          key={item.id}
-                          id={`today-list-row-${idx}`}
-                          data-list-row-index={idx}
-                          data-list-row-status={statusLabel}
-                          type="button"
-                          onClick={() => handleSelectListRow(idx)}
+                      <button
+                        id="today-top-suggestion-btn"
+                        type="button"
+                        onPointerDown={handleBubblePointerDown}
+                        onTouchStart={handleBubbleTouchStart}
+                        onWheel={handleBubbleWheel}
+                        onClick={(e) => {
+                          if (
+                            didSwipeBubbleRef.current ||
+                            performance.now() - lastBubbleSwipeTimeRef.current < 260
+                          ) {
+                            didSwipeBubbleRef.current = false;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            return;
+                          }
+                          setIsPlanCardOpen(true);
+                        }}
+                        aria-expanded={isPlanCardOpen}
+                        aria-label={`Nova suggestion ${activeCardIndex + 1} of ${cardsState.length}: ${currentPlan.bubblePrompt}. Swipe up or down to switch, tap to open card.`}
+                        style={{
+                          touchAction: 'pan-y',
+                          width: 'calc(100% - 72px)',
+                          maxWidth: '336px',
+                          minHeight: '76px',
+                          height: 'auto',
+                          padding: '12px 16px',
+                          borderRadius: '24px',
+                          background: 'rgba(255, 255, 255, 0.30)',
+                          backdropFilter: 'blur(16px)',
+                          WebkitBackdropFilter: 'blur(16px)',
+                          boxShadow: '0 3px 12px rgba(70, 60, 100, 0.035)',
+                        }}
+                        className="relative z-10 text-left flex flex-col justify-center cursor-pointer active:scale-[0.99] transition-transform select-none overflow-visible"
+                      >
+                        {/* Border ring with 12px top-center notch so pointer joint has zero internal border line */}
+                        <div
+                          id="today-bubble-border-ring"
+                          aria-hidden="true"
                           style={{
-                            minHeight: '44px',
+                            borderRadius: '24px',
+                            border: '1px solid rgba(255, 255, 255, 0.55)',
+                            WebkitMaskImage:
+                              'linear-gradient(#000, #000), linear-gradient(#000, #000)',
+                            WebkitMaskSize: '100% 100%, 12px 2px',
+                            WebkitMaskPosition: '0 0, center top',
+                            WebkitMaskRepeat: 'no-repeat',
+                            WebkitMaskComposite: 'xor',
+                            maskImage:
+                              'linear-gradient(#000, #000), linear-gradient(#000, #000)',
+                            maskSize: '100% 100%, 12px 2px',
+                            maskPosition: '0 0, center top',
+                            maskRepeat: 'no-repeat',
+                            maskComposite: 'exclude',
                           }}
-                          className="w-full min-h-[44px] px-1 py-2 flex items-center justify-between gap-2.5 text-left cursor-pointer hover:bg-black/[0.025] active:scale-[0.99] transition-all group shrink-0"
+                          className="absolute inset-0 pointer-events-none"
+                        />
+
+                        {/* Top-center pointer towards Nova: 12px wide, 7px high, same background color, no internal border at joint */}
+                        <div
+                          id="today-bubble-pointer"
+                          aria-hidden="true"
+                          style={{
+                            width: '12px',
+                            height: '7px',
+                            top: '-7px',
+                            left: '50%',
+                            transform: 'translateX(-50%)',
+                          }}
+                          className="absolute pointer-events-none"
                         >
-                          <span
-                            data-list-row-title={idx}
-                            className="text-[13.5px] font-medium text-[#1C1C1E] tracking-[-0.01em] leading-snug truncate flex-1 min-w-0"
+                          <div
+                            style={{
+                              width: '12px',
+                              height: '7px',
+                              background: 'rgba(255, 255, 255, 0.30)',
+                              backdropFilter: 'blur(16px)',
+                              WebkitBackdropFilter: 'blur(16px)',
+                              clipPath: 'polygon(50% 0%, 0% 100%, 100% 100%)',
+                            }}
+                          />
+                          <svg
+                            width="12"
+                            height="7"
+                            viewBox="0 0 12 7"
+                            className="absolute inset-0 pointer-events-none overflow-visible"
                           >
-                            {item.plan.title}
+                            <path
+                              d="M 0 7 L 6 0.5 L 12 7"
+                              fill="none"
+                              stroke="rgba(255, 255, 255, 0.55)"
+                              strokeWidth="1"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </div>
+
+                        {/* Row 1: Left "Nova" (11px, 500, 14px, #716A91); Right "1 / 3" (10px, 400, #96929F) */}
+                        <div className="w-full flex items-center justify-between">
+                          <span
+                            id="today-bubble-speaker"
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 500,
+                              lineHeight: '14px',
+                              color: '#716A91',
+                            }}
+                          >
+                            Nova
                           </span>
 
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {item.planState === 'completed' ? (
-                              <span
-                                data-list-row-badge={idx}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#5E5BAE]/14 text-[#484591] text-[11px] font-semibold leading-none whitespace-nowrap"
+                          <span
+                            id="today-bubble-counter"
+                            style={{
+                              fontSize: '10px',
+                              fontWeight: 400,
+                              lineHeight: '14px',
+                              color: '#96929F',
+                            }}
+                            className="tabular-nums select-none"
+                          >
+                            {activeCardIndex + 1} / {cardsState.length}
+                          </span>
+                        </div>
+
+                        {/* Row 2 (5px below Row 1): Suggestion sentence (15px, 500, 21px, #34323B, max 2 lines, 24px right space reserved) + 14px Chevron (#827AAB) */}
+                        <div
+                          style={{
+                            marginTop: '5px',
+                            paddingRight: '24px',
+                          }}
+                          className="relative w-full flex items-center min-h-[21px]"
+                        >
+                          <div className="w-full overflow-hidden">
+                            <AnimatePresence mode="popLayout" initial={false} custom={bubbleSwipeDir}>
+                              <motion.span
+                                key={`${activeCardIndex}-${currentPlan.id}`}
+                                id="today-bubble-suggestion-text"
+                                custom={bubbleSwipeDir}
+                                initial={
+                                  shouldReduceMotion
+                                    ? { opacity: 0 }
+                                    : { opacity: 0, y: bubbleSwipeDir >= 0 ? 10 : -10 }
+                                }
+                                animate={{
+                                  opacity: 1,
+                                  y: bubbleDragY,
+                                }}
+                                exit={
+                                  shouldReduceMotion
+                                    ? { opacity: 0 }
+                                    : { opacity: 0, y: bubbleSwipeDir >= 0 ? -10 : 10 }
+                                }
+                                transition={
+                                  isDraggingBubble
+                                    ? { duration: 0 }
+                                    : shouldReduceMotion
+                                    ? { duration: 0.06 }
+                                    : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }
+                                }
+                                style={{
+                                  fontSize: '15px',
+                                  fontWeight: 500,
+                                  lineHeight: '21px',
+                                  color: '#34323B',
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  wordBreak: 'break-word',
+                                }}
+                                className="w-full"
                               >
-                                <Check className="w-2.5 h-2.5 stroke-[2.8]" />
-                                <span>Done</span>
-                              </span>
-                            ) : item.planState === 'accepted' ? (
-                              <span
-                                data-list-row-badge={idx}
-                                className="inline-flex items-center px-2.5 py-1 rounded-full bg-[#5E5BAE]/10 text-[#5E5BAE] text-[11px] font-semibold leading-none whitespace-nowrap"
-                              >
-                                In progress
-                              </span>
-                            ) : (
-                              <span
-                                data-list-row-badge={idx}
-                                className="inline-flex items-center px-2.5 py-1 rounded-full bg-black/[0.045] text-[#6C6C70] text-[11px] font-medium leading-none whitespace-nowrap"
-                              >
-                                To try
-                              </span>
-                            )}
-                            <ChevronRight className="w-3.5 h-3.5 text-[#8E8E93]/60 group-hover:text-[#5E5BAE] transition-colors shrink-0" />
+                                {currentPlan.bubblePrompt}
+                              </motion.span>
+                            </AnimatePresence>
                           </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+
+                          {/* Right Expand Arrow: 14px, #827AAB, no circle background */}
+                          <span
+                            id="today-bubble-expand-cue"
+                            aria-hidden="true"
+                            className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none"
+                          >
+                            <ChevronRight
+                              style={{
+                                width: '14px',
+                                height: '14px',
+                                color: '#827AAB',
+                              }}
+                              strokeWidth={2}
+                            />
+                          </span>
+                        </div>
+                      </button>
+                    </motion.div>
+                  ) : (
+                    /* 2. Any task in progress or completed: Today with Nova Board */
+                    <motion.div
+                      key="companion-nova-board"
+                      initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0 }}
+                      animate={{
+                        opacity: 1,
+                        transition: {
+                          duration: shouldReduceMotion ? 0.05 : 0.18,
+                          ease: 'easeOut',
+                        },
+                      }}
+                      exit={{
+                        opacity: 0,
+                        transition: {
+                          duration: shouldReduceMotion ? 0.05 : 0.12,
+                          ease: 'easeOut',
+                        },
+                      }}
+                      className="w-full flex justify-center shrink-0"
+                    >
+                      <div
+                        id="today-with-nova-list"
+                        role="region"
+                        aria-label="Today with Nova"
+                        style={{
+                          width: 'calc(100% - 40px)',
+                          maxWidth: '360px',
+                          height: 'auto',
+                          borderRadius: '20px',
+                          background: 'rgba(255, 255, 255, 0.72)',
+                          border: '1px solid rgba(255, 255, 255, 0.80)',
+                          backdropFilter: 'blur(20px)',
+                          WebkitBackdropFilter: 'blur(20px)',
+                          boxShadow: '0 8px 24px rgba(70, 60, 100, 0.06)',
+                          padding: '16px 16px 8px 16px',
+                          overflow: 'visible',
+                        }}
+                        className="relative z-10 flex flex-col shrink-0 select-none"
+                      >
+                        {/* Board Title: "Today with Nova" (13px, 600, 18px, #655C9E, 8px spacing to list) */}
+                        <div
+                          style={{
+                            marginBottom: '8px',
+                          }}
+                          className="flex items-center shrink-0"
+                        >
+                          <span
+                            id="today-with-nova-title"
+                            style={{
+                              fontSize: '13px',
+                              fontWeight: 600,
+                              lineHeight: '18px',
+                              color: '#655C9E',
+                            }}
+                          >
+                            Today with Nova
+                          </span>
+                        </div>
+
+                        {/* 3 Shared Task Rows: min-height 48px, 3-col grid (minmax(0,1fr) auto 12px), gap 8px, py 10px */}
+                        <div className="flex flex-col shrink-0">
+                          {cardsState.map((item, idx) => {
+                            const statusLabel =
+                              item.planState === 'completed'
+                                ? 'Done'
+                                : item.planState === 'accepted'
+                                ? 'In progress'
+                                : 'To try';
+
+                            return (
+                              <button
+                                key={item.id}
+                                id={`today-list-row-${idx}`}
+                                data-list-row-index={idx}
+                                data-list-row-status={statusLabel}
+                                type="button"
+                                onClick={() => handleSelectListRow(idx)}
+                                style={{
+                                  minHeight: '48px',
+                                  display: 'grid',
+                                  gridTemplateColumns: 'minmax(0, 1fr) auto 12px',
+                                  columnGap: '8px',
+                                  alignItems: 'center',
+                                  paddingTop: '10px',
+                                  paddingBottom: '10px',
+                                  paddingLeft: '0px',
+                                  paddingRight: '0px',
+                                  borderBottom:
+                                    idx < 2 ? '1px solid rgba(60, 60, 67, 0.07)' : 'none',
+                                  background: 'transparent',
+                                  borderRadius: '0px',
+                                }}
+                                className="w-full text-left cursor-pointer active:opacity-75 transition-opacity shrink-0"
+                              >
+                                {/* Col 1: Task Title (14px, 500, 20px, #34323B, max 2 lines, no strikethrough) */}
+                                <span
+                                  data-list-row-title={idx}
+                                  style={{
+                                    fontSize: '14px',
+                                    fontWeight: 500,
+                                    lineHeight: '20px',
+                                    color: '#34323B',
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 2,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                    wordBreak: 'break-word',
+                                    textDecoration: 'none',
+                                  }}
+                                >
+                                  {item.plan.title}
+                                </span>
+
+                                {/* Col 2: Status (no capsule background, 11px, 500, 16px) */}
+                                {item.planState === 'completed' ? (
+                                  <span
+                                    data-list-row-badge={idx}
+                                    style={{
+                                      fontSize: '11px',
+                                      fontWeight: 500,
+                                      lineHeight: '16px',
+                                      color: '#52786A',
+                                      gap: '4px',
+                                    }}
+                                    className="inline-flex items-center whitespace-nowrap"
+                                  >
+                                    <Check
+                                      style={{
+                                        width: '10px',
+                                        height: '10px',
+                                        color: '#52786A',
+                                        flexShrink: 0,
+                                      }}
+                                      strokeWidth={2.5}
+                                      aria-hidden="true"
+                                    />
+                                    <span>Done</span>
+                                  </span>
+                                ) : item.planState === 'accepted' ? (
+                                  <span
+                                    data-list-row-badge={idx}
+                                    style={{
+                                      fontSize: '11px',
+                                      fontWeight: 500,
+                                      lineHeight: '16px',
+                                      color: '#655C9E',
+                                      gap: '4px',
+                                    }}
+                                    className="inline-flex items-center whitespace-nowrap"
+                                  >
+                                    <span
+                                      aria-hidden="true"
+                                      style={{
+                                        width: '5px',
+                                        height: '5px',
+                                        borderRadius: '9999px',
+                                        backgroundColor: '#655C9E',
+                                        flexShrink: 0,
+                                      }}
+                                    />
+                                    <span>In progress</span>
+                                  </span>
+                                ) : (
+                                  <span
+                                    data-list-row-badge={idx}
+                                    style={{
+                                      fontSize: '11px',
+                                      fontWeight: 500,
+                                      lineHeight: '16px',
+                                      color: '#85818F',
+                                    }}
+                                    className="inline-flex items-center whitespace-nowrap"
+                                  >
+                                    To try
+                                  </span>
+                                )}
+
+                                {/* Col 3: Right Chevron (12px, #AAA5B5) */}
+                                <ChevronRight
+                                  style={{
+                                    width: '12px',
+                                    height: '12px',
+                                    color: '#AAA5B5',
+                                  }}
+                                  strokeWidth={2}
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
 
               {/* Hidden 3D/2D debug toggle preserved */}
               <button
@@ -2523,18 +2794,30 @@ export default function App() {
 
         {/* 3. Main Body Content: Plan View (Merged My Plan + Memory) */}
         <div className={`flex-1 flex flex-col min-h-0 ${activeTab === 'Plan' ? 'flex' : 'hidden'}`}>
-          <MyPlanView phoneFrameRef={phoneFrameRef} />
+          {(hasVisitedPlan || activeTab === 'Plan') && (
+            <React.Suspense
+              fallback={<div className="flex-1 w-full h-full bg-transparent" aria-hidden="true" />}
+            >
+              <LazyMyPlanView phoneFrameRef={phoneFrameRef} />
+            </React.Suspense>
+          )}
         </div>
 
         {/* 3. Main Body Content: Discover View */}
         <div className={`flex-1 flex flex-col min-h-0 ${activeTab === 'Discover' ? 'flex' : 'hidden'}`}>
-          <DiscoverView
-            phoneFrameRef={phoneFrameRef}
-            savedItemIds={savedItemIds}
-            onToggleSave={handleToggleSave}
-            isSavedSheetOpen={isSavedSheetOpen}
-            setIsSavedSheetOpen={setIsSavedSheetOpen}
-          />
+          {(hasVisitedDiscover || activeTab === 'Discover') && (
+            <React.Suspense
+              fallback={<div className="flex-1 w-full h-full bg-transparent" aria-hidden="true" />}
+            >
+              <LazyDiscoverView
+                phoneFrameRef={phoneFrameRef}
+                savedItemIds={savedItemIds}
+                onToggleSave={handleToggleSave}
+                isSavedSheetOpen={isSavedSheetOpen}
+                setIsSavedSheetOpen={setIsSavedSheetOpen}
+              />
+            </React.Suspense>
+          )}
         </div>
 
         {/* 4. Bottom Floating Section: Liquid Glass Input (Hidden on Plan) & Apple Health Style Liquid Glass Tab Capsule */}
@@ -2588,7 +2871,12 @@ export default function App() {
                   key={tab.id}
                   id={`nav-tab-${tab.id.toLowerCase()}`}
                   type="button"
-                  onClick={() => setActiveTab(tab.id as 'Today' | 'Plan' | 'Discover')}
+                  onClick={() => {
+                    const nextTab = tab.id as 'Today' | 'Plan' | 'Discover';
+                    if (nextTab === 'Plan') setHasVisitedPlan(true);
+                    if (nextTab === 'Discover') setHasVisitedDiscover(true);
+                    setActiveTab(nextTab);
+                  }}
                   aria-current={isActive ? 'page' : undefined}
                   className={`flex flex-col items-center gap-0.5 py-1.5 px-3 rounded-full transition-all min-h-[46px] justify-center cursor-pointer active:scale-[0.97] ${
                     isActive

@@ -4,8 +4,8 @@ const { chromium } = require('playwright');
 const { execSync } = require('child_process');
 
 async function runMediaTransitionVerification() {
-  const screenshotsDir = path.resolve('/app/applet/public/screenshots');
-  const artifactsDir = path.resolve('/.aistudio/artifacts/brain/452a5bdb-e613-4d11-a07a-73b3f2777a16');
+  const screenshotsDir = path.resolve('/tmp/genki-verification/screenshots');
+  const artifactsDir = path.resolve('/tmp/genki-verification/artifacts');
 
   if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
   if (!fs.existsSync(artifactsDir)) fs.mkdirSync(artifactsDir, { recursive: true });

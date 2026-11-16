@@ -3,7 +3,7 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 async function run() {
-  const screenshotsDir = path.resolve('/app/applet/public/screenshots');
+  const screenshotsDir = path.resolve('/tmp/genki-verification/screenshots');
   if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
 
   const browser = await chromium.launch({

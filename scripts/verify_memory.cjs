@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 async function run() {
-  const screenshotsDir = path.join(__dirname, '../public/screenshots');
+  const screenshotsDir = path.join(__dirname, '/tmp/genki-verification/screenshots');
   if (!fs.existsSync(screenshotsDir)) {
     fs.mkdirSync(screenshotsDir, { recursive: true });
   }

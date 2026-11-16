@@ -264,7 +264,11 @@ export function NovaAvatar3D({
 
       renderer.render(scene, camera);
 
-      if (dbg.open && dbg.angle !== 'live') {
+      if (
+        (dbg.open && dbg.angle !== 'live') ||
+        (typeof window !== 'undefined' &&
+          (window as unknown as { __pauseNovaLoop?: boolean }).__pauseNovaLoop)
+      ) {
         if (staticFramesLeftRef.current > 0) {
           staticFramesLeftRef.current -= 1;
           animFrameIdRef.current = requestAnimationFrame(loop);
@@ -624,7 +628,11 @@ export function NovaAvatar3D({
       resizeObserver.observe(container);
 
       // If active and document is visible, start the loop
-      staticFramesLeftRef.current = 3;
+      staticFramesLeftRef.current =
+        typeof window !== 'undefined' &&
+        (window as unknown as { __pauseNovaLoop?: boolean }).__pauseNovaLoop
+          ? 0
+          : 3;
       if (isActiveTabRef.current && document.visibilityState === 'visible') {
         startAnimationLoop();
       }

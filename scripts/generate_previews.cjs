@@ -4,8 +4,8 @@ const { chromium } = require('playwright');
 
 async function captureAllPreviews() {
   const outputDirs = [
-    path.resolve('/app/applet/public/screenshots'),
-    path.resolve('/.aistudio/artifacts/brain/31f8a46f-dbee-434e-a807-349462686956')
+    path.resolve('/tmp/genki-verification/screenshots'),
+    path.resolve('/tmp/genki-verification/artifacts')
   ];
 
   for (const dir of outputDirs) {
