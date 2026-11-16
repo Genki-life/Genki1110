@@ -350,26 +350,14 @@ function preloadPlanThumbnail(src: string): Promise<void> {
   });
 }
 
-// Deterministic cubic-bezier(0.22, 1, 0.36, 1) solver for frame-accurate wipe progress
-function evaluateOutQuintBezier(t: number): number {
-  const clamped = Math.max(0, Math.min(1, t));
-  if (clamped === 0 || clamped === 1) return clamped;
-  const cx = 3 * 0.22;
-  const bx = 3 * (0.36 - 0.22) - cx;
-  const ax = 1 - cx - bx;
-  const cy = 3 * 1;
-  const by = 3 * (1 - 1) - cy;
-  const ay = 1 - cy - by;
-
-  let u = clamped;
-  for (let i = 0; i < 6; i++) {
-    const x = ((ax * u + bx) * u + cx) * u - clamped;
-    const dx = (3 * ax * u + 2 * bx) * u + cx;
-    if (Math.abs(dx) < 1e-6) break;
-    u = Math.max(0, Math.min(1, u - x / dx));
-  }
-  return ((ay * u + by) * u + cy) * u;
-}
+const CARD_UPDATE_SPARKLES = [
+  { left: '9%', top: '24%', size: 14, delayMs: 180, color: '#A18ACD', nudgeX: -12, nudgeY: 0 },
+  { left: '29%', top: '12%', size: 10, delayMs: 300, color: '#B9A3E2', nudgeX: 6, nudgeY: 0 },
+  { left: '43%', top: '66%', size: 16, delayMs: 420, color: '#C5B4EB', nudgeX: -12, nudgeY: 0 },
+  { left: '64%', top: '30%', size: 12, delayMs: 540, color: '#A18ACD', nudgeX: 0, nudgeY: 12 },
+  { left: '79%', top: '77%', size: 14, delayMs: 660, color: '#B9A3E2', nudgeX: 0, nudgeY: 0 },
+  { left: '91%', top: '19%', size: 10, delayMs: 760, color: '#C5B4EB', nudgeX: 0, nudgeY: 0 },
+] as const;
 
 interface CardStaticThumbPreviewProps {
   src: string;
@@ -433,6 +421,8 @@ interface CardContentWipeRowProps {
   isCenterCard: boolean;
   cardState: 'suggested' | 'accepted' | 'completed';
   isThumbnailHiddenForDetail: boolean;
+  cardContainerRef: React.RefObject<HTMLDivElement | null>;
+  cardSweepGlowRef: React.RefObject<HTMLDivElement | null>;
   cardThumbnailRef: React.Ref<HTMLButtonElement>;
   didSwipeCarouselRef: React.MutableRefObject<boolean>;
   lastCarouselSwipeTimeRef: React.MutableRefObject<number>;
@@ -450,6 +440,8 @@ function CardContentWipeRow({
   isCenterCard,
   cardState,
   isThumbnailHiddenForDetail,
+  cardContainerRef,
+  cardSweepGlowRef,
   cardThumbnailRef,
   didSwipeCarouselRef,
   lastCarouselSwipeTimeRef,
@@ -459,22 +451,18 @@ function CardContentWipeRow({
   const stageRef = useRef<HTMLDivElement>(null);
   const newLayerRef = useRef<HTMLDivElement>(null);
   const oldLayerRef = useRef<HTMLDivElement>(null);
-  const glowRef = useRef<HTMLDivElement>(null);
-  const [showSparkles, setShowSparkles] = useState(false);
 
   useLayoutEffect(() => {
     if (!wipeAnim) {
-      setShowSparkles(false);
       return;
     }
 
     const stage = stageRef.current;
     const newLayer = newLayerRef.current;
     const oldLayer = oldLayerRef.current;
-    const glow = glowRef.current;
+    const cardEl = cardContainerRef.current;
     if (!stage || !newLayer || !oldLayer) return;
 
-    setShowSparkles(false);
     let rafId = 0;
     let settleTimer = 0;
     let completeTimer = 0;
@@ -516,18 +504,46 @@ function CardContentWipeRow({
     stage.style.transition = 'none';
     stage.style.height = `${maxHeight}px`;
 
-    const applyEdgeMask = (edgeX: number, glowOpacity: number) => {
-      const featherStart = (edgeX - 6).toFixed(2);
-      const featherEnd = (edgeX + 6).toFixed(2);
+    // Measure stage layout offset relative to outer card container so the 48px card sweep
+    // and the 6px feathered content mask move along the exact same physical X boundary.
+    let contentOffsetX = 20;
+    if (cardEl) {
+      let offsetAcc = 0;
+      let cursor: HTMLElement | null = stage;
+      while (cursor && cursor !== cardEl) {
+        offsetAcc += cursor.offsetLeft;
+        cursor = cursor.offsetParent as HTMLElement | null;
+      }
+      if (cursor === cardEl) {
+        contentOffsetX = offsetAcc;
+      }
+    }
+
+    const cardWidth = cardEl?.clientWidth || stage.clientWidth + contentOffsetX * 2 || 310;
+    const GLOW_HALF_W = 24; // 48px wide glow strip
+    const START_CENTER_X = -28; // Completely outside card left edge (right edge at -4px)
+    const END_CENTER_X = cardWidth + 28; // Completely outside card right edge (left edge at cardWidth + 4px)
+    const TOTAL_TRAVEL = END_CENTER_X - START_CENTER_X;
+
+    const applyUnifiedProgress = (p: number) => {
+      const clampedP = Math.max(0, Math.min(1, p));
+      const cardBoundaryX = START_CENTER_X + clampedP * TOTAL_TRAVEL;
+      const contentBoundaryX = cardBoundaryX - contentOffsetX;
+      // 6px feather width centered on contentBoundaryX
+      const featherStart = (contentBoundaryX - 3).toFixed(2);
+      const featherEnd = (contentBoundaryX + 3).toFixed(2);
+
       const newMask = `linear-gradient(90deg, rgba(0,0,0,1) ${featherStart}px, rgba(0,0,0,0) ${featherEnd}px)`;
       const oldMask = `linear-gradient(90deg, rgba(0,0,0,0) ${featherStart}px, rgba(0,0,0,1) ${featherEnd}px)`;
       newLayer.style.maskImage = newMask;
       newLayer.style.webkitMaskImage = newMask;
       oldLayer.style.maskImage = oldMask;
       oldLayer.style.webkitMaskImage = oldMask;
-      if (glow) {
-        glow.style.transform = `translate3d(${(edgeX - 9).toFixed(2)}px, 0, 0)`;
-        glow.style.opacity = glowOpacity.toFixed(3);
+
+      const glowEl = cardSweepGlowRef.current;
+      if (glowEl) {
+        glowEl.style.transform = `translate3d(${(cardBoundaryX - GLOW_HALF_W).toFixed(2)}px, 0, 0)`;
+        glowEl.style.opacity = '1';
       }
     };
 
@@ -535,38 +551,31 @@ function CardContentWipeRow({
     oldLayer.style.transition = '';
     newLayer.style.opacity = '1';
     oldLayer.style.opacity = '1';
-    applyEdgeMask(-16, 0);
+    applyUnifiedProgress(0);
 
-    const startTime = performance.now();
-    const WIPE_DURATION_MS = 600;
+    let startTime: number | null = null;
+    const WIPE_DURATION_MS = 850;
     const HEIGHT_SETTLE_MS = 180;
-    let sparklesTriggered = false;
+    const TOTAL_EFFECT_MS = 1200; // 6th sparkle (760ms delay + 420ms duration = 1180ms)
 
     const tick = (now: number) => {
       if (cancelled) return;
-      const elapsed = now - startTime;
-      const raw = Math.min(1, elapsed / WIPE_DURATION_MS);
+      if (startTime === null) startTime = now;
+      const elapsed = Math.max(0, now - startTime);
+      const p = Math.min(1, elapsed / WIPE_DURATION_MS);
 
-      if (raw >= 0.7 && !sparklesTriggered) {
-        sparklesTriggered = true;
-        setShowSparkles(true);
-      }
+      applyUnifiedProgress(p);
 
-      const eased = evaluateOutQuintBezier(raw);
-      const width = stage.clientWidth || 272;
-      const edgeX = -16 + eased * (width + 32);
-      const glowOpacity =
-        raw < 0.08 ? raw / 0.08 : raw > 0.88 ? Math.max(0, (1 - raw) / 0.12) : 1;
-
-      applyEdgeMask(edgeX, glowOpacity);
-
-      if (raw < 1) {
+      if (p < 1) {
         rafId = requestAnimationFrame(tick);
       } else {
         newLayer.style.maskImage = '';
         newLayer.style.webkitMaskImage = '';
         oldLayer.style.opacity = '0';
-        if (glow) glow.style.opacity = '0';
+        const glowEl = cardSweepGlowRef.current;
+        if (glowEl) {
+          glowEl.style.opacity = '0';
+        }
 
         const targetHeight = newLayer.scrollHeight;
         if (Math.abs(targetHeight - maxHeight) > 0.5) {
@@ -583,12 +592,11 @@ function CardContentWipeRow({
           stage.style.height = '';
         }
 
-        // Wait until staggered sparkles (started at 420ms, 160ms delay + 360ms dur = 940ms) finish cleanly
-        const remainingSparkleMs = Math.max(HEIGHT_SETTLE_MS + 20, 350);
+        const remainingMs = Math.max(HEIGHT_SETTLE_MS + 20, TOTAL_EFFECT_MS - elapsed);
         completeTimer = window.setTimeout(() => {
           if (cancelled) return;
           onWipeComplete(runId);
-        }, remainingSparkleMs);
+        }, remainingMs);
       }
     };
 
@@ -615,8 +623,12 @@ function CardContentWipeRow({
         oldLayer.style.opacity = '';
         oldLayer.style.transition = '';
       }
+      const glowEl = cardSweepGlowRef.current;
+      if (glowEl) {
+        glowEl.style.opacity = '0';
+      }
     };
-  }, [wipeAnim?.runId, shouldReduceMotion, onWipeComplete]);
+  }, [wipeAnim?.runId, shouldReduceMotion, cardContainerRef, cardSweepGlowRef, onWipeComplete]);
 
   if (!wipeAnim) {
     return (
@@ -687,7 +699,7 @@ function CardContentWipeRow({
           )}
         </div>
 
-        {/* Top layer: Initial old plan content (masked left-to-right during wipe) */}
+        {/* Top layer: Initial old plan content (masked left-to-right synchronously with card sweep) */}
         <div
           ref={oldLayerRef}
           aria-hidden="true"
@@ -713,59 +725,7 @@ function CardContentWipeRow({
             />
           )}
         </div>
-
-        {/* 18px soft wipe boundary glow contained strictly inside content region */}
-        {!shouldReduceMotion && (
-          <div
-            ref={glowRef}
-            aria-hidden="true"
-            data-card-wipe-glow="true"
-            style={{
-              width: '18px',
-              background:
-                'linear-gradient(90deg, transparent, rgba(203,191,243,0.40), rgba(255,255,255,0.70), transparent)',
-            }}
-            className="absolute top-0 bottom-0 left-0 pointer-events-none z-10"
-          />
-        )}
       </div>
-
-      {/* 3 Staggered 4-pointed SVG sparkles near upper-right thumbnail, inside card bounds */}
-      {showSparkles && !shouldReduceMotion && (
-        <div
-          aria-hidden="true"
-          data-card-sparkles="true"
-          className="absolute inset-0 pointer-events-none z-20"
-        >
-          <svg
-            width="10"
-            height="10"
-            viewBox="0 0 24 24"
-            style={{ top: '-5px', right: '-4px', animationDelay: '0ms' }}
-            className="absolute genki-sparkle-item"
-          >
-            <path d={SPARKLE_STAR_PATH} fill="#B9A7E8" />
-          </svg>
-          <svg
-            width="7"
-            height="7"
-            viewBox="0 0 24 24"
-            style={{ top: '-6px', right: '38px', animationDelay: '80ms' }}
-            className="absolute genki-sparkle-item"
-          >
-            <path d={SPARKLE_STAR_PATH} fill="#D4C7F2" />
-          </svg>
-          <svg
-            width="5"
-            height="5"
-            viewBox="0 0 24 24"
-            style={{ top: '12px', right: '-8px', animationDelay: '160ms' }}
-            className="absolute genki-sparkle-item"
-          >
-            <path d={SPARKLE_STAR_PATH} fill="#E8DFF8" />
-          </svg>
-        </div>
-      )}
     </div>
   );
 }
@@ -944,6 +904,7 @@ export default function App() {
   const expectedCardIdDuringWipeRef = useRef<string | null>(null);
   const expectedVirtualIdxDuringWipeRef = useRef<number | null>(null);
   const isProgrammaticCenteringRef = useRef<boolean>(false);
+  const cardSweepGlowRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -3456,6 +3417,7 @@ export default function App() {
                             ? 'transform 80ms linear, opacity 80ms linear'
                             : 'transform 430ms cubic-bezier(0.22, 1, 0.36, 1), opacity 300ms ease-out',
                           willChange: 'transform, opacity',
+                          isolation: 'isolate',
                         }}
                         className={`relative col-start-1 row-start-1 rounded-[26px] overflow-hidden today-suggestion-card border border-white/95 flex flex-col justify-between ${
                           isCenterCard
@@ -3554,6 +3516,8 @@ export default function App() {
                                     detailTransitionPhase === 'open' ||
                                     detailTransitionPhase === 'closing')
                                 }
+                                cardContainerRef={planCardRef}
+                                cardSweepGlowRef={cardSweepGlowRef}
                                 cardThumbnailRef={cardThumbnailRef}
                                 didSwipeCarouselRef={didSwipeCarouselRef}
                                 lastCarouselSwipeTimeRef={lastCarouselSwipeTimeRef}
@@ -3863,6 +3827,64 @@ export default function App() {
                             </div>
                           )}
                         </div>
+
+                        {/* Full-Card Decorative Replacement Overlay: 48px light sweep + 6 scattered 4-pointed SVG sparkles */}
+                        {isCenterCard && activeCardWipeAnim?.cardId === cardItem.id && !shouldReduceMotion && (
+                          <div
+                            aria-hidden="true"
+                            data-card-effect-overlay="true"
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              borderRadius: 'inherit',
+                              overflow: 'hidden',
+                              pointerEvents: 'none',
+                              zIndex: 30,
+                            }}
+                          >
+                            <div
+                              ref={cardSweepGlowRef}
+                              data-card-wipe-glow="true"
+                              style={{
+                                position: 'absolute',
+                                top: 0,
+                                bottom: 0,
+                                left: 0,
+                                width: '48px',
+                                transform: 'translate3d(-52px, 0, 0)',
+                                pointerEvents: 'none',
+                                background:
+                                  'linear-gradient(90deg, transparent 0%, rgba(177,153,232,0.18) 25%, rgba(210,193,250,0.48) 46%, rgba(255,255,255,0.85) 52%, rgba(210,193,250,0.24) 70%, transparent 100%)',
+                              }}
+                            />
+
+                            <div data-card-sparkles="true" className="absolute inset-0 pointer-events-none">
+                              {CARD_UPDATE_SPARKLES.map((sp, sIdx) => (
+                                <span
+                                  key={sIdx}
+                                  data-card-sparkle-idx={sIdx}
+                                  style={{
+                                    position: 'absolute',
+                                    left: sp.left,
+                                    top: sp.top,
+                                    transform: `translate(-50%, -50%) translate(${sp.nudgeX}px, ${sp.nudgeY}px)`,
+                                    pointerEvents: 'none',
+                                  }}
+                                >
+                                  <svg
+                                    width={sp.size}
+                                    height={sp.size}
+                                    viewBox="0 0 24 24"
+                                    style={{ animationDelay: `${sp.delayMs}ms` }}
+                                    className="block genki-sparkle-item"
+                                  >
+                                    <path d={SPARKLE_STAR_PATH} fill={sp.color} />
+                                  </svg>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

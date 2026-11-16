@@ -194,22 +194,26 @@
   @keyframes genki-sparkle-pop {
     0% {
       opacity: 0;
-      transform: translate3d(0, 3px, 0) scale(0.5);
+      transform: translate3d(0, 0, 0) scale(0.35);
     }
     35% {
-      opacity: 0.85;
-      transform: translate3d(0, 0, 0) scale(1);
+      opacity: 0.95;
+      transform: translate3d(0, -2px, 0) scale(1);
+    }
+    65% {
+      opacity: 0.8;
+      transform: translate3d(0, -4px, 0) scale(0.85);
     }
     100% {
       opacity: 0;
-      transform: translate3d(0, -5px, 0) scale(0.7);
+      transform: translate3d(0, -6px, 0) scale(0.4);
     }
   }
 
   .genki-sparkle-item {
     animation-name: genki-sparkle-pop;
-    animation-duration: 360ms;
-    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    animation-duration: 420ms;
+    animation-timing-function: ease-out;
     animation-fill-mode: both;
   }
 }
