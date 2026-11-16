@@ -10,7 +10,6 @@ import {
   ChevronRight,
   ChevronDown,
   X,
-  Play,
   Clock,
   Sparkles,
   Wifi,
@@ -20,9 +19,7 @@ import {
   Footprints,
   Heart,
   Maximize2,
-  Pause,
-  FileText,
-  Film
+  FileText
 } from 'lucide-react';
 
 import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
@@ -36,10 +33,11 @@ const LazyDiscoverView = React.lazy(() =>
 );
 
 import mindfulWalkThumbUrl from './assets/images/mindful_walk_thumb_1793264566501.jpg';
-import discoverStretchUrl from './assets/images/discover_stretch_1793765824456.jpg';
 import discoverBreathUrl from './assets/images/discover_breath_1793765860138.jpg';
 import discoverTrailUrl from './assets/images/discover_trail_1793765793796.jpg';
 import discoverEveningUrl from './assets/images/discover_evening_1793765838258.jpg';
+import stretchPoseSvgUrl from './assets/illustrations/stretch-pose.svg';
+import shoulderNeckPoseSvgUrl from './assets/illustrations/shoulder-neck-pose.svg';
 
 // Plan Information Model
 interface PlanItem {
@@ -54,7 +52,7 @@ interface PlanItem {
   tip1: string;
   tip2: string;
   thumbnailUrl: string;
-  mediaType: 'video' | 'article';
+  mediaType: 'article';
 }
 
 const DEFAULT_WALK_PLAN: PlanItem = {
@@ -66,7 +64,7 @@ const DEFAULT_WALK_PLAN: PlanItem = {
     'After lunch could be a good time, based on your usual routine. Stepping outside for an unhurried 15-minute stroll helps aid light digestion, softens afternoon screen fatigue, and resets mental clarity without pushing your heart rate.',
   detailTitle: '15-minute Mindful Walk',
   audioTitle: 'Morning Tree Trail Guide',
-  audioSubtitle: 'Guided walking notes • 15 min',
+  audioSubtitle: 'Guided walking notes · 15 min',
   tip1: 'Best window: right after lunch (1:15 PM) to aid light digestion and mental reset.',
   tip2: 'Zero pace requirement. Walk as slowly as you like—just let your eyes rest from screens.',
   thumbnailUrl: mindfulWalkThumbUrl,
@@ -82,11 +80,11 @@ const STRETCH_PLAN: PlanItem = {
     'Gentle body reset in your living room whenever you have a moment. This short guided sequence targets lower-back stiffness and tight hips from prolonged sitting—no mat, workout clothes, or floor space required.',
   detailTitle: '5-minute Home Gentle Stretch',
   audioTitle: 'Living Room Calming Flow',
-  audioSubtitle: 'Guided video preview • 5:00',
+  audioSubtitle: 'Guided stretch · 5 min',
   tip1: 'No mat or workout clothes required. Stand or sit comfortably near your desk or couch.',
   tip2: 'Focus on loosening tense shoulders, neck, and lower back with deep, unhurried breaths.',
-  thumbnailUrl: discoverStretchUrl,
-  mediaType: 'video'
+  thumbnailUrl: stretchPoseSvgUrl,
+  mediaType: 'article'
 };
 
 const MOBILITY_PLAN: PlanItem = {
@@ -98,11 +96,11 @@ const MOBILITY_PLAN: PlanItem = {
     'Unwind upper-body tension after screen time with slow, guided movements. Designed for mid-afternoon desk breaks to drop elevated shoulders, gently lengthen neck muscles, and pair smooth motion with relaxed exhales.',
   detailTitle: '8-minute Shoulder & Neck Release',
   audioTitle: 'Unhurried Posture Reset',
-  audioSubtitle: 'Guided video preview • 8:00',
+  audioSubtitle: 'Shoulder & neck guide · 8 min',
   tip1: 'Great for mid-afternoon when your shoulders start creeping up toward your ears.',
   tip2: 'Move only within a comfortable range—let gravity and slow exhales do the work.',
-  thumbnailUrl: discoverBreathUrl,
-  mediaType: 'video'
+  thumbnailUrl: shoulderNeckPoseSvgUrl,
+  mediaType: 'article'
 };
 
 const BREATH_RESET_PLAN: PlanItem = {
@@ -156,7 +154,7 @@ const REST_DAY_PLAN: PlanItem = {
 interface SuggestionMediaThumbnailProps {
   src: string;
   title: string;
-  mediaType: 'video' | 'article';
+  mediaType: 'article';
   compact?: boolean;
   squareSize?: number;
   isHiddenForTransition?: boolean;
@@ -170,7 +168,6 @@ interface SuggestionMediaThumbnailProps {
 function SuggestionMediaThumbnail({
   src,
   title,
-  mediaType,
   compact = false,
   squareSize,
   isHiddenForTransition = false,
@@ -205,7 +202,7 @@ function SuggestionMediaThumbnail({
       type="button"
       tabIndex={isInteractive ? 0 : -1}
       data-card-action="open-media-detail"
-      aria-label={`查看${title}详情`}
+      aria-label={`View details: ${title}`}
       onPointerDown={(e) => {
         pressOriginRef.current = { x: e.clientX, y: e.clientY, movedOver8px: false };
       }}
@@ -262,7 +259,7 @@ function SuggestionMediaThumbnail({
         height: `${height}px`,
         borderRadius,
       }}
-      className={`relative shrink-0 overflow-hidden bg-[#EBEBF0] border border-black/[0.06] shadow-[0_2px_8px_rgba(38,38,63,0.06)] group active:scale-[0.97] transition-transform select-none ${
+      className={`relative shrink-0 overflow-hidden bg-[#EBEBF0] border border-black/[0.06] shadow-[0_2px_8px_rgba(38,38,63,0.06)] group active:scale-[0.97] transition-transform select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE] ${
         isInteractive ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
       }`}
     >
@@ -289,32 +286,12 @@ function SuggestionMediaThumbnail({
             data-testid="media-thumb-fallback"
             className="w-full h-full bg-[#EAEAF0] flex items-center justify-center text-[#8E8E93]"
           >
-            {mediaType === 'video' ? (
-              <Film className="w-5 h-5 stroke-[1.8]" aria-hidden="true" />
-            ) : (
-              <FileText className="w-5 h-5 stroke-[1.8]" aria-hidden="true" />
-            )}
+            <FileText className="w-5 h-5 stroke-[1.8]" aria-hidden="true" />
           </div>
         )}
 
-        {/* Overlay indicator: Video shows centered 26px dark circle + white play triangle; Article shows bottom-right 18px expand icon */}
-        {!imgError && mediaType === 'video' && (
-          <div className="absolute inset-0 bg-black/10 flex items-center justify-center pointer-events-none">
-            <div
-              data-thumb-badge="video"
-              style={{ width: '26px', height: '26px' }}
-              className="rounded-full bg-black/52 backdrop-blur-[2px] flex items-center justify-center shadow-xs"
-            >
-              <Play
-                style={{ width: '11px', height: '11px' }}
-                className="fill-white text-white ml-0.5"
-                aria-hidden="true"
-              />
-            </div>
-          </div>
-        )}
-
-        {!imgError && mediaType === 'article' && (
+        {/* Overlay indicator: bottom-right 18px expand icon for all guide/article media */}
+        {!imgError && (
           <div
             data-thumb-badge="article"
             style={{ width: '18px', height: '18px', right: '5px', bottom: '5px' }}
@@ -485,7 +462,6 @@ export default function App() {
 
   // Detail Sheet state
   const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
 
   // Chat modal overlay state
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -784,7 +760,6 @@ export default function App() {
 
   // Open & Close triggers for Continuous Detail Transition
   const openDetailWithTransition = useCallback(() => {
-    setIsPlayingAudio(false);
     // If mid-flight during closing, measure current floating position or thumbnail
     let startRect = getLiveThumbnailRect();
     if (floatingMediaRef.current && detailTransitionPhase === 'closing' && phoneFrameRef.current) {
@@ -806,7 +781,6 @@ export default function App() {
   }, [getLiveThumbnailRect, detailTransitionPhase]);
 
   const closeDetailWithTransition = useCallback(() => {
-    setIsPlayingAudio(false);
     const liveThumbRect = getLiveThumbnailRect();
     let liveMediaRect = getLiveDetailMediaRect();
 
@@ -1894,22 +1868,6 @@ export default function App() {
               className="w-full h-full object-cover absolute inset-0"
             />
 
-            {/* Thumbnail Play Badge (Video only): fades out as it expands */}
-            {currentPlan.mediaType === 'video' && (
-              <motion.div
-                animate={{ opacity: isDetailOpen ? 0 : 1 }}
-                transition={{ duration: shouldReduceMotion ? 0.05 : 0.16 }}
-                className="absolute inset-0 bg-black/15 flex items-center justify-center pointer-events-none"
-              >
-                <div
-                  style={{ width: '26px', height: '26px' }}
-                  className="rounded-full bg-black/52 flex items-center justify-center shadow-xs"
-                >
-                  <Play style={{ width: '11px', height: '11px' }} className="fill-white text-white ml-0.5" />
-                </div>
-              </motion.div>
-            )}
-
             {/* Detail Media Info (Bottom): fades in as it expands toward target */}
             <motion.div
               animate={{ opacity: isDetailOpen ? 1 : 0 }}
@@ -1924,15 +1882,6 @@ export default function App() {
                   <div className="text-xs font-bold leading-tight">{currentPlan.audioTitle}</div>
                   <div className="text-[10.5px] text-white/85 mt-0.5">{currentPlan.audioSubtitle}</div>
                 </div>
-                {currentPlan.mediaType === 'video' && (
-                  <div className="w-9 h-9 rounded-full bg-[#5E5BAE] text-white flex items-center justify-center shadow-xs">
-                    {isPlayingAudio ? (
-                      <Pause className="w-4 h-4 fill-white text-white" />
-                    ) : (
-                      <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                    )}
-                  </div>
-                )}
               </div>
             </motion.div>
           </motion.div>
@@ -2217,14 +2166,14 @@ export default function App() {
                       }}
                       className="w-full flex justify-center shrink-0 overflow-visible"
                     >
-                      {/* Stack Group Wrapper: reserves 14px bottom stack height and scales entire stack to 0.985 in 120ms on press */}
+                      {/* Stack Group Wrapper: reserves 16px bottom stack height and scales entire stack to 0.985 in 120ms on press */}
                       <div
                         id="today-suggestion-bubble-stack"
                         style={{
                           width: 'calc(100% - 72px)',
                           maxWidth: '360px',
                           marginTop: frameSize.height < 700 ? '11px' : '8px',
-                          paddingBottom: '14px',
+                          paddingBottom: '16px',
                           overflow: 'visible',
                           transform: isBubblePressed ? 'scale(0.985)' : 'scale(1)',
                           transition: 'transform 120ms ease-out',
@@ -2236,38 +2185,38 @@ export default function App() {
                           style={{ overflow: 'visible' }}
                           className="relative w-full"
                         >
-                          {/* Layer 3 (Lowest decorative layer): inset 20px left/right, bottom 14px lower, radius 22px, fill rgba(255,255,255,0.20), border 1px solid rgba(255,255,255,0.65) */}
+                          {/* Layer 3 (Lowest decorative layer): inset 20px left/right, bottom 16px lower, radius 22px, fill rgba(255,255,255,0.20), border 1px solid rgba(118,109,152,0.12) */}
                           <div
                             id="today-bubble-stack-layer-3"
                             aria-hidden="true"
                             style={{
                               position: 'absolute',
-                              top: '14px',
-                              bottom: '-14px',
+                              top: '16px',
+                              bottom: '-16px',
                               left: '20px',
                               right: '20px',
                               borderRadius: '22px',
                               background: 'rgba(255, 255, 255, 0.20)',
-                              border: '1px solid rgba(255, 255, 255, 0.65)',
+                              border: '1px solid rgba(118, 109, 152, 0.12)',
                               boxShadow: 'none',
                               pointerEvents: 'none',
                               zIndex: 10,
                             }}
                           />
 
-                          {/* Layer 2 (Middle decorative layer): inset 10px left/right, bottom 7px lower, radius 24px, fill rgba(255,255,255,0.32), border 1px solid rgba(255,255,255,0.65) */}
+                          {/* Layer 2 (Middle decorative layer): inset 10px left/right, bottom 8px lower, radius 24px, fill rgba(255,255,255,0.32), border 1px solid rgba(118,109,152,0.12) */}
                           <div
                             id="today-bubble-stack-layer-2"
                             aria-hidden="true"
                             style={{
                               position: 'absolute',
-                              top: '7px',
-                              bottom: '-7px',
+                              top: '8px',
+                              bottom: '-8px',
                               left: '10px',
                               right: '10px',
                               borderRadius: '24px',
                               background: 'rgba(255, 255, 255, 0.32)',
-                              border: '1px solid rgba(255, 255, 255, 0.65)',
+                              border: '1px solid rgba(118, 109, 152, 0.12)',
                               boxShadow: 'none',
                               pointerEvents: 'none',
                               zIndex: 20,
@@ -2777,7 +2726,7 @@ export default function App() {
                             : 'transform 430ms cubic-bezier(0.22, 1, 0.36, 1), opacity 300ms ease-out',
                           willChange: 'transform, opacity',
                         }}
-                        className={`col-start-1 row-start-1 rounded-[26px] overflow-hidden today-suggestion-card border border-white/95 flex flex-col justify-between ${
+                        className={`relative col-start-1 row-start-1 rounded-[26px] overflow-hidden today-suggestion-card border border-white/95 flex flex-col justify-between ${
                           isCenterCard
                             ? 'shadow-[0_14px_36px_rgba(38,38,63,0.16)] pointer-events-auto'
                             : isSideNeighbor
@@ -2785,14 +2734,14 @@ export default function App() {
                             : 'pointer-events-none'
                         }`}
                       >
-                        {/* Top Card Header: Compacted, 20px horizontal padding */}
+                        {/* Top Card Header: Compacted, 20px horizontal padding, 44x44 close hit area kept clear of title & thumbnail */}
                         <div
                           style={{ opacity: innerContentOpacity }}
-                          className={`px-[20px] pt-3.5 w-full shrink-0 ${
+                          className={`px-[20px] pt-0 w-full shrink-0 ${
                             isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="h-[44px] flex items-center pr-[36px]">
                             <div className="relative h-4 flex-1 select-none">
                               <span
                                 className={`text-[10.5px] font-bold uppercase tracking-wider text-[#5E5BAE] absolute inset-0 transition-opacity ${
@@ -2817,27 +2766,35 @@ export default function App() {
                                 YOUR PLAN
                               </span>
                             </div>
-
-                            {/* Close Card Button: Hidden on side cards so it never distracts on the left peek edge */}
-                            <button
-                              type="button"
-                              id={isCenterCard ? 'close-plan-card-btn' : undefined}
-                              tabIndex={isCenterCard ? 0 : -1}
-                              style={{ opacity: closeBtnOpacity }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (isCenterCard) {
-                                  setIsPlanCardOpen(false);
-                                }
-                              }}
-                              className={`-mr-1 -mt-0.5 w-6.5 h-6.5 rounded-full flex items-center justify-center text-[#6C6C70] hover:text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 transition-all shrink-0 ${
-                                isCenterCard ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
-                              }`}
-                              aria-label="Close suggestion card"
-                            >
-                              <X className="w-3.5 h-3.5 stroke-[2.2]" />
-                            </button>
                           </div>
+
+                          {/* Close Card Button: 44x44px touch target with centered 26px visual circle, hidden on side cards */}
+                          <button
+                            type="button"
+                            id={isCenterCard ? 'close-plan-card-btn' : undefined}
+                            tabIndex={isCenterCard ? 0 : -1}
+                            style={{
+                              opacity: closeBtnOpacity,
+                              top: '0px',
+                              right: '6px',
+                              width: '44px',
+                              height: '44px',
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isCenterCard) {
+                                setIsPlanCardOpen(false);
+                              }
+                            }}
+                            className={`absolute z-20 rounded-full flex items-center justify-center group active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-[#5E5BAE] ${
+                              isCenterCard ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
+                            }`}
+                            aria-label="Close suggestion card"
+                          >
+                            <span className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-[#6C6C70] group-hover:text-[#1C1C1E] bg-[#F2F2F7] group-hover:bg-[#E5E5EA] transition-colors pointer-events-none">
+                              <X className="w-3.5 h-3.5 stroke-[2.2]" />
+                            </span>
+                          </button>
 
                           {/* Title Row: Full width in suggested state (max 2 lines, never shares width with thumbnail) */}
                           <div className="flex items-center justify-between gap-2.5">
@@ -2877,7 +2834,9 @@ export default function App() {
                         <div
                           ref={isCenterCard ? cardContentRef : undefined}
                           style={{ opacity: innerContentOpacity }}
-                          className={`px-[20px] pb-4 w-full flex-1 flex flex-col justify-between ${
+                          className={`px-[20px] ${
+                            cardState === 'suggested' ? 'pb-3' : 'pb-1.5'
+                          } w-full flex-1 flex flex-col justify-between ${
                             isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
@@ -2936,7 +2895,7 @@ export default function App() {
                                       handleSoundsGood(slotCardIdx);
                                     }
                                   }}
-                                  className="min-h-[44px] px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
+                                  className="min-h-[44px] px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                 >
                                   Sounds good
                                 </button>
@@ -2950,7 +2909,7 @@ export default function App() {
                                       handleInitialPlanB(slotCardIdx);
                                     }
                                   }}
-                                  className="min-h-[44px] w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
+                                  className="min-h-[44px] w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                 >
                                   Adjust
                                 </button>
@@ -2958,7 +2917,7 @@ export default function App() {
                             </div>
                           ) : (
                             /* 3. ACCEPTED / COMPLETED EXTRA: Circular Wave Done Button + Auxiliary Operations */
-                            <div className="flex-1 flex flex-col justify-between gap-2 pt-1">
+                            <div className="flex-1 flex flex-col justify-between gap-1 pt-0.5">
                               {/* Horizontally Centered Circular Wave Done Button + "Hold to complete" */}
                               <div className="flex flex-col items-center justify-center">
                                 {(() => {
@@ -3109,11 +3068,12 @@ export default function App() {
                                 </span>
                               </div>
 
-                              {/* Bottom Section: Side-by-Side "Adjust" and "Not today" (or Undo completion) */}
-                              <div className="flex items-center justify-center gap-6 pt-1 border-t border-black/[0.05]">
+                              {/* Bottom Section: Side-by-Side "Adjust" and "Not today" (or Undo completion), >=44px hit height */}
+                              <div className="flex items-center justify-center gap-3 pt-0.5 border-t border-black/[0.05]">
                                 {cardState === 'completed' ? (
                                   <button
                                     type="button"
+                                    data-card-action="undo-completion"
                                     tabIndex={isCenterCard ? 0 : -1}
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -3126,7 +3086,7 @@ export default function App() {
                                         setHoldProgress(0);
                                       }
                                     }}
-                                    className="text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] py-0.5 px-3 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer min-h-[26px] flex items-center"
+                                    className="min-h-[44px] px-6 rounded-[12px] text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                   >
                                     Undo completion
                                   </button>
@@ -3142,7 +3102,7 @@ export default function App() {
                                           handleAcceptedPlanB(slotCardIdx);
                                         }
                                       }}
-                                      className="text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] py-0.5 px-3 rounded-full hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap cursor-pointer active:scale-95 min-h-[26px] flex items-center"
+                                      className="min-h-[44px] px-5 rounded-[12px] text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap cursor-pointer active:scale-95 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                     >
                                       Adjust
                                     </button>
@@ -3156,7 +3116,7 @@ export default function App() {
                                           handleNotToday(slotCardIdx);
                                         }
                                       }}
-                                      className="text-xs font-semibold text-[#6C6C70] hover:text-[#1C1C1E] py-0.5 px-3 rounded-full hover:bg-black/[0.04] transition-colors whitespace-nowrap cursor-pointer active:scale-95 min-h-[26px] flex items-center"
+                                      className="min-h-[44px] px-5 rounded-[12px] text-xs font-semibold text-[#6C6C70] hover:text-[#1C1C1E] hover:bg-black/[0.04] transition-colors whitespace-nowrap cursor-pointer active:scale-95 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                     >
                                       Not today
                                     </button>
@@ -3193,7 +3153,7 @@ export default function App() {
                           const step = diff === 1 ? 1 : -1;
                           setActiveVirtualIndex((prev) => prev + step);
                         }}
-                        className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer ${
+                        className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE] ${
                           isDotActive
                             ? 'w-4 bg-[#1C1C1E]/75'
                             : 'w-1.5 bg-[#1C1C1E]/20 hover:bg-[#1C1C1E]/35'
@@ -3364,7 +3324,7 @@ export default function App() {
 
                 {/* Sheet Content: Media & Clean Guideline Rows (No Nested Card-in-Card) */}
                 <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-4 space-y-5">
-                  {/* Media Hero Banner: In-place slot (user-controlled playback only for video; clean cover for article) */}
+                  {/* Media Hero Banner: Clean guide/article cover with matching resource */}
                   <div
                     ref={detailMediaHeroRef}
                     className="relative w-full h-40 sm:h-44 rounded-[22px] overflow-hidden border border-black/[0.04] shadow-xs shrink-0"
@@ -3378,9 +3338,7 @@ export default function App() {
                         src={currentPlan.thumbnailUrl}
                         alt={currentPlan.title}
                         referrerPolicy="no-referrer"
-                        className={`w-full h-full object-cover transition-transform duration-[4000ms] ease-out ${
-                          currentPlan.mediaType === 'video' && isPlayingAudio ? 'scale-108' : 'scale-100'
-                        }`}
+                        className="w-full h-full object-cover"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent flex items-end p-4 sm:p-4.5">
                         <div className="flex items-center justify-between w-full text-white">
@@ -3389,25 +3347,9 @@ export default function App() {
                               {currentPlan.audioTitle}
                             </div>
                             <div className="text-[11px] sm:text-[11.5px] text-white/85 mt-0.5 font-normal">
-                              {currentPlan.mediaType === 'video' && isPlayingAudio
-                                ? 'Playing guided preview • Tap to pause'
-                                : currentPlan.audioSubtitle}
+                              {currentPlan.audioSubtitle}
                             </div>
                           </div>
-                          {currentPlan.mediaType === 'video' && (
-                            <button
-                              type="button"
-                              onClick={() => setIsPlayingAudio((prev) => !prev)}
-                              className="w-10 h-10 rounded-full bg-[#5E5BAE] hover:bg-[#524FA0] text-white flex items-center justify-center shadow-xs active:scale-95 transition-transform cursor-pointer shrink-0"
-                              aria-label={isPlayingAudio ? "Pause video preview" : "Play video preview"}
-                            >
-                              {isPlayingAudio ? (
-                                <Pause className="w-4 h-4 fill-white text-white" />
-                              ) : (
-                                <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                              )}
-                            </button>
-                          )}
                         </div>
                       </div>
                     </div>
