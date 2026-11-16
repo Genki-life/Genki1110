@@ -11,7 +11,6 @@ import {
   ChevronDown,
   X,
   Play,
-  Volume2,
   Clock,
   Sparkles,
   Wifi,
@@ -19,7 +18,11 @@ import {
   Bookmark,
   CloudSun,
   Footprints,
-  Heart
+  Heart,
+  Maximize2,
+  Pause,
+  FileText,
+  Film
 } from 'lucide-react';
 
 import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
@@ -32,9 +35,11 @@ const LazyDiscoverView = React.lazy(() =>
   import('./components/DiscoverView').then((module) => ({ default: module.DiscoverView }))
 );
 
-import thumbImageUrl from './assets/images/mindful_walk_thumb_1793264566501.jpg';
-
-const THUMB_IMAGE_URL = thumbImageUrl;
+import mindfulWalkThumbUrl from './assets/images/mindful_walk_thumb_1793264566501.jpg';
+import discoverStretchUrl from './assets/images/discover_stretch_1793765824456.jpg';
+import discoverBreathUrl from './assets/images/discover_breath_1793765860138.jpg';
+import discoverTrailUrl from './assets/images/discover_trail_1793765793796.jpg';
+import discoverEveningUrl from './assets/images/discover_evening_1793765838258.jpg';
 
 // Plan Information Model
 interface PlanItem {
@@ -42,51 +47,62 @@ interface PlanItem {
   title: string;
   bubblePrompt: string;
   subtitle: string;
+  fullDescription: string;
   detailTitle: string;
   audioTitle: string;
   audioSubtitle: string;
   tip1: string;
   tip2: string;
   thumbnailUrl: string;
+  mediaType: 'video' | 'article';
 }
 
 const DEFAULT_WALK_PLAN: PlanItem = {
   id: 'walk',
   title: 'Take a 15-minute walk',
   bubblePrompt: 'How about a 15-minute walk?',
-  subtitle: 'After lunch could be a good time, based on your usual routine.',
+  subtitle: 'After lunch could be a good time, based on your usual routine and gentle midday light.',
+  fullDescription:
+    'After lunch could be a good time, based on your usual routine. Stepping outside for an unhurried 15-minute stroll helps aid light digestion, softens afternoon screen fatigue, and resets mental clarity without pushing your heart rate.',
   detailTitle: '15-minute Mindful Walk',
-  audioTitle: 'Morning Tree Trail Audio',
-  audioSubtitle: 'Gentle birdsong & calming rhythm • 15:00',
+  audioTitle: 'Morning Tree Trail Guide',
+  audioSubtitle: 'Guided walking notes • 15 min',
   tip1: 'Best window: right after lunch (1:15 PM) to aid light digestion and mental reset.',
   tip2: 'Zero pace requirement. Walk as slowly as you like—just let your eyes rest from screens.',
-  thumbnailUrl: THUMB_IMAGE_URL
+  thumbnailUrl: mindfulWalkThumbUrl,
+  mediaType: 'article'
 };
 
 const STRETCH_PLAN: PlanItem = {
   id: 'stretch',
   title: '5-minute stretch at home',
   bubblePrompt: 'How about a 5-minute stretch?',
-  subtitle: 'Gentle body reset in your living room whenever you have a moment.',
+  subtitle: 'Gentle body reset in your living room whenever you have a quiet moment to unwind.',
+  fullDescription:
+    'Gentle body reset in your living room whenever you have a moment. This short guided sequence targets lower-back stiffness and tight hips from prolonged sitting—no mat, workout clothes, or floor space required.',
   detailTitle: '5-minute Home Gentle Stretch',
   audioTitle: 'Living Room Calming Flow',
-  audioSubtitle: 'Soft breathing cues & relaxing chime • 5:00',
+  audioSubtitle: 'Guided video preview • 5:00',
   tip1: 'No mat or workout clothes required. Stand or sit comfortably near your desk or couch.',
   tip2: 'Focus on loosening tense shoulders, neck, and lower back with deep, unhurried breaths.',
-  thumbnailUrl: THUMB_IMAGE_URL
+  thumbnailUrl: discoverStretchUrl,
+  mediaType: 'video'
 };
 
 const MOBILITY_PLAN: PlanItem = {
   id: 'mobility',
   title: '8-minute shoulder & neck release',
   bubblePrompt: 'How about an 8-minute shoulder release?',
-  subtitle: 'Unwind upper-body tension after screen time with slow, guided movements.',
+  subtitle: 'Unwind upper-body tension after screen time with slow, guided movements and calm pacing.',
+  fullDescription:
+    'Unwind upper-body tension after screen time with slow, guided movements. Designed for mid-afternoon desk breaks to drop elevated shoulders, gently lengthen neck muscles, and pair smooth motion with relaxed exhales.',
   detailTitle: '8-minute Shoulder & Neck Release',
   audioTitle: 'Unhurried Posture Reset',
-  audioSubtitle: 'Warm acoustic tone & gentle pacing • 8:00',
+  audioSubtitle: 'Guided video preview • 8:00',
   tip1: 'Great for mid-afternoon when your shoulders start creeping up toward your ears.',
   tip2: 'Move only within a comfortable range—let gravity and slow exhales do the work.',
-  thumbnailUrl: THUMB_IMAGE_URL
+  thumbnailUrl: discoverBreathUrl,
+  mediaType: 'video'
 };
 
 const BREATH_RESET_PLAN: PlanItem = {
@@ -94,12 +110,15 @@ const BREATH_RESET_PLAN: PlanItem = {
   title: '3-minute seated breath reset',
   bubblePrompt: 'How about a 3-minute breath reset?',
   subtitle: 'A quiet pause right where you are to slow your heart rate and clear your head.',
+  fullDescription:
+    'A quiet pause right where you are to slow your heart rate and clear your head. Lengthening each exhale gently signals physical safety to your nervous system whenever the day starts feeling rushed.',
   detailTitle: '3-minute Seated Breath Reset',
   audioTitle: 'Steady Horizon Breathing',
-  audioSubtitle: 'Inhale 4s, hold 2s, exhale 6s • 3:00',
+  audioSubtitle: 'Guided breathing notes • 3 min',
   tip1: 'Keep your feet flat on the floor and let your hands rest heavy on your lap.',
   tip2: 'Make each exhale slightly longer than your inhale to signal calm to your nervous system.',
-  thumbnailUrl: THUMB_IMAGE_URL
+  thumbnailUrl: discoverBreathUrl,
+  mediaType: 'article'
 };
 
 const TOMORROW_WALK_PLAN: PlanItem = {
@@ -107,12 +126,15 @@ const TOMORROW_WALK_PLAN: PlanItem = {
   title: '15-minute walk (Moved to tomorrow)',
   bubblePrompt: 'Move your 15-minute walk to tomorrow?',
   subtitle: 'Rescheduled for tomorrow morning. Take today to rest without guilt.',
+  fullDescription:
+    'Rescheduled for tomorrow morning. Giving yourself room to rest today keeps your weekly rhythm sustainable without guilt—your walk window is softly queued for tomorrow morning.',
   detailTitle: 'Rescheduled Walk for Tomorrow',
-  audioTitle: 'Quiet Evening Wind-down Audio',
-  audioSubtitle: 'Calm ambient tone to release the day • 10:00',
+  audioTitle: 'Quiet Evening Wind-down Notes',
+  audioSubtitle: 'Gentle pacing overview • 10 min',
   tip1: 'Planned for tomorrow at 9:30 AM before your calendar fills up.',
   tip2: 'Today is officially a recharge window. Rest is an essential part of the journey.',
-  thumbnailUrl: THUMB_IMAGE_URL
+  thumbnailUrl: discoverTrailUrl,
+  mediaType: 'article'
 };
 
 const REST_DAY_PLAN: PlanItem = {
@@ -120,13 +142,195 @@ const REST_DAY_PLAN: PlanItem = {
   title: 'Mindful rest day',
   bubblePrompt: 'How about taking a gentle rest day?',
   subtitle: 'Activity paused for today. Give yourself permission to unwind completely.',
+  fullDescription:
+    'Activity paused for today. Give yourself permission to unwind completely—recovery days protect long-term energy and keep movement feeling welcoming rather than obligatory.',
   detailTitle: 'Rest & Recovery Day',
-  audioTitle: 'Gentle Evening Soundscape',
-  audioSubtitle: 'Peaceful rain & soft piano • 20:00',
+  audioTitle: 'Gentle Evening Rest Guide',
+  audioSubtitle: 'Restorative notes • 20 min',
   tip1: 'Stay hydrated and give your body space to recuperate.',
   tip2: 'No checklists tonight. Nova will check back in tomorrow morning.',
-  thumbnailUrl: THUMB_IMAGE_URL
+  thumbnailUrl: discoverEveningUrl,
+  mediaType: 'article'
 };
+
+interface SuggestionMediaThumbnailProps {
+  src: string;
+  title: string;
+  mediaType: 'video' | 'article';
+  compact?: boolean;
+  squareSize?: number;
+  isHiddenForTransition?: boolean;
+  isInteractive: boolean;
+  buttonRef?: React.Ref<HTMLButtonElement>;
+  didSwipeCarouselRef: React.MutableRefObject<boolean>;
+  lastCarouselSwipeTimeRef: React.MutableRefObject<number>;
+  onOpenDetail: () => void;
+}
+
+function SuggestionMediaThumbnail({
+  src,
+  title,
+  mediaType,
+  compact = false,
+  squareSize,
+  isHiddenForTransition = false,
+  isInteractive,
+  buttonRef,
+  didSwipeCarouselRef,
+  lastCarouselSwipeTimeRef,
+  onOpenDetail,
+}: SuggestionMediaThumbnailProps) {
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
+  const imgElRef = useRef<HTMLImageElement>(null);
+  const pressOriginRef = useRef<{ x: number; y: number; movedOver8px: boolean } | null>(null);
+
+  useEffect(() => {
+    setImgError(false);
+    const el = imgElRef.current;
+    if (el && el.complete && el.naturalWidth > 0) {
+      setImgLoaded(true);
+    } else {
+      setImgLoaded(false);
+    }
+  }, [src]);
+
+  const width = squareSize ?? (compact ? 72 : 80);
+  const height = squareSize ?? (compact ? 60 : 64);
+  const borderRadius = squareSize ? '11px' : '12px';
+
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      tabIndex={isInteractive ? 0 : -1}
+      data-card-action="open-media-detail"
+      aria-label={`查看${title}详情`}
+      onPointerDown={(e) => {
+        pressOriginRef.current = { x: e.clientX, y: e.clientY, movedOver8px: false };
+      }}
+      onPointerMove={(e) => {
+        if (!pressOriginRef.current) return;
+        const dist = Math.hypot(
+          e.clientX - pressOriginRef.current.x,
+          e.clientY - pressOriginRef.current.y
+        );
+        if (dist > 8) {
+          pressOriginRef.current.movedOver8px = true;
+        }
+      }}
+      onTouchStart={(e) => {
+        const touch = e.touches[0];
+        if (!touch) return;
+        pressOriginRef.current = { x: touch.clientX, y: touch.clientY, movedOver8px: false };
+      }}
+      onTouchMove={(e) => {
+        if (!pressOriginRef.current) return;
+        const touch = e.touches[0];
+        if (!touch) return;
+        const dist = Math.hypot(
+          touch.clientX - pressOriginRef.current.x,
+          touch.clientY - pressOriginRef.current.y
+        );
+        if (dist > 8) {
+          pressOriginRef.current.movedOver8px = true;
+        }
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        const origin = pressOriginRef.current;
+        pressOriginRef.current = null;
+        const movedFromOrigin =
+          origin &&
+          (origin.movedOver8px ||
+            (e.clientX !== 0 &&
+              e.clientY !== 0 &&
+              Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 8));
+        if (
+          !isInteractive ||
+          movedFromOrigin ||
+          didSwipeCarouselRef.current ||
+          performance.now() - lastCarouselSwipeTimeRef.current < 240
+        ) {
+          e.preventDefault();
+          return;
+        }
+        onOpenDetail();
+      }}
+      style={{
+        width: `${width}px`,
+        height: `${height}px`,
+        borderRadius,
+      }}
+      className={`relative shrink-0 overflow-hidden bg-[#EBEBF0] border border-black/[0.06] shadow-[0_2px_8px_rgba(38,38,63,0.06)] group active:scale-[0.97] transition-transform select-none ${
+        isInteractive ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
+      }`}
+    >
+      <div
+        className={`w-full h-full relative transition-opacity duration-150 ${
+          isHiddenForTransition ? 'opacity-0' : 'opacity-100'
+        }`}
+      >
+        {!imgError ? (
+          <img
+            ref={imgElRef}
+            src={src}
+            alt={title}
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onLoad={() => setImgLoaded(true)}
+            onError={() => setImgError(true)}
+            className={`w-full h-full object-cover transition-opacity duration-200 group-hover:scale-105 ${
+              imgLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
+          />
+        ) : (
+          <div
+            data-testid="media-thumb-fallback"
+            className="w-full h-full bg-[#EAEAF0] flex items-center justify-center text-[#8E8E93]"
+          >
+            {mediaType === 'video' ? (
+              <Film className="w-5 h-5 stroke-[1.8]" aria-hidden="true" />
+            ) : (
+              <FileText className="w-5 h-5 stroke-[1.8]" aria-hidden="true" />
+            )}
+          </div>
+        )}
+
+        {/* Overlay indicator: Video shows centered 26px dark circle + white play triangle; Article shows bottom-right 18px expand icon */}
+        {!imgError && mediaType === 'video' && (
+          <div className="absolute inset-0 bg-black/10 flex items-center justify-center pointer-events-none">
+            <div
+              data-thumb-badge="video"
+              style={{ width: '26px', height: '26px' }}
+              className="rounded-full bg-black/52 backdrop-blur-[2px] flex items-center justify-center shadow-xs"
+            >
+              <Play
+                style={{ width: '11px', height: '11px' }}
+                className="fill-white text-white ml-0.5"
+                aria-hidden="true"
+              />
+            </div>
+          </div>
+        )}
+
+        {!imgError && mediaType === 'article' && (
+          <div
+            data-thumb-badge="article"
+            style={{ width: '18px', height: '18px', right: '5px', bottom: '5px' }}
+            className="absolute rounded-[5px] bg-black/36 backdrop-blur-[2px] flex items-center justify-center pointer-events-none"
+          >
+            <Maximize2
+              style={{ width: '10px', height: '10px' }}
+              className="text-white stroke-[2.3]"
+              aria-hidden="true"
+            />
+          </div>
+        )}
+      </div>
+    </button>
+  );
+}
 
 interface SuggestionCardItemState {
   id: string;
@@ -219,6 +423,7 @@ export default function App() {
   // Collapsed suggestion bubble vertical swipe states (3 suggestions share 1 bubble)
   const [bubbleDragY, setBubbleDragY] = useState<number>(0);
   const [isDraggingBubble, setIsDraggingBubble] = useState<boolean>(false);
+  const [isBubblePressed, setIsBubblePressed] = useState<boolean>(false);
   const [bubbleSwipeDir, setBubbleSwipeDir] = useState<1 | -1>(1);
   const bubbleDragRef = useRef<{
     pointerId: number;
@@ -266,9 +471,15 @@ export default function App() {
   const HOLD_DURATION_MS = 3000;
   const [holdProgress, setHoldProgress] = useState(0);
   const [isHolding, setIsHolding] = useState(false);
+  const [waveTimeSec, setWaveTimeSec] = useState(0);
+  const [isCompletedPop, setIsCompletedPop] = useState(false);
   const [isAccessibleConfirmOpen, setIsAccessibleConfirmOpen] = useState(false);
   const holdTimerRef = useRef<number | null>(null);
+  const fallTimerRef = useRef<number | null>(null);
   const holdStartRef = useRef<number>(0);
+  const waveOriginRef = useRef<number>(0);
+  const holdProgressRef = useRef<number>(0);
+  const lastTouchTimeRef = useRef<number>(0);
   const isHoldingRef = useRef<boolean>(false);
   const hasCompletedRef = useRef<boolean>(false);
 
@@ -573,6 +784,7 @@ export default function App() {
 
   // Open & Close triggers for Continuous Detail Transition
   const openDetailWithTransition = useCallback(() => {
+    setIsPlayingAudio(false);
     // If mid-flight during closing, measure current floating position or thumbnail
     let startRect = getLiveThumbnailRect();
     if (floatingMediaRef.current && detailTransitionPhase === 'closing' && phoneFrameRef.current) {
@@ -594,6 +806,7 @@ export default function App() {
   }, [getLiveThumbnailRect, detailTransitionPhase]);
 
   const closeDetailWithTransition = useCallback(() => {
+    setIsPlayingAudio(false);
     const liveThumbRect = getLiveThumbnailRect();
     let liveMediaRect = getLiveDetailMediaRect();
 
@@ -693,6 +906,7 @@ export default function App() {
     const idx = typeof targetCardIdx === 'number' ? targetCardIdx : activeCardIndexRef.current;
     hasCompletedRef.current = false;
     isHoldingRef.current = false;
+    holdProgressRef.current = 0;
     setPlanState('accepted', idx);
     setHoldProgress(0);
   };
@@ -823,6 +1037,7 @@ export default function App() {
       const targetIdx = chatTargetCardIdxRef.current ?? activeCardIndexRef.current;
       hasCompletedRef.current = false;
       isHoldingRef.current = false;
+      holdProgressRef.current = 0;
       setCurrentPlan(option.targetPlan, targetIdx);
       setPlanState('accepted', targetIdx);
       setHoldProgress(0);
@@ -1021,42 +1236,93 @@ export default function App() {
       cancelAnimationFrame(holdTimerRef.current);
       holdTimerRef.current = null;
     }
+    if (fallTimerRef.current) {
+      cancelAnimationFrame(fallTimerRef.current);
+      fallTimerRef.current = null;
+    }
     isHoldingRef.current = false;
     setIsHolding(false);
-    setHoldProgress(0);
+
+    const startProg = holdProgressRef.current;
+    if (startProg > 0 && startProg < 100 && !hasCompletedRef.current) {
+      const fallStart = performance.now();
+      const fallDuration = 220;
+      const fallUpdate = () => {
+        if (isHoldingRef.current) return;
+        const now = performance.now();
+        const elapsed = now - fallStart;
+        const factor = Math.max(0, 1 - elapsed / fallDuration);
+        const nextProg = startProg * factor;
+        holdProgressRef.current = nextProg;
+        setHoldProgress(nextProg);
+        if (waveOriginRef.current > 0) {
+          setWaveTimeSec((now - waveOriginRef.current) / 1000);
+        }
+        if (elapsed < fallDuration && !isHoldingRef.current) {
+          fallTimerRef.current = requestAnimationFrame(fallUpdate);
+        } else if (!isHoldingRef.current) {
+          fallTimerRef.current = null;
+          holdProgressRef.current = 0;
+          setHoldProgress(0);
+        }
+      };
+      fallTimerRef.current = requestAnimationFrame(fallUpdate);
+    } else if (!hasCompletedRef.current) {
+      holdProgressRef.current = 0;
+      setHoldProgress(0);
+    }
     holdStartRef.current = 0;
   }, []);
 
   const startHold = useCallback((e?: React.SyntheticEvent | Event) => {
     const activeIdx = activeCardIndexRef.current;
     if (cardsState[activeIdx]?.planState === 'completed') return;
-    // Only accept primary mouse click (button === 0) if mouse event
+    if (e && e.type === 'mousedown' && performance.now() - lastTouchTimeRef.current < 600) return;
+    if (e && e.type === 'touchstart') {
+      lastTouchTimeRef.current = performance.now();
+    }
     if (e && 'button' in e && (e as React.MouseEvent).button !== 0) return;
+    if (isHoldingRef.current) return;
 
     if (holdTimerRef.current) {
       cancelAnimationFrame(holdTimerRef.current);
       holdTimerRef.current = null;
     }
+    if (fallTimerRef.current) {
+      cancelAnimationFrame(fallTimerRef.current);
+      fallTimerRef.current = null;
+    }
 
+    const now = performance.now();
     isHoldingRef.current = true;
     hasCompletedRef.current = false;
     setIsHolding(true);
+    holdProgressRef.current = 0;
     setHoldProgress(0);
-    holdStartRef.current = performance.now();
+    holdStartRef.current = now;
+    if (waveOriginRef.current === 0) {
+      waveOriginRef.current = now;
+    }
 
     const update = () => {
       if (!isHoldingRef.current) return;
-      const elapsed = performance.now() - holdStartRef.current;
+      const frameNow = performance.now();
+      const elapsed = frameNow - holdStartRef.current;
       const progress = Math.min((elapsed / HOLD_DURATION_MS) * 100, 100);
+      holdProgressRef.current = progress;
       setHoldProgress(progress);
+      setWaveTimeSec((frameNow - waveOriginRef.current) / 1000);
 
       if (progress >= 100) {
-        // Successfully held for the full 3 seconds
         if (!hasCompletedRef.current) {
           hasCompletedRef.current = true;
           isHoldingRef.current = false;
+          holdTimerRef.current = null;
           setIsHolding(false);
+          holdProgressRef.current = 100;
           setHoldProgress(100);
+          setIsCompletedPop(true);
+          setTimeout(() => setIsCompletedPop(false), 180);
           setPlanState('completed', activeCardIndexRef.current);
           if (typeof navigator !== 'undefined' && navigator.vibrate) {
             try { navigator.vibrate(50); } catch (_) {}
@@ -1090,6 +1356,7 @@ export default function App() {
   // Collapsed suggestion bubble vertical swipe handlers (swipe up = next, swipe down = prev, tap = open card)
   const handleBubblePointerDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    setIsBubblePressed(true);
     didSwipeBubbleRef.current = false;
     bubbleDragRef.current = {
       pointerId: e.pointerId,
@@ -1102,6 +1369,7 @@ export default function App() {
   }, []);
 
   const handleBubbleTouchStart = useCallback((e: React.TouchEvent<HTMLElement>) => {
+    setIsBubblePressed(true);
     if (bubbleDragRef.current) return;
     const touch = e.touches[0];
     if (!touch) return;
@@ -1170,6 +1438,7 @@ export default function App() {
       }
 
       setIsDraggingBubble(false);
+      setIsBubblePressed(false);
       setBubbleDragY(0);
       bubbleDragRef.current = null;
     };
@@ -1362,26 +1631,38 @@ export default function App() {
     }
   };
 
-  // Keyboard accessibility: Enter or Space activates confirmation dialog
+  // Keyboard accessibility: hold Space or Enter for 3 seconds to complete
   const handleDoneKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (planState === 'completed') return;
+    const activeState = cardsState[activeCardIndexRef.current]?.planState;
+    if (activeState === 'completed') return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      cancelHold();
-      setIsAccessibleConfirmOpen(true);
+      if (!e.repeat && !isHoldingRef.current) {
+        startHold();
+      }
+    }
+  };
+
+  const handleDoneKeyUp = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (!hasCompletedRef.current) {
+        cancelHold();
+      }
     }
   };
 
   // Screen reader / assistive technology click: detail === 0
   const handleDoneClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    // Assistive technology (screen reader) or keyboard synthesized click
-    if (e.detail === 0 && planState !== 'completed' && !hasCompletedRef.current) {
+    const activeState = cardsState[activeCardIndexRef.current]?.planState;
+    // Assistive technology (screen reader) synthesized click
+    if (e.detail === 0 && activeState !== 'completed' && !hasCompletedRef.current) {
       cancelHold();
       setIsAccessibleConfirmOpen(true);
       return;
     }
     // Standard mouse click or touch tap: do nothing;
-    // cancelHold() already reset progress to 0 on release.
+    // cancelHold() already animates fallback to 0 on release.
   };
 
   // Global listeners when user is actively holding: mouseup, touchend, blur, window visibility
@@ -1414,6 +1695,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (holdTimerRef.current) cancelAnimationFrame(holdTimerRef.current);
+      if (fallTimerRef.current) cancelAnimationFrame(fallTimerRef.current);
     };
   }, []);
 
@@ -1450,11 +1732,6 @@ export default function App() {
       ]);
     });
   };
-
-  // SVG circular progress calculation (enlarged by ~1.4x, radius 34)
-  const circleRadius = 34;
-  const circumference = 2 * Math.PI * circleRadius;
-  const strokeDashoffset = circumference - (holdProgress / 100) * circumference;
 
   return (
     <div className="min-h-screen bg-[#E5E5EA] flex items-center justify-center p-0 sm:py-6 font-sans antialiased select-none text-[#1C1C1E]">
@@ -1565,7 +1842,7 @@ export default function App() {
                     left: detailSourceRect.left,
                     width: detailSourceRect.width,
                     height: detailSourceRect.height,
-                    borderRadius: 16,
+                    borderRadius: 12,
                   }
                 : (detailClosingStartRect
                     ? {
@@ -1588,7 +1865,7 @@ export default function App() {
               left: isDetailOpen ? targetMediaLeft : detailSourceRect.left,
               width: isDetailOpen ? targetMediaWidth : detailSourceRect.width,
               height: isDetailOpen ? targetMediaHeight : detailSourceRect.height,
-              borderRadius: isDetailOpen ? 22 : 16,
+              borderRadius: isDetailOpen ? 22 : 12,
             }}
             transition={
               shouldReduceMotion
@@ -1617,18 +1894,23 @@ export default function App() {
               className="w-full h-full object-cover absolute inset-0"
             />
 
-            {/* Thumbnail Play Badge (Center): fades out as it expands */}
-            <motion.div
-              animate={{ opacity: isDetailOpen ? 0 : 1 }}
-              transition={{ duration: shouldReduceMotion ? 0.05 : 0.16 }}
-              className="absolute inset-0 bg-black/25 flex items-center justify-center pointer-events-none"
-            >
-              <div className="w-5 h-5 rounded-full bg-white/95 flex items-center justify-center shadow-xs">
-                <Play className="w-2.5 h-2.5 fill-[#26263F] text-[#26263F] ml-0.5" />
-              </div>
-            </motion.div>
+            {/* Thumbnail Play Badge (Video only): fades out as it expands */}
+            {currentPlan.mediaType === 'video' && (
+              <motion.div
+                animate={{ opacity: isDetailOpen ? 0 : 1 }}
+                transition={{ duration: shouldReduceMotion ? 0.05 : 0.16 }}
+                className="absolute inset-0 bg-black/15 flex items-center justify-center pointer-events-none"
+              >
+                <div
+                  style={{ width: '26px', height: '26px' }}
+                  className="rounded-full bg-black/52 flex items-center justify-center shadow-xs"
+                >
+                  <Play style={{ width: '11px', height: '11px' }} className="fill-white text-white ml-0.5" />
+                </div>
+              </motion.div>
+            )}
 
-            {/* Detail Audio Banner Info (Bottom): fades in as it expands toward target */}
+            {/* Detail Media Info (Bottom): fades in as it expands toward target */}
             <motion.div
               animate={{ opacity: isDetailOpen ? 1 : 0 }}
               transition={{
@@ -1642,13 +1924,15 @@ export default function App() {
                   <div className="text-xs font-bold leading-tight">{currentPlan.audioTitle}</div>
                   <div className="text-[10.5px] text-white/85 mt-0.5">{currentPlan.audioSubtitle}</div>
                 </div>
-                <div className="w-9 h-9 rounded-full bg-[#5E5BAE] text-white flex items-center justify-center shadow-xs">
-                  {isPlayingAudio ? (
-                    <Volume2 className="w-4 h-4 stroke-[2.4] text-white" />
-                  ) : (
-                    <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                  )}
-                </div>
+                {currentPlan.mediaType === 'video' && (
+                  <div className="w-9 h-9 rounded-full bg-[#5E5BAE] text-white flex items-center justify-center shadow-xs">
+                    {isPlayingAudio ? (
+                      <Pause className="w-4 h-4 fill-white text-white" />
+                    ) : (
+                      <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -1912,7 +2196,7 @@ export default function App() {
               >
                 <AnimatePresence mode="popLayout" initial={false}>
                   {!hasAnyAcceptedOrCompleted ? (
-                    /* 1. All suggestions unaccepted: Nova Dialog Bubble */
+                    /* 1. All suggestions unaccepted: 3-Layer Stacked Nova Dialog Bubble */
                     <motion.div
                       key="companion-nova-bubble"
                       id="today-suggestion-bubble-container"
@@ -1931,204 +2215,247 @@ export default function App() {
                           ease: 'easeOut',
                         },
                       }}
-                      className="w-full flex justify-center shrink-0"
+                      className="w-full flex justify-center shrink-0 overflow-visible"
                     >
-                      <button
-                        id="today-top-suggestion-btn"
-                        type="button"
-                        onPointerDown={handleBubblePointerDown}
-                        onTouchStart={handleBubbleTouchStart}
-                        onWheel={handleBubbleWheel}
-                        onClick={(e) => {
-                          if (
-                            didSwipeBubbleRef.current ||
-                            performance.now() - lastBubbleSwipeTimeRef.current < 260
-                          ) {
-                            didSwipeBubbleRef.current = false;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            return;
-                          }
-                          setIsPlanCardOpen(true);
-                        }}
-                        aria-expanded={isPlanCardOpen}
-                        aria-label={`Nova suggestion ${activeCardIndex + 1} of ${cardsState.length}: ${currentPlan.bubblePrompt}. Swipe up or down to switch, tap to open card.`}
+                      {/* Stack Group Wrapper: reserves 14px bottom stack height and scales entire stack to 0.985 in 120ms on press */}
+                      <div
+                        id="today-suggestion-bubble-stack"
                         style={{
-                          touchAction: 'pan-y',
                           width: 'calc(100% - 72px)',
-                          maxWidth: '336px',
-                          minHeight: '76px',
-                          height: 'auto',
-                          padding: '12px 16px',
-                          borderRadius: '24px',
-                          background: 'rgba(255, 255, 255, 0.30)',
-                          backdropFilter: 'blur(16px)',
-                          WebkitBackdropFilter: 'blur(16px)',
-                          boxShadow: '0 3px 12px rgba(70, 60, 100, 0.035)',
+                          maxWidth: '360px',
+                          marginTop: frameSize.height < 700 ? '11px' : '8px',
+                          paddingBottom: '14px',
+                          overflow: 'visible',
+                          transform: isBubblePressed ? 'scale(0.985)' : 'scale(1)',
+                          transition: 'transform 120ms ease-out',
                         }}
-                        className="relative z-10 text-left flex flex-col justify-center cursor-pointer active:scale-[0.99] transition-transform select-none overflow-visible"
+                        className="relative flex flex-col items-center shrink-0 overflow-visible"
                       >
-                        {/* Border ring with 12px top-center notch so pointer joint has zero internal border line */}
                         <div
-                          id="today-bubble-border-ring"
-                          aria-hidden="true"
-                          style={{
-                            borderRadius: '24px',
-                            border: '1px solid rgba(255, 255, 255, 0.55)',
-                            WebkitMaskImage:
-                              'linear-gradient(#000, #000), linear-gradient(#000, #000)',
-                            WebkitMaskSize: '100% 100%, 12px 2px',
-                            WebkitMaskPosition: '0 0, center top',
-                            WebkitMaskRepeat: 'no-repeat',
-                            WebkitMaskComposite: 'xor',
-                            maskImage:
-                              'linear-gradient(#000, #000), linear-gradient(#000, #000)',
-                            maskSize: '100% 100%, 12px 2px',
-                            maskPosition: '0 0, center top',
-                            maskRepeat: 'no-repeat',
-                            maskComposite: 'exclude',
-                          }}
-                          className="absolute inset-0 pointer-events-none"
-                        />
-
-                        {/* Top-center pointer towards Nova: 12px wide, 7px high, same background color, no internal border at joint */}
-                        <div
-                          id="today-bubble-pointer"
-                          aria-hidden="true"
-                          style={{
-                            width: '12px',
-                            height: '7px',
-                            top: '-7px',
-                            left: '50%',
-                            transform: 'translateX(-50%)',
-                          }}
-                          className="absolute pointer-events-none"
+                          id="today-suggestion-stack-stage"
+                          style={{ overflow: 'visible' }}
+                          className="relative w-full"
                         >
+                          {/* Layer 3 (Lowest decorative layer): inset 20px left/right, bottom 14px lower, radius 22px, fill rgba(255,255,255,0.20), border 1px solid rgba(255,255,255,0.65) */}
                           <div
+                            id="today-bubble-stack-layer-3"
+                            aria-hidden="true"
                             style={{
-                              width: '12px',
-                              height: '7px',
-                              background: 'rgba(255, 255, 255, 0.30)',
-                              backdropFilter: 'blur(16px)',
-                              WebkitBackdropFilter: 'blur(16px)',
-                              clipPath: 'polygon(50% 0%, 0% 100%, 100% 100%)',
+                              position: 'absolute',
+                              top: '14px',
+                              bottom: '-14px',
+                              left: '20px',
+                              right: '20px',
+                              borderRadius: '22px',
+                              background: 'rgba(255, 255, 255, 0.20)',
+                              border: '1px solid rgba(255, 255, 255, 0.65)',
+                              boxShadow: 'none',
+                              pointerEvents: 'none',
+                              zIndex: 10,
                             }}
                           />
-                          <svg
-                            width="12"
-                            height="7"
-                            viewBox="0 0 12 7"
-                            className="absolute inset-0 pointer-events-none overflow-visible"
-                          >
-                            <path
-                              d="M 0 7 L 6 0.5 L 12 7"
-                              fill="none"
-                              stroke="rgba(255, 255, 255, 0.55)"
-                              strokeWidth="1"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                        </div>
 
-                        {/* Row 1: Left "Nova" (11px, 500, 14px, #716A91); Right "1 / 3" (10px, 400, #96929F) */}
-                        <div className="w-full flex items-center justify-between">
-                          <span
-                            id="today-bubble-speaker"
-                            style={{
-                              fontSize: '11px',
-                              fontWeight: 500,
-                              lineHeight: '14px',
-                              color: '#716A91',
-                            }}
-                          >
-                            Nova
-                          </span>
-
-                          <span
-                            id="today-bubble-counter"
-                            style={{
-                              fontSize: '10px',
-                              fontWeight: 400,
-                              lineHeight: '14px',
-                              color: '#96929F',
-                            }}
-                            className="tabular-nums select-none"
-                          >
-                            {activeCardIndex + 1} / {cardsState.length}
-                          </span>
-                        </div>
-
-                        {/* Row 2 (5px below Row 1): Suggestion sentence (15px, 500, 21px, #34323B, max 2 lines, 24px right space reserved) + 14px Chevron (#827AAB) */}
-                        <div
-                          style={{
-                            marginTop: '5px',
-                            paddingRight: '24px',
-                          }}
-                          className="relative w-full flex items-center min-h-[21px]"
-                        >
-                          <div className="w-full overflow-hidden">
-                            <AnimatePresence mode="popLayout" initial={false} custom={bubbleSwipeDir}>
-                              <motion.span
-                                key={`${activeCardIndex}-${currentPlan.id}`}
-                                id="today-bubble-suggestion-text"
-                                custom={bubbleSwipeDir}
-                                initial={
-                                  shouldReduceMotion
-                                    ? { opacity: 0 }
-                                    : { opacity: 0, y: bubbleSwipeDir >= 0 ? 10 : -10 }
-                                }
-                                animate={{
-                                  opacity: 1,
-                                  y: bubbleDragY,
-                                }}
-                                exit={
-                                  shouldReduceMotion
-                                    ? { opacity: 0 }
-                                    : { opacity: 0, y: bubbleSwipeDir >= 0 ? -10 : 10 }
-                                }
-                                transition={
-                                  isDraggingBubble
-                                    ? { duration: 0 }
-                                    : shouldReduceMotion
-                                    ? { duration: 0.06 }
-                                    : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }
-                                }
-                                style={{
-                                  fontSize: '15px',
-                                  fontWeight: 500,
-                                  lineHeight: '21px',
-                                  color: '#34323B',
-                                  display: '-webkit-box',
-                                  WebkitLineClamp: 2,
-                                  WebkitBoxOrient: 'vertical',
-                                  overflow: 'hidden',
-                                  wordBreak: 'break-word',
-                                }}
-                                className="w-full"
-                              >
-                                {currentPlan.bubblePrompt}
-                              </motion.span>
-                            </AnimatePresence>
-                          </div>
-
-                          {/* Right Expand Arrow: 14px, #827AAB, no circle background */}
-                          <span
-                            id="today-bubble-expand-cue"
+                          {/* Layer 2 (Middle decorative layer): inset 10px left/right, bottom 7px lower, radius 24px, fill rgba(255,255,255,0.32), border 1px solid rgba(255,255,255,0.65) */}
+                          <div
+                            id="today-bubble-stack-layer-2"
                             aria-hidden="true"
-                            className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none"
+                            style={{
+                              position: 'absolute',
+                              top: '7px',
+                              bottom: '-7px',
+                              left: '10px',
+                              right: '10px',
+                              borderRadius: '24px',
+                              background: 'rgba(255, 255, 255, 0.32)',
+                              border: '1px solid rgba(255, 255, 255, 0.65)',
+                              boxShadow: 'none',
+                              pointerEvents: 'none',
+                              zIndex: 20,
+                            }}
+                          />
+
+                          {/* Layer 1 (Main interactive bubble): top layer, radius 26px, padding 14px 18px 16px, fill rgba(255,255,255,0.48), border 1px solid rgba(255,255,255,0.85), blur 16px, shadow 0 6px 20px rgba(70,60,100,0.045) */}
+                          <button
+                            id="today-top-suggestion-btn"
+                            type="button"
+                            onPointerDown={handleBubblePointerDown}
+                            onPointerUp={() => setIsBubblePressed(false)}
+                            onPointerCancel={() => setIsBubblePressed(false)}
+                            onPointerLeave={() => {
+                              if (!isDraggingBubble) setIsBubblePressed(false);
+                            }}
+                            onTouchStart={handleBubbleTouchStart}
+                            onTouchEnd={() => setIsBubblePressed(false)}
+                            onTouchCancel={() => setIsBubblePressed(false)}
+                            onWheel={handleBubbleWheel}
+                            onClick={(e) => {
+                              setIsBubblePressed(false);
+                              if (
+                                didSwipeBubbleRef.current ||
+                                performance.now() - lastBubbleSwipeTimeRef.current < 260
+                              ) {
+                                didSwipeBubbleRef.current = false;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                return;
+                              }
+                              setIsPlanCardOpen(true);
+                            }}
+                            aria-expanded={isPlanCardOpen}
+                            aria-label={`Open Nova’s suggestions: ${currentPlan.bubblePrompt}`}
+                            style={{
+                              touchAction: 'pan-y',
+                              width: '100%',
+                              height: 'auto',
+                              paddingTop: '14px',
+                              paddingBottom: '16px',
+                              paddingLeft: '18px',
+                              paddingRight: '18px',
+                              borderRadius: '26px',
+                              background: 'rgba(255, 255, 255, 0.48)',
+                              backdropFilter: 'blur(16px)',
+                              WebkitBackdropFilter: 'blur(16px)',
+                              boxShadow: '0 6px 20px rgba(70, 60, 100, 0.045)',
+                              zIndex: 30,
+                              overflow: 'visible',
+                            }}
+                            className="relative text-left flex flex-col justify-center cursor-pointer select-none overflow-visible"
                           >
-                            <ChevronRight
+                            {/* Continuous border ring with 26px top-center mask exclusion so pointer base has zero horizontal border line or seam */}
+                            <div
+                              id="today-bubble-border-ring"
+                              aria-hidden="true"
                               style={{
-                                width: '14px',
-                                height: '14px',
-                                color: '#827AAB',
+                                borderRadius: '26px',
+                                border: '1px solid rgba(255, 255, 255, 0.85)',
+                                WebkitMaskImage:
+                                  'linear-gradient(#000, #000), linear-gradient(#000, #000)',
+                                WebkitMaskSize: '100% 100%, 26px 2px',
+                                WebkitMaskPosition: '0 0, center top',
+                                WebkitMaskRepeat: 'no-repeat',
+                                WebkitMaskComposite: 'xor',
+                                maskImage:
+                                  'linear-gradient(#000, #000), linear-gradient(#000, #000)',
+                                maskSize: '100% 100%, 26px 2px',
+                                maskPosition: '0 0, center top',
+                                maskRepeat: 'no-repeat',
+                                maskComposite: 'exclude',
                               }}
-                              strokeWidth={2}
+                              className="absolute inset-0 pointer-events-none"
                             />
-                          </span>
+
+                            {/* Top-center pointer towards Avatar: base width 26px, height 14px, tip radius ~2px, same fill & continuous SVG stroke */}
+                            <div
+                              id="today-bubble-pointer"
+                              aria-hidden="true"
+                              style={{
+                                width: '26px',
+                                height: '14px',
+                                top: '-14px',
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                              }}
+                              className="absolute pointer-events-none"
+                            >
+                              <div
+                                style={{
+                                  width: '26px',
+                                  height: '14px',
+                                  background: 'rgba(255, 255, 255, 0.48)',
+                                  backdropFilter: 'blur(16px)',
+                                  WebkitBackdropFilter: 'blur(16px)',
+                                  clipPath:
+                                    "path('M 0 14 L 11.53 0.64 A 2 2 0 0 1 14.47 0.64 L 26 14 Z')",
+                                }}
+                              />
+                              <svg
+                                id="today-bubble-pointer-svg"
+                                width="26"
+                                height="14"
+                                viewBox="0 0 26 14"
+                                className="absolute inset-0 pointer-events-none overflow-visible"
+                              >
+                                <path
+                                  d="M 0 14 L 11.53 1.14 A 2 2 0 0 1 14.47 1.14 L 26 14"
+                                  fill="none"
+                                  stroke="rgba(255, 255, 255, 0.85)"
+                                  strokeWidth="1"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </div>
+
+                            {/* Row 1: Only "Nova" speaker label (12px, weight 500, line-height 16px, #766D98) */}
+                            <div className="w-full flex items-center">
+                              <span
+                                id="today-bubble-speaker"
+                                style={{
+                                  fontSize: '12px',
+                                  fontWeight: 500,
+                                  lineHeight: '16px',
+                                  color: '#766D98',
+                                }}
+                              >
+                                Nova
+                              </span>
+                            </div>
+
+                            {/* Row 2 (6px below Nova): Suggestion body (16px, weight 500, line-height 23px, #393640, natural wrap, full text, no ellipsis, no right chevron padding) */}
+                            <div
+                              style={{
+                                marginTop: '6px',
+                              }}
+                              className="relative w-full flex items-center"
+                            >
+                              <div className="w-full overflow-visible">
+                                <AnimatePresence mode="popLayout" initial={false} custom={bubbleSwipeDir}>
+                                  <motion.span
+                                    key={`${activeCardIndex}-${currentPlan.id}`}
+                                    id="today-bubble-suggestion-text"
+                                    custom={bubbleSwipeDir}
+                                    initial={
+                                      shouldReduceMotion
+                                        ? { opacity: 0 }
+                                        : { opacity: 0, y: bubbleSwipeDir >= 0 ? 10 : -10 }
+                                    }
+                                    animate={{
+                                      opacity: 1,
+                                      y: bubbleDragY,
+                                    }}
+                                    exit={
+                                      shouldReduceMotion
+                                        ? { opacity: 0 }
+                                        : { opacity: 0, y: bubbleSwipeDir >= 0 ? -10 : 10 }
+                                    }
+                                    transition={
+                                      isDraggingBubble
+                                        ? { duration: 0 }
+                                        : shouldReduceMotion
+                                        ? { duration: 0.06 }
+                                        : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }
+                                    }
+                                    style={{
+                                      fontSize: '16px',
+                                      fontWeight: 500,
+                                      lineHeight: '23px',
+                                      color: '#393640',
+                                      display: 'block',
+                                      whiteSpace: 'normal',
+                                      overflow: 'visible',
+                                      textOverflow: 'clip',
+                                      wordBreak: 'break-word',
+                                    }}
+                                    className="w-full"
+                                  >
+                                    {currentPlan.bubblePrompt}
+                                  </motion.span>
+                                </AnimatePresence>
+                              </div>
+                            </div>
+                          </button>
                         </div>
-                      </button>
+                      </div>
                     </motion.div>
                   ) : (
                     /* 2. Any task in progress or completed: Today with Nova Board */
@@ -2422,8 +2749,6 @@ export default function App() {
                     const closeBtnOpacity = Math.max(0, 1 - absOffset * 2.6);
 
                     const cardProgress = isCenterCard ? holdProgress : 0;
-                    const cardStrokeDashoffset =
-                      circumference - (cardProgress / 100) * circumference;
 
                     return (
                       <div
@@ -2460,14 +2785,14 @@ export default function App() {
                             : 'pointer-events-none'
                         }`}
                       >
-                        {/* Top Card Header: Compacted, no horizontal divider line */}
+                        {/* Top Card Header: Compacted, 20px horizontal padding */}
                         <div
                           style={{ opacity: innerContentOpacity }}
-                          className={`px-4 pt-3.5 pb-1 w-full shrink-0 ${
+                          className={`px-[20px] pt-3.5 w-full shrink-0 ${
                             isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2 mb-0.5">
+                          <div className="flex items-center justify-between gap-2 mb-1">
                             <div className="relative h-4 flex-1 select-none">
                               <span
                                 className={`text-[10.5px] font-bold uppercase tracking-wider text-[#5E5BAE] absolute inset-0 transition-opacity ${
@@ -2514,76 +2839,93 @@ export default function App() {
                             </button>
                           </div>
 
-                          {/* Title & Thumbnail Row */}
+                          {/* Title Row: Full width in suggested state (max 2 lines, never shares width with thumbnail) */}
                           <div className="flex items-center justify-between gap-2.5">
-                            <h2 className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1">
+                            <h2
+                              style={{
+                                display: '-webkit-box',
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: 'vertical',
+                                overflow: 'hidden',
+                              }}
+                              className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+                            >
                               {cardPlan.title}
                             </h2>
 
-                            {/* Rich Media Thumbnail Entry (Only in Accepted/Completed State) */}
-                            <div
-                              className={`transition-all duration-300 ${
-                                cardState !== 'suggested'
-                                  ? 'opacity-100 scale-100 pointer-events-auto'
-                                  : 'opacity-0 scale-90 pointer-events-none w-0 h-0 overflow-hidden'
-                              }`}
-                            >
-                              {cardState !== 'suggested' && (
-                                <button
-                                  ref={isCenterCard ? cardThumbnailRef : undefined}
-                                  type="button"
-                                  tabIndex={isCenterCard ? 0 : -1}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (isCenterCard) {
-                                      openDetailWithTransition();
-                                    }
-                                  }}
-                                  className="relative w-10 h-10 rounded-[13px] overflow-hidden shrink-0 border border-white/80 shadow-[0_2px_8px_rgba(38,38,63,0.06)] group active:scale-95 transition-all cursor-pointer"
-                                  title="View plan guide"
-                                  aria-label="View plan guide"
-                                >
-                                  <div
-                                    className={`w-full h-full relative transition-opacity duration-150 ${
-                                      isCenterCard && (detailTransitionPhase !== 'idle' || isDetailOpen)
-                                        ? 'opacity-0'
-                                        : 'opacity-100'
-                                    }`}
-                                  >
-                                    <img
-                                      src={cardPlan.thumbnailUrl}
-                                      alt="Plan preview"
-                                      referrerPolicy="no-referrer"
-                                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                    />
-                                    <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
-                                      <div className="w-4.5 h-4.5 rounded-full bg-white/95 flex items-center justify-center shadow-xs">
-                                        <Play className="w-2.5 h-2.5 fill-[#26263F] text-[#26263F] ml-0.5" />
-                                      </div>
-                                    </div>
-                                  </div>
-                                </button>
-                              )}
-                            </div>
+                            {/* Rich Media Thumbnail Entry in Accepted/Completed State */}
+                            {cardState !== 'suggested' && (
+                              <SuggestionMediaThumbnail
+                                src={cardPlan.thumbnailUrl}
+                                title={cardPlan.title}
+                                mediaType={cardPlan.mediaType}
+                                squareSize={40}
+                                isHiddenForTransition={
+                                  isCenterCard && (detailTransitionPhase !== 'idle' || isDetailOpen)
+                                }
+                                isInteractive={isCenterCard}
+                                buttonRef={isCenterCard ? cardThumbnailRef : undefined}
+                                didSwipeCarouselRef={didSwipeCarouselRef}
+                                lastCarouselSwipeTimeRef={lastCarouselSwipeTimeRef}
+                                onOpenDetail={openDetailWithTransition}
+                              />
+                            )}
                           </div>
                         </div>
 
-                        {/* Card Body Content: Tightened vertical rhythm */}
+                        {/* Card Body Content: 20px horizontal padding */}
                         <div
                           ref={isCenterCard ? cardContentRef : undefined}
                           style={{ opacity: innerContentOpacity }}
-                          className={`px-4 pt-1 pb-3.5 w-full flex-1 flex flex-col justify-between gap-2 ${
+                          className={`px-[20px] pb-4 w-full flex-1 flex flex-col justify-between ${
                             isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
-                          {/* 2. SUGGESTED EXTRA: Subtitle + Initial Action Buttons ("Sounds good" & "Adjust") */}
+                          {/* 2. SUGGESTED EXTRA: 10px below title -> Two-Column Content Row (minmax(0,1fr) + 80px/72px thumb, 12px gap) -> 18px gap -> 2 Buttons (>=44px) */}
                           {cardState === 'suggested' ? (
-                            <div className="flex-1 flex flex-col justify-between gap-2.5">
-                              <p className="text-[13px] text-[#6C6C70] leading-snug">
-                                {cardPlan.subtitle}
-                              </p>
+                            <div style={{ marginTop: '10px' }} className="flex-1 flex flex-col justify-between">
+                              <div
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns:
+                                    frameSize.width <= 375 ? 'minmax(0, 1fr) 72px' : 'minmax(0, 1fr) 80px',
+                                  columnGap: '12px',
+                                  alignItems: 'start',
+                                  minHeight: frameSize.width <= 375 ? '60px' : '64px',
+                                }}
+                                className="w-full"
+                              >
+                                <p
+                                  style={{
+                                    fontSize: '14px',
+                                    lineHeight: '20px',
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 3,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                  }}
+                                  className="text-[#6C6C70] font-normal break-words m-0"
+                                >
+                                  {cardPlan.subtitle}
+                                </p>
 
-                              <div className="grid grid-cols-2 gap-2.5 pt-0.5">
+                                <SuggestionMediaThumbnail
+                                  src={cardPlan.thumbnailUrl}
+                                  title={cardPlan.title}
+                                  mediaType={cardPlan.mediaType}
+                                  compact={frameSize.width <= 375}
+                                  isHiddenForTransition={
+                                    isCenterCard && (detailTransitionPhase !== 'idle' || isDetailOpen)
+                                  }
+                                  isInteractive={isCenterCard}
+                                  buttonRef={isCenterCard ? cardThumbnailRef : undefined}
+                                  didSwipeCarouselRef={didSwipeCarouselRef}
+                                  lastCarouselSwipeTimeRef={lastCarouselSwipeTimeRef}
+                                  onOpenDetail={openDetailWithTransition}
+                                />
+                              </div>
+
+                              <div style={{ marginTop: '18px' }} className="grid grid-cols-2 gap-2.5">
                                 <button
                                   type="button"
                                   data-card-action="sounds-good"
@@ -2594,7 +2936,7 @@ export default function App() {
                                       handleSoundsGood(slotCardIdx);
                                     }
                                   }}
-                                  className="h-10 px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
+                                  className="min-h-[44px] px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
                                 >
                                   Sounds good
                                 </button>
@@ -2608,96 +2950,167 @@ export default function App() {
                                       handleInitialPlanB(slotCardIdx);
                                     }
                                   }}
-                                  className="h-10 w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
+                                  className="min-h-[44px] w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap"
                                 >
                                   Adjust
                                 </button>
                               </div>
                             </div>
                           ) : (
-                            /* 3. ACCEPTED / COMPLETED EXTRA: Circular Done Button + Auxiliary Operations */
-                            <div className="flex-1 flex flex-col justify-between gap-1 pt-0.5">
-                              {/* Horizontally Centered Circular Done Button + "Hold to complete" */}
+                            /* 3. ACCEPTED / COMPLETED EXTRA: Circular Wave Done Button + Auxiliary Operations */
+                            <div className="flex-1 flex flex-col justify-between gap-2 pt-1">
+                              {/* Horizontally Centered Circular Wave Done Button + "Hold to complete" */}
                               <div className="flex flex-col items-center justify-center">
-                                <div
-                                  style={{ width: '58px', height: '58px' }}
-                                  className="relative flex items-center justify-center"
-                                >
-                                  <svg className="w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 76 76">
-                                    <circle
-                                      cx="38"
-                                      cy="38"
-                                      r={circleRadius}
-                                      className="stroke-[#EAE7F6]/80"
-                                      strokeWidth="4"
-                                      fill="transparent"
-                                    />
-                                    <circle
-                                      cx="38"
-                                      cy="38"
-                                      r={circleRadius}
-                                      className={`stroke-[#FF7A32] ${
-                                        isCenterCard && isHolding ? 'transition-none' : 'transition-all duration-150'
-                                      }`}
-                                      strokeWidth="4.5"
-                                      strokeDasharray={circumference}
-                                      strokeDashoffset={
-                                        cardState === 'completed' ? 0 : cardStrokeDashoffset
-                                      }
-                                      strokeLinecap="round"
-                                      fill="transparent"
-                                    />
-                                  </svg>
+                                {(() => {
+                                  const progressVal =
+                                    cardState === 'completed'
+                                      ? 1
+                                      : Math.max(0, Math.min(1, cardProgress / 100));
+                                  const waterY = 76 * (1 - progressVal);
+                                  const ampCoef = shouldReduceMotion
+                                    ? 0
+                                    : Math.max(0, Math.min(1, progressVal / 0.12, (1 - progressVal) / 0.12));
+                                  const mainAmp = 2 * ampCoef;
+                                  const fgAmp = 1.5 * ampCoef;
+                                  const fgOpacity =
+                                    progressVal >= 1 ? 0 : 0.25 * Math.min(1, (1 - progressVal) / 0.06);
 
-                                  <button
-                                    type="button"
-                                    tabIndex={isCenterCard ? 0 : -1}
-                                    style={{ width: '46px', height: '46px' }}
-                                    onMouseDown={isCenterCard ? startHold : undefined}
-                                    onMouseUp={isCenterCard ? cancelHold : undefined}
-                                    onMouseLeave={isCenterCard ? cancelHold : undefined}
-                                    onTouchStart={isCenterCard ? startHold : undefined}
-                                    touch-action="none"
-                                    onTouchEnd={isCenterCard ? cancelHold : undefined}
-                                    onTouchCancel={isCenterCard ? cancelHold : undefined}
-                                    onTouchMove={isCenterCard ? handleTouchMove : undefined}
-                                    onContextMenu={(e) => e.preventDefault()}
-                                    onKeyDown={isCenterCard ? handleDoneKeyDown : undefined}
-                                    onClick={isCenterCard ? handleDoneClick : undefined}
-                                    aria-label={
-                                      cardState === 'completed'
-                                        ? 'Plan completed'
-                                        : 'Press and hold for 3 seconds to complete, or press Enter for confirmation dialog'
+                                  let mainWavePath = '';
+                                  let fgWavePath = '';
+                                  if (progressVal >= 1) {
+                                    mainWavePath = 'M 0 76 L 0 0 L 76 0 L 76 76 Z';
+                                  } else if (progressVal > 0) {
+                                    const mainPts: string[] = [];
+                                    const fgPts: string[] = [];
+                                    for (let x = 0; x <= 76; x += 2) {
+                                      const y1 =
+                                        waterY +
+                                        mainAmp *
+                                          Math.sin(((x / 56) - (waveTimeSec / 1.6)) * 2 * Math.PI);
+                                      mainPts.push(`${x} ${Math.max(0, Math.min(76, y1)).toFixed(2)}`);
+
+                                      const y2 =
+                                        waterY +
+                                        fgAmp *
+                                          Math.sin(((x / 42) + (waveTimeSec / 2.1) + 0.35) * 2 * Math.PI);
+                                      fgPts.push(`${x} ${Math.max(0, Math.min(76, y2)).toFixed(2)}`);
                                     }
-                                    className={`absolute rounded-full flex items-center justify-center font-bold transition-all duration-200 select-none shadow-sm touch-none border border-white/20 cursor-pointer ${
-                                      cardState === 'completed'
-                                        ? 'bg-[#54519E] text-white shadow-[0_4px_16px_rgba(84,81,158,0.25)]'
-                                        : isCenterCard && isHolding
-                                        ? 'bg-[#484591] text-white scale-95 shadow-inner'
-                                        : 'bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] text-white shadow-[0_4px_18px_rgba(94,91,174,0.28)]'
-                                    }`}
-                                  >
-                                    {cardState === 'completed' ? (
-                                      <Check className="w-5 h-5 stroke-[3] text-white" />
-                                    ) : (
-                                      <span className="font-bold text-[13px] tracking-tight text-white">
-                                        Done
-                                      </span>
-                                    )}
-                                  </button>
-                                </div>
+                                    mainWavePath = `M 0 76 L ${mainPts.join(' L ')} L 76 76 Z`;
+                                    fgWavePath = `M 0 76 L ${fgPts.join(' L ')} L 76 76 Z`;
+                                  }
 
-                                <span className="text-[10.5px] mt-0.5 whitespace-nowrap text-center font-normal leading-tight">
+                                  const clipId = `waveClip-${vIdx}`;
+
+                                  return (
+                                    <button
+                                      type="button"
+                                      tabIndex={isCenterCard ? 0 : -1}
+                                      onMouseDown={isCenterCard ? startHold : undefined}
+                                      onMouseUp={isCenterCard ? cancelHold : undefined}
+                                      onMouseLeave={isCenterCard ? cancelHold : undefined}
+                                      onTouchStart={isCenterCard ? startHold : undefined}
+                                      onTouchEnd={isCenterCard ? cancelHold : undefined}
+                                      onTouchCancel={isCenterCard ? cancelHold : undefined}
+                                      onTouchMove={isCenterCard ? handleTouchMove : undefined}
+                                      onContextMenu={(e) => e.preventDefault()}
+                                      onKeyDown={isCenterCard ? handleDoneKeyDown : undefined}
+                                      onKeyUp={isCenterCard ? handleDoneKeyUp : undefined}
+                                      onBlur={isCenterCard ? cancelHold : undefined}
+                                      onClick={isCenterCard ? handleDoneClick : undefined}
+                                      aria-label={
+                                        cardState === 'completed'
+                                          ? 'Plan completed'
+                                          : 'Hold for 3 seconds to complete'
+                                      }
+                                      style={{
+                                        width: '76px',
+                                        height: '76px',
+                                        touchAction: 'none',
+                                        transform:
+                                          isCenterCard && isCompletedPop && !shouldReduceMotion
+                                            ? 'scale(1.04)'
+                                            : 'scale(1)',
+                                        transition: shouldReduceMotion
+                                          ? 'none'
+                                          : 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1)',
+                                      }}
+                                      className="relative rounded-full overflow-hidden flex items-center justify-center select-none cursor-pointer bg-[#EFEDF8] border border-[rgba(100,88,177,0.12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6558B1]"
+                                    >
+                                      <svg
+                                        width="76"
+                                        height="76"
+                                        viewBox="0 0 76 76"
+                                        className="absolute inset-0 w-full h-full pointer-events-none"
+                                        aria-hidden="true"
+                                      >
+                                        <defs>
+                                          <clipPath id={clipId}>
+                                            {mainWavePath ? <path d={mainWavePath} /> : <rect x="0" y="76" width="76" height="0" />}
+                                          </clipPath>
+                                        </defs>
+
+                                        {/* Uncovered "Done" text in #6558B1 */}
+                                        {cardState !== 'completed' && (
+                                          <text
+                                            x="38"
+                                            y="38"
+                                            dominantBaseline="central"
+                                            textAnchor="middle"
+                                            fontSize="16"
+                                            fontWeight="600"
+                                            fill="#6558B1"
+                                          >
+                                            Done
+                                          </text>
+                                        )}
+
+                                        {/* Main solid water body (#6558B1) & translucent foreground wave (#8B7CC8 @ 0.25) */}
+                                        {mainWavePath && (
+                                          <path d={mainWavePath} fill="#6558B1" />
+                                        )}
+                                        {fgWavePath && fgOpacity > 0 && (
+                                          <path d={fgWavePath} fill="#8B7CC8" fillOpacity={fgOpacity} />
+                                        )}
+
+                                        {/* White "Done" text clipped strictly to water body */}
+                                        {cardState !== 'completed' && mainWavePath && (
+                                          <g clipPath={`url(#${clipId})`}>
+                                            <text
+                                              x="38"
+                                              y="38"
+                                              dominantBaseline="central"
+                                              textAnchor="middle"
+                                              fontSize="16"
+                                              fontWeight="600"
+                                              fill="#FFFFFF"
+                                            >
+                                              Done
+                                            </text>
+                                          </g>
+                                        )}
+                                      </svg>
+
+                                      {cardState === 'completed' && (
+                                        <Check className="relative z-10 w-6 h-6 stroke-[2.75] text-white pointer-events-none" />
+                                      )}
+                                    </button>
+                                  );
+                                })()}
+
+                                <span
+                                  style={{ marginTop: '10px', fontSize: '12px', lineHeight: '16px' }}
+                                  className="whitespace-nowrap text-center font-normal"
+                                >
                                   {cardState === 'completed' ? (
-                                    <span className="text-[#5E5BAE] font-semibold">Completed</span>
+                                    <span className="text-[#6558B1] font-semibold">Completed</span>
                                   ) : (
-                                    <span className="text-[#706E8A]">Hold to complete</span>
+                                    <span className="text-[#8B849F]">Hold to complete</span>
                                   )}
                                 </span>
                               </div>
 
                               {/* Bottom Section: Side-by-Side "Adjust" and "Not today" (or Undo completion) */}
-                              <div className="flex items-center justify-center gap-6 pt-0.5 border-t border-black/[0.05]">
+                              <div className="flex items-center justify-center gap-6 pt-1 border-t border-black/[0.05]">
                                 {cardState === 'completed' ? (
                                   <button
                                     type="button"
@@ -2707,6 +3120,8 @@ export default function App() {
                                       if (isCenterCard) {
                                         hasCompletedRef.current = false;
                                         isHoldingRef.current = false;
+                                        holdProgressRef.current = 0;
+                                        setIsCompletedPop(false);
                                         setPlanState('accepted', slotCardIdx);
                                         setHoldProgress(0);
                                       }
@@ -2949,7 +3364,7 @@ export default function App() {
 
                 {/* Sheet Content: Media & Clean Guideline Rows (No Nested Card-in-Card) */}
                 <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-4 space-y-5">
-                  {/* Media Hero Banner: In-place slot */}
+                  {/* Media Hero Banner: In-place slot (user-controlled playback only for video; clean cover for article) */}
                   <div
                     ref={detailMediaHeroRef}
                     className="relative w-full h-40 sm:h-44 rounded-[22px] overflow-hidden border border-black/[0.04] shadow-xs shrink-0"
@@ -2963,36 +3378,42 @@ export default function App() {
                         src={currentPlan.thumbnailUrl}
                         alt={currentPlan.title}
                         referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
+                        className={`w-full h-full object-cover transition-transform duration-[4000ms] ease-out ${
+                          currentPlan.mediaType === 'video' && isPlayingAudio ? 'scale-108' : 'scale-100'
+                        }`}
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/25 to-transparent flex items-end p-4 sm:p-4.5">
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent flex items-end p-4 sm:p-4.5">
                         <div className="flex items-center justify-between w-full text-white">
                           <div className="flex-1 min-w-0 pr-3">
                             <div className="text-[13.5px] sm:text-[14px] font-bold leading-tight tracking-[-0.01em]">
                               {currentPlan.audioTitle}
                             </div>
                             <div className="text-[11px] sm:text-[11.5px] text-white/85 mt-0.5 font-normal">
-                              {currentPlan.audioSubtitle}
+                              {currentPlan.mediaType === 'video' && isPlayingAudio
+                                ? 'Playing guided preview • Tap to pause'
+                                : currentPlan.audioSubtitle}
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setIsPlayingAudio(!isPlayingAudio)}
-                            className="w-9 h-9 rounded-full bg-[#5E5BAE] hover:bg-[#524FA0] text-white flex items-center justify-center shadow-xs active:scale-95 transition-transform cursor-pointer shrink-0"
-                            aria-label={isPlayingAudio ? "Pause audio guide" : "Play audio guide"}
-                          >
-                            {isPlayingAudio ? (
-                              <Volume2 className="w-4 h-4 stroke-[2.4] text-white" />
-                            ) : (
-                              <Play className="w-4 h-4 fill-white text-white ml-0.5" />
-                            )}
-                          </button>
+                          {currentPlan.mediaType === 'video' && (
+                            <button
+                              type="button"
+                              onClick={() => setIsPlayingAudio((prev) => !prev)}
+                              className="w-10 h-10 rounded-full bg-[#5E5BAE] hover:bg-[#524FA0] text-white flex items-center justify-center shadow-xs active:scale-95 transition-transform cursor-pointer shrink-0"
+                              aria-label={isPlayingAudio ? "Pause video preview" : "Play video preview"}
+                            >
+                              {isPlayingAudio ? (
+                                <Pause className="w-4 h-4 fill-white text-white" />
+                              ) : (
+                                <Play className="w-4 h-4 fill-white text-white ml-0.5" />
+                              )}
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Clean Practical Guidelines (Airy white rows with subtle divider, no nested grey cards) */}
+                  {/* Full Description & Clean Practical Guidelines */}
                   <motion.div
                     initial={shouldReduceMotion ? { opacity: 1 } : { opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -3005,8 +3426,17 @@ export default function App() {
                             ease: "easeOut",
                           }
                     }
-                    className="space-y-3.5 pt-1"
+                    className="space-y-4 pt-1"
                   >
+                    <p
+                      id="detail-full-description"
+                      className="text-[14px] text-[#3C3C43] leading-[21px]"
+                    >
+                      {currentPlan.fullDescription}
+                    </p>
+
+                    <div className="h-px bg-black/[0.05]" />
+
                     <h4 className="text-[14px] font-semibold text-[#1C1C1E] tracking-tight">
                       Gentle Guidelines
                     </h4>
@@ -3262,6 +3692,7 @@ export default function App() {
                   onClick={() => {
                     hasCompletedRef.current = true;
                     isHoldingRef.current = false;
+                    holdProgressRef.current = 100;
                     setIsAccessibleConfirmOpen(false);
                     setPlanState('completed');
                     setHoldProgress(100);
