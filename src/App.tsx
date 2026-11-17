@@ -351,12 +351,15 @@ function preloadPlanThumbnail(src: string): Promise<void> {
 }
 
 const CARD_UPDATE_SPARKLES = [
-  { left: '9%', top: '24%', size: 14, delayMs: 180, color: '#A18ACD', nudgeX: -12, nudgeY: 0 },
-  { left: '29%', top: '12%', size: 10, delayMs: 300, color: '#B9A3E2', nudgeX: 6, nudgeY: 0 },
-  { left: '43%', top: '66%', size: 16, delayMs: 420, color: '#C5B4EB', nudgeX: -12, nudgeY: 0 },
-  { left: '64%', top: '30%', size: 12, delayMs: 540, color: '#A18ACD', nudgeX: 0, nudgeY: 12 },
-  { left: '79%', top: '77%', size: 14, delayMs: 660, color: '#B9A3E2', nudgeX: 0, nudgeY: 0 },
-  { left: '91%', top: '19%', size: 10, delayMs: 760, color: '#C5B4EB', nudgeX: 0, nudgeY: 0 },
+  { left: '3.8%', top: '24%', size: 12, delayMs: 180, color: '#A18ACD', nudgeX: 0, nudgeY: 0 },
+  { left: '38%', top: '11%', size: 10, delayMs: 280, color: '#B9A3E2', nudgeX: 0, nudgeY: 0 },
+  { left: '16%', top: '46%', size: 15, delayMs: 340, color: '#C5B4EB', nudgeX: 0, nudgeY: 0 },
+  { left: '70%', top: '12%', size: 14, delayMs: 390, color: '#C5B4EB', nudgeX: 0, nudgeY: 0 },
+  { left: '26%', top: '65%', size: 11, delayMs: 470, color: '#A18ACD', nudgeX: 0, nudgeY: 0 },
+  { left: '77%', top: '45%', size: 13, delayMs: 560, color: '#A18ACD', nudgeX: 0, nudgeY: 0 },
+  { left: '89%', top: '58%', size: 10, delayMs: 670, color: '#B9A3E2', nudgeX: 0, nudgeY: 0 },
+  { left: '10%', top: '84%', size: 14, delayMs: 740, color: '#B9A3E2', nudgeX: 0, nudgeY: 0 },
+  { left: '90%', top: '84%', size: 12, delayMs: 820, color: '#C5B4EB', nudgeX: 0, nudgeY: 0 },
 ] as const;
 
 interface CardStaticThumbPreviewProps {
@@ -556,7 +559,7 @@ function CardContentWipeRow({
     let startTime: number | null = null;
     const WIPE_DURATION_MS = 850;
     const HEIGHT_SETTLE_MS = 180;
-    const TOTAL_EFFECT_MS = 1200; // 6th sparkle (760ms delay + 420ms duration = 1180ms)
+    const TOTAL_EFFECT_MS = 1400; // 9th sparkle (820ms delay + 550ms duration = 1370ms)
 
     const tick = (now: number) => {
       if (cancelled) return;
@@ -733,7 +736,7 @@ function CardContentWipeRow({
 // Chat Action Chip
 interface ChatActionOption {
   label: string;
-  action: 'accept' | 'show_another' | 'focus_input' | 'keep_plan';
+  action: 'accept' | 'show_another' | 'focus_input' | 'keep_plan' | 'skip_task';
   targetPlan?: PlanItem;
   primary?: boolean;
 }
@@ -843,6 +846,12 @@ export default function App() {
 
   // Today home defaults to ambient normal state (card collapsed into bubble below Nova)
   const [isPlanCardOpen, setIsPlanCardOpen] = useState<boolean>(false);
+  const [isRestDay, setIsRestDay] = useState<boolean>(false);
+  const prevIsRestDayRef = useRef<boolean>(false);
+  const isRestModeTransitioning = prevIsRestDayRef.current !== isRestDay;
+  useEffect(() => {
+    prevIsRestDayRef.current = isRestDay;
+  }, [isRestDay]);
   const [showSampleDataNote, setShowSampleDataNote] = useState<boolean>(false);
   
   // Avatar mode: '3d' procedural fur character (default for test) or '2d' legacy image
@@ -1189,7 +1198,7 @@ export default function App() {
     const ro = new ResizeObserver(() => updateCompanionHeight());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [hasAnyAcceptedOrCompleted, activeCardIndex, cardsState, frameSize]);
+  }, [hasAnyAcceptedOrCompleted, isRestDay, activeCardIndex, cardsState, frameSize]);
 
   // Target coordinates for Nova docked at top edge of chat sheet
   const drawerAvatarSize = frameSize.height < 700 ? 112 : 124;
@@ -1231,6 +1240,10 @@ export default function App() {
     holdProgressRef.current = 0;
     setIsHolding(false);
     setHoldProgress(0);
+  }, []);
+
+  const handleExitRestDay = useCallback(() => {
+    setIsRestDay(false);
   }, []);
 
   const centerCarouselOnCardIdx = useCallback((targetIdx: number) => {
@@ -1494,7 +1507,7 @@ export default function App() {
     });
   };
 
-  // "Not today" on accepted plan: opens dialogue without auto-modifying or canceling
+  // "Not today" on accepted plan: opens dialogue without auto-modifying or triggering global rest
   const handleNotToday = (targetCardIdx?: number) => {
     const idx = typeof targetCardIdx === 'number' ? targetCardIdx : activeCardIndexRef.current;
     chatTargetCardIdxRef.current = idx;
@@ -1507,8 +1520,12 @@ export default function App() {
         {
           id: 'msg-not-today',
           sender: 'ai',
-          text: 'Totally fine! Rest days are just as healthy. Shall we take today off and reset tomorrow?',
+          text: 'Totally fine! Rest days are just as healthy. Shall we skip just this task, or take today off and reset tomorrow?',
           options: [
+            {
+              label: 'Skip just this task',
+              action: 'skip_task'
+            },
             {
               label: 'Sounds good (Take today off)',
               action: 'accept',
@@ -1532,6 +1549,34 @@ export default function App() {
   const handleOptionClick = (option: ChatActionOption, messageId?: string) => {
     isNearBottomRef.current = true;
     if (option.action === 'accept' && option.targetPlan) {
+      // Explicit "Take today off" enters global Today rest mode without modifying underlying tasks
+      if (option.targetPlan.id === 'rest') {
+        cancelHoldImmediate();
+        adjustSessionRef.current = null;
+        cancelPendingAndActiveCardUpdate();
+        setIsRestDay(true);
+
+        const now = Date.now();
+        setChatMessages((prev) => [
+          ...prev.map((m) =>
+            m.id === messageId
+              ? { ...m, disabled: true, selectedOptionLabel: option.label }
+              : { ...m, disabled: true }
+          ),
+          {
+            id: `usr-${now}`,
+            sender: 'user',
+            text: 'Sounds good.'
+          },
+          {
+            id: `ai-${now + 1}`,
+            sender: 'ai',
+            text: 'Sounds good. I’ve updated today to a rest day.'
+          }
+        ]);
+        return;
+      }
+
       // User accepts alternative: update target card's plan in background, switch to accepted state, keep drawer open
       const targetIdx = chatTargetCardIdxRef.current ?? activeCardIndexRef.current;
       const targetCard = cardsState[targetIdx];
@@ -1560,8 +1605,6 @@ export default function App() {
       let replyText = 'Sounds good. I’ve added the 5-minute stretch to your plan.';
       if (option.targetPlan.id === 'tomorrow' || option.targetPlan.id === 'tomorrow_walk') {
         replyText = 'Sounds good. I’ve moved your walk to tomorrow.';
-      } else if (option.targetPlan.id === 'rest') {
-        replyText = 'Sounds good. I’ve updated today to a rest day.';
       } else if (option.targetPlan.id === 'stretch') {
         replyText = 'Sounds good. I’ve added the 5-minute stretch to your plan.';
       } else if (option.targetPlan.id === 'breath') {
@@ -1589,6 +1632,29 @@ export default function App() {
         }
       ]);
       // Chat drawer remains OPEN so user can continue chatting; no setIsChatOpen(false)
+    } else if (option.action === 'skip_task') {
+      // Single-task Not today: skip only the targeted card without entering global rest
+      const targetIdx = chatTargetCardIdxRef.current ?? activeCardIndexRef.current;
+      cancelHoldImmediate();
+      setPlanState('suggested', targetIdx);
+      const now = Date.now();
+      setChatMessages((prev) => [
+        ...prev.map((m) =>
+          m.id === messageId
+            ? { ...m, disabled: true, selectedOptionLabel: option.label }
+            : { ...m, disabled: true }
+        ),
+        {
+          id: `usr-${now}`,
+          sender: 'user',
+          text: 'Skip just this task.'
+        },
+        {
+          id: `ai-${now + 1}`,
+          sender: 'ai',
+          text: 'Got it. I’ve paused just that task for today—your other plans stay as they are.'
+        }
+      ]);
     } else if (option.action === 'show_another') {
       // Show next alternative option: disable prior cards, record user's choice
       setChatMessages((prev) => {
@@ -1865,11 +1931,10 @@ export default function App() {
     return () => window.clearTimeout(fallback);
   }, [isChatOpen, transitionPhase]);
 
-  // Trigger card content wipe animation 100ms after Chat is closed AND Avatar has returned home
+  // Trigger card content wipe animation immediately once Chat is closed AND Avatar/backdrop have returned home
   useEffect(() => {
     if (
       isChatOpen ||
-      !isChatSheetExited ||
       transitionPhase !== 'idle' ||
       activeTab !== 'Today' ||
       isDetailOpen ||
@@ -1885,34 +1950,57 @@ export default function App() {
       return;
     }
 
+    let cancelled = false;
     cardWipeCancelledRef.current = false;
     adjustSessionRef.current = null;
     expectedCardIdDuringWipeRef.current = update.cardId;
     cancelHoldImmediate();
-    centerCarouselOnCardIdx(targetIdx);
 
-    const delayTimer = window.setTimeout(() => {
-      cardWipeDelayTimerRef.current = null;
-      if (cardWipeCancelledRef.current) return;
+    const needsCarouselCenter = activeCardIndexRef.current !== targetIdx || !isPlanCardOpen;
+    if (needsCarouselCenter) {
+      centerCarouselOnCardIdx(targetIdx);
+    } else {
+      expectedVirtualIdxDuringWipeRef.current = activeVirtualIndex;
+    }
 
-      preloadPlanThumbnail(update.newPlan.thumbnailUrl).then(() => {
-        if (cardWipeCancelledRef.current) return;
-        const nextRunId = cardWipeRunIdRef.current + 1;
-        cardWipeRunIdRef.current = nextRunId;
-        pendingPlanUpdateRef.current = null;
-        setPendingPlanUpdate(null);
-        setActiveCardWipeAnim({
-          cardId: update.cardId,
-          runId: nextRunId,
-          oldPlan: update.oldPlan,
-          newPlan: update.newPlan,
-        });
+    const launchWipe = () => {
+      if (cancelled || cardWipeCancelledRef.current) return;
+      const nextRunId = cardWipeRunIdRef.current + 1;
+      cardWipeRunIdRef.current = nextRunId;
+      pendingPlanUpdateRef.current = null;
+      setPendingPlanUpdate(null);
+      setActiveCardWipeAnim({
+        cardId: update.cardId,
+        runId: nextRunId,
+        oldPlan: update.oldPlan,
+        newPlan: update.newPlan,
       });
-    }, 100);
+    };
 
-    cardWipeDelayTimerRef.current = delayTimer;
+    const startAfterPreload = () => {
+      if (preloadedPlanImages.has(update.newPlan.thumbnailUrl)) {
+        launchWipe();
+      } else {
+        preloadPlanThumbnail(update.newPlan.thumbnailUrl).then(() => {
+          launchWipe();
+        });
+      }
+    };
+
+    if (needsCarouselCenter) {
+      const rafId = window.requestAnimationFrame(() => {
+        startAfterPreload();
+      });
+      return () => {
+        cancelled = true;
+        window.cancelAnimationFrame(rafId);
+      };
+    }
+
+    startAfterPreload();
 
     return () => {
+      cancelled = true;
       if (cardWipeDelayTimerRef.current !== null) {
         window.clearTimeout(cardWipeDelayTimerRef.current);
         cardWipeDelayTimerRef.current = null;
@@ -1920,12 +2008,13 @@ export default function App() {
     };
   }, [
     isChatOpen,
-    isChatSheetExited,
     transitionPhase,
     activeTab,
     isDetailOpen,
     pendingPlanUpdate,
     cardsState,
+    isPlanCardOpen,
+    activeVirtualIndex,
     cancelHoldImmediate,
     centerCarouselOnCardIdx,
     cancelPendingAndActiveCardUpdate,
@@ -2009,7 +2098,7 @@ export default function App() {
   }, []);
 
   const handleBubbleWheel = useCallback((e: React.WheelEvent<HTMLElement>) => {
-    if (isPlanCardOpen) return;
+    if (isPlanCardOpen || isRestDay) return;
     if (Math.abs(e.deltaY) >= 12 && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
       const now = performance.now();
       if (now - lastBubbleSwipeTimeRef.current < 280) return;
@@ -2018,10 +2107,10 @@ export default function App() {
       setBubbleSwipeDir(step);
       setActiveVirtualIndex((prev) => prev + step);
     }
-  }, [isPlanCardOpen]);
+  }, [isPlanCardOpen, isRestDay]);
 
   useEffect(() => {
-    if (isPlanCardOpen) {
+    if (isPlanCardOpen || isRestDay) {
       bubbleDragRef.current = null;
       setIsDraggingBubble(false);
       setBubbleDragY(0);
@@ -2108,7 +2197,7 @@ export default function App() {
       window.removeEventListener('touchend', onTouchEnd);
       window.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [isPlanCardOpen]);
+  }, [isPlanCardOpen, isRestDay]);
 
   const handleCarouselPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -2822,7 +2911,7 @@ export default function App() {
                 height: companionGroupHeight !== null ? `${companionGroupHeight}px` : 'auto',
                 opacity: isPlanCardOpen ? 0 : 1,
                 transition: shouldReduceMotion
-                  ? 'opacity 75ms linear'
+                  ? 'none'
                   : 'height 240ms ease-in-out, opacity 200ms ease-out',
                 pointerEvents: isPlanCardOpen ? 'none' : 'auto',
                 overflow: 'visible',
@@ -2836,39 +2925,39 @@ export default function App() {
                 className="w-full flex flex-col items-center justify-start shrink-0 relative"
               >
                 <AnimatePresence mode="popLayout" initial={false}>
-                  {!hasAnyAcceptedOrCompleted ? (
-                    /* 1. All suggestions unaccepted: 3-Layer Stacked Nova Dialog Bubble */
+                  {isRestDay || !hasAnyAcceptedOrCompleted ? (
+                    /* 1. Global Rest Day OR All suggestions unaccepted: Nova Dialog Bubble */
                     <motion.div
                       key="companion-nova-bubble"
                       id="today-suggestion-bubble-container"
-                      initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0 }}
+                      initial={shouldReduceMotion ? { opacity: 1 } : { opacity: 0 }}
                       animate={{
                         opacity: 1,
                         transition: {
-                          duration: shouldReduceMotion ? 0.05 : 0.18,
+                          duration: shouldReduceMotion ? 0 : 0.15,
                           ease: 'easeOut',
                         },
                       }}
                       exit={{
                         opacity: 0,
                         transition: {
-                          duration: shouldReduceMotion ? 0.05 : 0.12,
+                          duration: shouldReduceMotion ? 0 : 0.15,
                           ease: 'easeOut',
                         },
                       }}
                       className="w-full flex justify-center shrink-0 overflow-visible"
                     >
-                      {/* Stack Group Wrapper: reserves 16px bottom stack height and scales entire stack to 0.985 in 120ms on press */}
+                      {/* Stack Group Wrapper: reserves 16px bottom stack height for 3-card stack (removed in rest mode) */}
                       <div
                         id="today-suggestion-bubble-stack"
                         style={{
                           width: 'calc(100% - 72px)',
                           maxWidth: '360px',
                           marginTop: frameSize.height < 700 ? '11px' : '8px',
-                          paddingBottom: '16px',
+                          paddingBottom: isRestDay ? '0px' : '16px',
                           overflow: 'visible',
                           transform: isBubblePressed ? 'scale(0.985)' : 'scale(1)',
-                          transition: 'transform 120ms ease-out',
+                          transition: shouldReduceMotion ? 'none' : 'transform 120ms ease-out',
                         }}
                         className="relative flex flex-col items-center shrink-0 overflow-visible"
                       >
@@ -2877,43 +2966,47 @@ export default function App() {
                           style={{ overflow: 'visible' }}
                           className="relative w-full"
                         >
-                          {/* Layer 3 (Lowest decorative layer): inset 20px left/right, bottom 16px lower, radius 22px, fill rgba(255,255,255,0.20), border 1px solid rgba(118,109,152,0.12) */}
-                          <div
-                            id="today-bubble-stack-layer-3"
-                            aria-hidden="true"
-                            style={{
-                              position: 'absolute',
-                              top: '16px',
-                              bottom: '-16px',
-                              left: '20px',
-                              right: '20px',
-                              borderRadius: '22px',
-                              background: 'rgba(255, 255, 255, 0.20)',
-                              border: '1px solid rgba(118, 109, 152, 0.12)',
-                              boxShadow: 'none',
-                              pointerEvents: 'none',
-                              zIndex: 10,
-                            }}
-                          />
+                          {/* Layer 3 (Lowest decorative layer): hidden in global rest mode */}
+                          {!isRestDay && (
+                            <div
+                              id="today-bubble-stack-layer-3"
+                              aria-hidden="true"
+                              style={{
+                                position: 'absolute',
+                                top: '16px',
+                                bottom: '-16px',
+                                left: '20px',
+                                right: '20px',
+                                borderRadius: '22px',
+                                background: 'rgba(255, 255, 255, 0.20)',
+                                border: '1px solid rgba(118, 109, 152, 0.12)',
+                                boxShadow: 'none',
+                                pointerEvents: 'none',
+                                zIndex: 10,
+                              }}
+                            />
+                          )}
 
-                          {/* Layer 2 (Middle decorative layer): inset 10px left/right, bottom 8px lower, radius 24px, fill rgba(255,255,255,0.32), border 1px solid rgba(118,109,152,0.12) */}
-                          <div
-                            id="today-bubble-stack-layer-2"
-                            aria-hidden="true"
-                            style={{
-                              position: 'absolute',
-                              top: '8px',
-                              bottom: '-8px',
-                              left: '10px',
-                              right: '10px',
-                              borderRadius: '24px',
-                              background: 'rgba(255, 255, 255, 0.32)',
-                              border: '1px solid rgba(118, 109, 152, 0.12)',
-                              boxShadow: 'none',
-                              pointerEvents: 'none',
-                              zIndex: 20,
-                            }}
-                          />
+                          {/* Layer 2 (Middle decorative layer): hidden in global rest mode */}
+                          {!isRestDay && (
+                            <div
+                              id="today-bubble-stack-layer-2"
+                              aria-hidden="true"
+                              style={{
+                                position: 'absolute',
+                                top: '8px',
+                                bottom: '-8px',
+                                left: '10px',
+                                right: '10px',
+                                borderRadius: '24px',
+                                background: 'rgba(255, 255, 255, 0.32)',
+                                border: '1px solid rgba(118, 109, 152, 0.12)',
+                                boxShadow: 'none',
+                                pointerEvents: 'none',
+                                zIndex: 20,
+                              }}
+                            />
+                          )}
 
                           {/* Layer 1 (Main interactive bubble): top layer, radius 26px, padding 14px 18px 16px, fill rgba(255,255,255,0.48), border 1px solid rgba(255,255,255,0.85), blur 16px, shadow 0 6px 20px rgba(70,60,100,0.045) */}
                           <button
@@ -2943,7 +3036,11 @@ export default function App() {
                               setIsPlanCardOpen(true);
                             }}
                             aria-expanded={isPlanCardOpen}
-                            aria-label={`Open Nova’s suggestions: ${currentPlan.bubblePrompt}`}
+                            aria-label={
+                              isRestDay
+                                ? 'Nova: 今天慢一点也没关系，我陪你歇一会儿。点击查看休息卡片'
+                                : `Open Nova’s suggestions: ${currentPlan.bubblePrompt}`
+                            }
                             style={{
                               touchAction: 'pan-y',
                               width: '100%',
@@ -3050,30 +3147,39 @@ export default function App() {
                               className="relative w-full flex items-center"
                             >
                               <div className="w-full overflow-visible">
-                                <AnimatePresence mode="popLayout" initial={false} custom={bubbleSwipeDir}>
+                                <AnimatePresence
+                                  mode="popLayout"
+                                  initial={false}
+                                  custom={{ dir: bubbleSwipeDir, pureFade: isRestDay || isRestModeTransitioning }}
+                                >
                                   <motion.span
-                                    key={`${activeCardIndex}-${currentPlan.id}`}
+                                    key={isRestDay ? 'rest-day-bubble' : `${activeCardIndex}-${currentPlan.id}`}
                                     id="today-bubble-suggestion-text"
-                                    custom={bubbleSwipeDir}
-                                    initial={
-                                      shouldReduceMotion
-                                        ? { opacity: 0 }
-                                        : { opacity: 0, y: bubbleSwipeDir >= 0 ? 10 : -10 }
-                                    }
-                                    animate={{
-                                      opacity: 1,
-                                      y: bubbleDragY,
+                                    custom={{ dir: bubbleSwipeDir, pureFade: isRestDay || isRestModeTransitioning }}
+                                    variants={{
+                                      enter: (c: { dir: 1 | -1; pureFade: boolean }) =>
+                                        shouldReduceMotion || c.pureFade
+                                          ? { opacity: 0 }
+                                          : { opacity: 0, y: c.dir >= 0 ? 10 : -10 },
+                                      center: {
+                                        opacity: 1,
+                                        y: isRestDay ? 0 : bubbleDragY,
+                                      },
+                                      exit: (c: { dir: 1 | -1; pureFade: boolean }) =>
+                                        shouldReduceMotion || c.pureFade
+                                          ? { opacity: 0 }
+                                          : { opacity: 0, y: c.dir >= 0 ? -10 : 10 },
                                     }}
-                                    exit={
-                                      shouldReduceMotion
-                                        ? { opacity: 0 }
-                                        : { opacity: 0, y: bubbleSwipeDir >= 0 ? -10 : 10 }
-                                    }
+                                    initial="enter"
+                                    animate="center"
+                                    exit="exit"
                                     transition={
-                                      isDraggingBubble
+                                      shouldReduceMotion
                                         ? { duration: 0 }
-                                        : shouldReduceMotion
-                                        ? { duration: 0.06 }
+                                        : isRestDay || isRestModeTransitioning
+                                        ? { duration: 0.15, ease: 'easeInOut' }
+                                        : isDraggingBubble
+                                        ? { duration: 0 }
                                         : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }
                                     }
                                     style={{
@@ -3089,7 +3195,9 @@ export default function App() {
                                     }}
                                     className="w-full"
                                   >
-                                    {currentPlan.bubblePrompt}
+                                    {isRestDay
+                                      ? '今天慢一点也没关系，我陪你歇一会儿。'
+                                      : currentPlan.bubblePrompt}
                                   </motion.span>
                                 </AnimatePresence>
                               </div>
@@ -3099,21 +3207,21 @@ export default function App() {
                       </div>
                     </motion.div>
                   ) : (
-                    /* 2. Any task in progress or completed: Today with Nova Board */
+                    /* 2. Any task in progress or completed (when not resting): Today with Nova Board */
                     <motion.div
                       key="companion-nova-board"
-                      initial={shouldReduceMotion ? { opacity: 0 } : { opacity: 0 }}
+                      initial={shouldReduceMotion ? { opacity: 1 } : { opacity: 0 }}
                       animate={{
                         opacity: 1,
                         transition: {
-                          duration: shouldReduceMotion ? 0.05 : 0.18,
+                          duration: shouldReduceMotion ? 0 : 0.15,
                           ease: 'easeOut',
                         },
                       }}
                       exit={{
                         opacity: 0,
                         transition: {
-                          duration: shouldReduceMotion ? 0.05 : 0.12,
+                          duration: shouldReduceMotion ? 0 : 0.15,
                           ease: 'easeOut',
                         },
                       }}
@@ -3427,11 +3535,41 @@ export default function App() {
                             : 'pointer-events-none'
                         }`}
                       >
+                        {/* Close Card Button: 44x44px touch target kept above rest overlay so user can always close */}
+                        <button
+                          type="button"
+                          id={isCenterCard ? 'close-plan-card-btn' : undefined}
+                          tabIndex={isCenterCard ? 0 : -1}
+                          style={{
+                            opacity: closeBtnOpacity,
+                            top: '0px',
+                            right: '6px',
+                            width: '44px',
+                            height: '44px',
+                            zIndex: isCenterCard ? 40 : 20,
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isCenterCard) {
+                              setIsPlanCardOpen(false);
+                            }
+                          }}
+                          className={`absolute rounded-full flex items-center justify-center group active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-[#5E5BAE] ${
+                            isCenterCard ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
+                          }`}
+                          aria-label="Close suggestion card"
+                        >
+                          <span className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-[#6C6C70] group-hover:text-[#1C1C1E] bg-[#F2F2F7] group-hover:bg-[#E5E5EA] transition-colors pointer-events-none">
+                            <X className="w-3.5 h-3.5 stroke-[2.2]" />
+                          </span>
+                        </button>
+
                         {/* Top Card Header: Compacted, 20px horizontal padding, 44x44 close hit area kept clear of title & thumbnail */}
                         <div
+                          inert={isRestDay ? true : undefined}
                           style={{ opacity: innerContentOpacity }}
                           className={`px-[20px] pt-0 w-full shrink-0 ${
-                            isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
+                            isCenterCard && !isRestDay ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
                           <div className="h-[44px] flex items-center pr-[36px]">
@@ -3460,34 +3598,6 @@ export default function App() {
                               </span>
                             </div>
                           </div>
-
-                          {/* Close Card Button: 44x44px touch target with centered 26px visual circle, hidden on side cards */}
-                          <button
-                            type="button"
-                            id={isCenterCard ? 'close-plan-card-btn' : undefined}
-                            tabIndex={isCenterCard ? 0 : -1}
-                            style={{
-                              opacity: closeBtnOpacity,
-                              top: '0px',
-                              right: '6px',
-                              width: '44px',
-                              height: '44px',
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (isCenterCard) {
-                                setIsPlanCardOpen(false);
-                              }
-                            }}
-                            className={`absolute z-20 rounded-full flex items-center justify-center group active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-[#5E5BAE] ${
-                              isCenterCard ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
-                            }`}
-                            aria-label="Close suggestion card"
-                          >
-                            <span className="w-[26px] h-[26px] rounded-full flex items-center justify-center text-[#6C6C70] group-hover:text-[#1C1C1E] bg-[#F2F2F7] group-hover:bg-[#E5E5EA] transition-colors pointer-events-none">
-                              <X className="w-3.5 h-3.5 stroke-[2.2]" />
-                            </span>
-                          </button>
 
                           {/* Title Row: Full width in suggested state; during/before Adjust wipe holds old snapshot then wipes to new */}
                           {(() => {
@@ -3531,11 +3641,12 @@ export default function App() {
                         {/* Card Body Content: 20px horizontal padding */}
                         <div
                           ref={isCenterCard ? cardContentRef : undefined}
+                          inert={isRestDay ? true : undefined}
                           style={{ opacity: innerContentOpacity }}
                           className={`px-[20px] ${
                             cardState === 'suggested' ? 'pb-3' : 'pb-1.5'
                           } w-full flex-1 flex flex-col justify-between ${
-                            isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
+                            isCenterCard && !isRestDay ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
                           {/* 2. SUGGESTED EXTRA: 10px below title -> Two-Column Content Row (minmax(0,1fr) + 80px/72px thumb, 12px gap) -> 18px gap -> 2 Buttons (>=44px) */}
@@ -3828,7 +3939,7 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* Full-Card Decorative Replacement Overlay: 48px light sweep + 6 scattered 4-pointed SVG sparkles */}
+                        {/* Full-Card Decorative Replacement Overlay: 48px light sweep + 9 scattered 4-pointed SVG sparkles */}
                         {isCenterCard && activeCardWipeAnim?.cardId === cardItem.id && !shouldReduceMotion && (
                           <div
                             aria-hidden="true"
@@ -3885,6 +3996,100 @@ export default function App() {
                             </div>
                           </div>
                         )}
+
+                        {/* Global Rest Day Frosted Overlay (on all 3 cards; copy & Restart button only on center card) */}
+                        <AnimatePresence initial={false}>
+                          {isRestDay && (
+                            <motion.div
+                              key="card-rest-overlay"
+                              data-card-rest-overlay="true"
+                              data-rest-center={isCenterCard ? 'true' : 'false'}
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              transition={{
+                                duration: shouldReduceMotion ? 0 : 0.18,
+                                ease: 'easeOut',
+                              }}
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                borderRadius: 'inherit',
+                                background: 'rgba(255, 255, 255, 0.78)',
+                                backdropFilter: 'blur(3px)',
+                                WebkitBackdropFilter: 'blur(3px)',
+                                zIndex: 35,
+                              }}
+                              className={`flex flex-col items-center justify-center px-[24px] text-center ${
+                                isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
+                              }`}
+                            >
+                              {isCenterCard && (
+                                <div className="flex flex-col items-center justify-center w-full">
+                                  <h3
+                                    style={{
+                                      fontSize: '18px',
+                                      fontWeight: 600,
+                                      lineHeight: '25px',
+                                      color: '#514D60',
+                                      margin: 0,
+                                    }}
+                                    className="text-center"
+                                  >
+                                    今天，安心休息。
+                                  </h3>
+                                  <p
+                                    style={{
+                                      marginTop: '8px',
+                                      fontSize: '13px',
+                                      fontWeight: 400,
+                                      lineHeight: '20px',
+                                      color: '#817B8E',
+                                      maxWidth: '230px',
+                                      marginBottom: 0,
+                                    }}
+                                    className="text-center"
+                                  >
+                                    不必赶进度，照顾自己也是今天的计划。
+                                  </p>
+                                  <button
+                                    type="button"
+                                    data-card-action="restart-rest-day"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleExitRestDay();
+                                    }}
+                                    style={{
+                                      marginTop: '18px',
+                                      minWidth: '88px',
+                                      height: '44px',
+                                    }}
+                                    className="flex items-center justify-center bg-transparent border-0 p-0 cursor-pointer transition-opacity duration-150 active:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#766D98] rounded-[16px]"
+                                  >
+                                    <span
+                                      style={{
+                                        height: '32px',
+                                        minWidth: '88px',
+                                        paddingLeft: '20px',
+                                        paddingRight: '20px',
+                                        borderRadius: '16px',
+                                        background: 'rgba(255, 255, 255, 0.45)',
+                                        border: '1px solid rgba(118, 109, 152, 0.18)',
+                                        fontSize: '13px',
+                                        fontWeight: 500,
+                                        color: '#777086',
+                                        boxShadow: 'none',
+                                      }}
+                                      className="inline-flex items-center justify-center whitespace-nowrap"
+                                    >
+                                      重启
+                                    </span>
+                                  </button>
+                                </div>
+                              )}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </div>
                     );
                   })}

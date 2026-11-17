@@ -212,7 +212,7 @@
 
   .genki-sparkle-item {
     animation-name: genki-sparkle-pop;
-    animation-duration: 420ms;
+    animation-duration: 550ms;
     animation-timing-function: ease-out;
     animation-fill-mode: both;
   }
