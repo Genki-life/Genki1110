@@ -22,6 +22,8 @@ export interface NovaAvatar3DProps {
   isListening?: boolean;
   /** Whether the outer avatar container is currently animating position/size (e.g. chat open/close transition) */
   isTransitioning?: boolean;
+  /** Callback invoked once when 3D first frame or 2D fallback is visible */
+  onReady?: () => void;
 }
 
 export function NovaAvatar3D({
@@ -33,6 +35,7 @@ export function NovaAvatar3D({
   onToggleMode,
   isListening = false,
   isTransitioning = false,
+  onReady,
 }: NovaAvatar3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isActiveTabRef = useRef(isActiveTab);
@@ -55,6 +58,12 @@ export function NovaAvatar3D({
   useEffect(() => {
     onBoopRef.current = onBoop;
   }, [onBoop]);
+
+  const onReadyRef = useRef(onReady);
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
+  const hasFiredReadyRef = useRef(false);
 
   const isTransitioningRef = useRef(isTransitioning);
   const syncViewportSizeRef = useRef<((w: number, h: number, allowBufferResize: boolean) => void) | null>(null);
@@ -263,6 +272,10 @@ export function NovaAvatar3D({
       );
 
       renderer.render(scene, camera);
+      if (!hasFiredReadyRef.current) {
+        hasFiredReadyRef.current = true;
+        onReadyRef.current?.();
+      }
 
       if (
         (dbg.open && dbg.angle !== 'live') ||
@@ -708,6 +721,13 @@ export function NovaAvatar3D({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [isActiveTab, mode, hasError, startAnimationLoop, stopAnimationLoop]);
+
+  useEffect(() => {
+    if ((mode === '2d' || hasError) && !hasFiredReadyRef.current) {
+      hasFiredReadyRef.current = true;
+      onReadyRef.current?.();
+    }
+  }, [mode, hasError]);
 
   // Fallback 2D Image View if in 2D mode or upon WebGL failure
   if (mode === '2d' || hasError) {

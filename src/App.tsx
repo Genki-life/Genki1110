@@ -992,7 +992,7 @@ export default function App() {
     startTime: number;
   } | null>(null);
   const didSwipeBubbleRef = useRef<boolean>(false);
-  const lastBubbleSwipeTimeRef = useRef<number>(0);
+  const lastBubbleSwipeTimeRef = useRef<number>(-1000);
 
   // Carousel drag & swipe states
   const [dragDeltaX, setDragDeltaX] = useState<number>(0);
@@ -1006,7 +1006,7 @@ export default function App() {
     axis: 'x' | 'y' | null;
   } | null>(null);
   const didSwipeCarouselRef = useRef<boolean>(false);
-  const lastCarouselSwipeTimeRef = useRef<number>(0);
+  const lastCarouselSwipeTimeRef = useRef<number>(-1000);
 
   // Today home defaults to ambient normal state (card collapsed into bubble below Nova)
   const [isPlanCardOpen, setIsPlanCardOpen] = useState<boolean>(false);
@@ -1016,6 +1016,12 @@ export default function App() {
     : allCardsSkipped
     ? 'all-skipped'
     : 'suggestion';
+  const fullBubbleText =
+    bubbleDisplayMode === 'rest'
+      ? REST_DAY_COPY.bubbleBody
+      : bubbleDisplayMode === 'all-skipped'
+      ? ALL_SKIPPED_BUBBLE_COPY.bubbleBody
+      : bubblePlan.bubblePrompt;
   const prevBubbleDisplayModeRef = useRef<'rest' | 'all-skipped' | 'suggestion'>('suggestion');
   const isBubbleModeTransitioning = prevBubbleDisplayModeRef.current !== bubbleDisplayMode;
   useEffect(() => {
@@ -1025,6 +1031,8 @@ export default function App() {
   
   // Avatar mode: '3d' procedural fur character (default for test) or '2d' legacy image
   const [avatarMode, setAvatarMode] = useState<'3d' | '2d'>('3d');
+  const [isAvatarFirstFrameReady, setIsAvatarFirstFrameReady] = useState<boolean>(false);
+  const [isHomeLayoutReady, setIsHomeLayoutReady] = useState<boolean>(false);
 
   // Discover tab saved bookmarks state
   const [savedItemIds, setSavedItemIds] = useState<string[]>(['walk-mindful', 'desk-decompression']);
@@ -1120,7 +1128,7 @@ export default function App() {
   const [companionGroupHeight, setCompanionGroupHeight] = useState<number | null>(null);
   const bottomBarRef = useRef<HTMLDivElement>(null);
   const [bottomBarHeight, setBottomBarHeight] = useState<number>(136);
-  const shouldReduceMotion = useReducedMotion();
+  const shouldReduceMotion = Boolean(useReducedMotion());
 
   const [frameSize, setFrameSize] = useState<{ width: number; height: number }>(() => ({
     width: typeof window !== 'undefined' && window.innerWidth > 0 ? Math.min(window.innerWidth, 393) : 393,
@@ -1241,6 +1249,12 @@ export default function App() {
       const rect = frameEl.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         setFrameSize({ width: rect.width, height: rect.height });
+        if (homeAvatarRef.current) {
+          const hRect = homeAvatarRef.current.getBoundingClientRect();
+          if (hRect.width > 0 && hRect.height > 0) {
+            setIsHomeLayoutReady(true);
+          }
+        }
       }
       if (bottomBarRef.current) {
         const bHeight = bottomBarRef.current.offsetHeight;
@@ -1278,12 +1292,227 @@ export default function App() {
       const rect = getLiveHomeAvatarRect();
       if (rect && rect.width > 0 && rect.height > 0) {
         setHomeAvatarRect(rect);
+        if (phoneFrameRef.current && homeAvatarRef.current) {
+          const fRect = phoneFrameRef.current.getBoundingClientRect();
+          const hRect = homeAvatarRef.current.getBoundingClientRect();
+          if (fRect.width > 0 && fRect.height > 0 && hRect.width > 0 && hRect.height > 0) {
+            setIsHomeLayoutReady(true);
+          }
+        }
       }
     };
     updateHome();
     const timer = setTimeout(updateHome, 60);
     return () => clearTimeout(timer);
   }, [frameSize, activeTab, getLiveHomeAvatarRect]);
+
+  // App-level first-entrance animation & typewriter state for Today Nova bubble (plays once per app launch)
+  const bubbleEntranceRef = useRef<HTMLDivElement>(null);
+  const hasFinishedInitialBubbleEntranceRef = useRef<boolean>(
+    typeof window !== 'undefined' &&
+      Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+  );
+  const isEntranceRunningRef = useRef<boolean>(false);
+  const activeEntranceRunIdRef = useRef<number>(0);
+  const bubbleEntranceStartRafRef = useRef<number | null>(null);
+  const bubbleEntranceFinishTimerRef = useRef<number | null>(null);
+  const bubbleTypewriterStartDelayTimerRef = useRef<number | null>(null);
+  const bubbleTypewriterRafRef = useRef<number | null>(null);
+  const bubbleTypewriterSafetyTimerRef = useRef<number | null>(null);
+  const bubbleTypewriterTargetTextRef = useRef<string>('');
+  const bubbleAutoRotatePausedUntilRef = useRef<number>(0);
+  const [bubbleEntrancePhase, setBubbleEntrancePhase] = useState<'waiting' | 'entering' | 'done'>(() => {
+    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return 'done';
+    }
+    return 'waiting';
+  });
+  const [isBubbleTypewriterActive, setIsBubbleTypewriterActive] = useState<boolean>(false);
+  const [bubbleTypedChars, setBubbleTypedChars] = useState<number>(0);
+
+  const clearInitialBubbleEntranceTimers = useCallback(() => {
+    if (bubbleEntranceStartRafRef.current !== null) {
+      cancelAnimationFrame(bubbleEntranceStartRafRef.current);
+      bubbleEntranceStartRafRef.current = null;
+    }
+    if (bubbleEntranceFinishTimerRef.current !== null) {
+      window.clearTimeout(bubbleEntranceFinishTimerRef.current);
+      bubbleEntranceFinishTimerRef.current = null;
+    }
+    if (bubbleTypewriterStartDelayTimerRef.current !== null) {
+      window.clearTimeout(bubbleTypewriterStartDelayTimerRef.current);
+      bubbleTypewriterStartDelayTimerRef.current = null;
+    }
+    if (bubbleTypewriterRafRef.current !== null) {
+      cancelAnimationFrame(bubbleTypewriterRafRef.current);
+      bubbleTypewriterRafRef.current = null;
+    }
+    if (bubbleTypewriterSafetyTimerRef.current !== null) {
+      window.clearTimeout(bubbleTypewriterSafetyTimerRef.current);
+      bubbleTypewriterSafetyTimerRef.current = null;
+    }
+  }, []);
+
+  const finishInitialBubbleEntranceImmediately = useCallback(() => {
+    activeEntranceRunIdRef.current += 1;
+    clearInitialBubbleEntranceTimers();
+    isEntranceRunningRef.current = false;
+    hasFinishedInitialBubbleEntranceRef.current = true;
+    bubbleTypewriterTargetTextRef.current = '';
+    setIsBubbleTypewriterActive(false);
+    setBubbleTypedChars(0);
+    setBubbleEntrancePhase('done');
+  }, [clearInitialBubbleEntranceTimers]);
+
+  // StrictMode-safe unmount cleanup for any running entrance RAF/timers
+  useEffect(() => {
+    return () => {
+      activeEntranceRunIdRef.current += 1;
+      clearInitialBubbleEntranceTimers();
+      isEntranceRunningRef.current = false;
+    };
+  }, [clearInitialBubbleEntranceTimers]);
+
+  const isAvatarDisplayed = avatarMode === '2d' || isAvatarFirstFrameReady;
+  const isBubbleShownOnToday = isRestDay || !hasAnyAcceptedOrCompleted;
+
+  // Trigger bubble pop-in & typewriter strictly once on first Today launch when layout + Avatar are ready
+  useEffect(() => {
+    if (shouldReduceMotion) {
+      if (bubbleEntrancePhase !== 'done' || isBubbleTypewriterActive) {
+        finishInitialBubbleEntranceImmediately();
+      }
+      return;
+    }
+    if (hasFinishedInitialBubbleEntranceRef.current || isEntranceRunningRef.current) {
+      return;
+    }
+    if (activeTab !== 'Today' || isPlanCardOpen || isChatOpen || !isHomeLayoutReady || !isAvatarDisplayed) {
+      return;
+    }
+    if (!isBubbleShownOnToday) {
+      // Today opened directly onto "Today with Nova" board; mark first entrance consumed without injecting a bubble
+      finishInitialBubbleEntranceImmediately();
+      return;
+    }
+
+    isEntranceRunningRef.current = true;
+    const runId = ++activeEntranceRunIdRef.current;
+    const targetText = fullBubbleText;
+    const totalChars = targetText.length;
+    const typewriterDuration = Math.min(1600, Math.max(600, totalChars * 25));
+    bubbleTypewriterTargetTextRef.current = targetText;
+    setIsBubbleTypewriterActive(true);
+    setBubbleTypedChars(0);
+
+    bubbleEntranceStartRafRef.current = requestAnimationFrame(() => {
+      bubbleEntranceStartRafRef.current = null;
+      if (activeEntranceRunIdRef.current !== runId) return;
+
+      // Flush initial (opacity: 0, translateY(-5px), scale(0.94)) state before starting CSS pop-in
+      if (bubbleEntranceRef.current) {
+        void bubbleEntranceRef.current.offsetHeight;
+      }
+
+      const popInStartNow = performance.now();
+      bubbleAutoRotatePausedUntilRef.current = popInStartNow + 100 + typewriterDuration + 4000;
+      setBubbleEntrancePhase('entering');
+
+      bubbleEntranceFinishTimerRef.current = window.setTimeout(() => {
+        bubbleEntranceFinishTimerRef.current = null;
+        if (activeEntranceRunIdRef.current !== runId) return;
+        setBubbleEntrancePhase('done');
+      }, 270);
+
+      bubbleTypewriterStartDelayTimerRef.current = window.setTimeout(() => {
+        bubbleTypewriterStartDelayTimerRef.current = null;
+        if (activeEntranceRunIdRef.current !== runId) return;
+
+        const typeStartTime = performance.now();
+        bubbleAutoRotatePausedUntilRef.current = typeStartTime + typewriterDuration + 4000;
+
+        const finalizeTypewriter = () => {
+          if (activeEntranceRunIdRef.current !== runId) return;
+          if (bubbleTypewriterRafRef.current !== null) {
+            cancelAnimationFrame(bubbleTypewriterRafRef.current);
+            bubbleTypewriterRafRef.current = null;
+          }
+          if (bubbleTypewriterSafetyTimerRef.current !== null) {
+            window.clearTimeout(bubbleTypewriterSafetyTimerRef.current);
+            bubbleTypewriterSafetyTimerRef.current = null;
+          }
+          bubbleAutoRotatePausedUntilRef.current = performance.now() + 4000;
+          hasFinishedInitialBubbleEntranceRef.current = true;
+          isEntranceRunningRef.current = false;
+          bubbleTypewriterTargetTextRef.current = '';
+          setIsBubbleTypewriterActive(false);
+          setBubbleEntrancePhase('done');
+        };
+
+        bubbleTypewriterSafetyTimerRef.current = window.setTimeout(
+          finalizeTypewriter,
+          typewriterDuration + 120
+        );
+
+        const stepTypewriter = (now: number) => {
+          if (activeEntranceRunIdRef.current !== runId) {
+            bubbleTypewriterRafRef.current = null;
+            return;
+          }
+          const elapsed = Math.max(0, now - typeStartTime);
+          const nextCount =
+            elapsed >= typewriterDuration || totalChars === 0
+              ? totalChars
+              : Math.min(totalChars, Math.floor((elapsed / typewriterDuration) * totalChars));
+          setBubbleTypedChars((prev) => (prev === nextCount ? prev : nextCount));
+
+          if (elapsed < typewriterDuration && nextCount < totalChars) {
+            bubbleTypewriterRafRef.current = requestAnimationFrame(stepTypewriter);
+          } else {
+            finalizeTypewriter();
+          }
+        };
+
+        bubbleTypewriterRafRef.current = requestAnimationFrame(stepTypewriter);
+      }, 100);
+    });
+  }, [
+    shouldReduceMotion,
+    activeTab,
+    isPlanCardOpen,
+    isChatOpen,
+    isHomeLayoutReady,
+    isAvatarDisplayed,
+    isBubbleShownOnToday,
+    fullBubbleText,
+    bubbleEntrancePhase,
+    isBubbleTypewriterActive,
+    finishInitialBubbleEntranceImmediately,
+  ]);
+
+  // Cancel initial entrance & snap to final copy on tab switch, card open, chat open, or state copy change mid-typing
+  useEffect(() => {
+    const isActiveOrPending =
+      isEntranceRunningRef.current || isBubbleTypewriterActive || bubbleEntrancePhase === 'entering';
+    const leftBubbleView = activeTab !== 'Today' || isPlanCardOpen || isChatOpen || !isBubbleShownOnToday;
+    const textChangedMidTyping =
+      isActiveOrPending &&
+      bubbleTypewriterTargetTextRef.current !== '' &&
+      bubbleTypewriterTargetTextRef.current !== fullBubbleText;
+
+    if ((bubbleEntrancePhase !== 'done' && leftBubbleView) || textChangedMidTyping) {
+      finishInitialBubbleEntranceImmediately();
+    }
+  }, [
+    activeTab,
+    isPlanCardOpen,
+    isChatOpen,
+    isBubbleShownOnToday,
+    fullBubbleText,
+    isBubbleTypewriterActive,
+    bubbleEntrancePhase,
+    finishInitialBubbleEntranceImmediately,
+  ]);
 
   // Dynamically observe chatSheet height when open or resizing
   useEffect(() => {
@@ -2281,6 +2510,7 @@ export default function App() {
 
   const stepBubbleSuggestion = useCallback((step: 1 | -1) => {
     if (!canRotateBubble) return;
+    finishInitialBubbleEntranceImmediately();
     setBubbleSwipeDir(step);
     setActiveVirtualIndex((prev) => {
       const currentMod = ((prev % 3) + 3) % 3;
@@ -2298,7 +2528,7 @@ export default function App() {
       }
       return prev;
     });
-  }, [canRotateBubble, cardsState, unskippedCardIndices]);
+  }, [canRotateBubble, cardsState, unskippedCardIndices, finishInitialBubbleEntranceImmediately]);
 
   const handleBubbleWheel = useCallback((e: React.WheelEvent<HTMLElement>) => {
     if (isPlanCardOpen || !canRotateBubble) return;
@@ -2736,6 +2966,7 @@ export default function App() {
                 className="w-full h-full"
                 mode="3d"
                 isListening={isChatOpen && (isTyping || sheetInput.trim().length > 0)}
+                onReady={() => setIsAvatarFirstFrameReady(true)}
                 onBoop={() => {
                   // gentle boop feedback
                 }}
@@ -3154,25 +3385,50 @@ export default function App() {
                       }}
                       className="w-full flex justify-center shrink-0 overflow-visible"
                     >
-                      {/* Stack Group Wrapper: reserves bottom stack height for remaining unskipped suggestions (removed in rest / single / all-skipped) */}
+                      {/* Unified First-Entrance Group: animates body, pointer tail, and lower stack layers together from top center (50% 0%) */}
                       <div
-                        id="today-suggestion-bubble-stack"
+                        ref={bubbleEntranceRef}
+                        id="today-bubble-entrance-group"
+                        data-bubble-entrance-phase={shouldReduceMotion ? 'done' : bubbleEntrancePhase}
+                        data-bubble-typewriter-active={
+                          !shouldReduceMotion && isBubbleTypewriterActive ? 'true' : 'false'
+                        }
                         style={{
                           width: 'calc(100% - 72px)',
                           maxWidth: '360px',
                           marginTop: frameSize.height < 700 ? '11px' : '8px',
-                          paddingBottom:
-                            isRestDay || unskippedCardIndices.length <= 1
-                              ? '0px'
-                              : unskippedCardIndices.length === 2
-                              ? '8px'
-                              : '16px',
-                          overflow: 'visible',
-                          transform: isBubblePressed ? 'scale(0.985)' : 'scale(1)',
-                          transition: shouldReduceMotion ? 'none' : 'transform 120ms ease-out',
+                          transformOrigin: '50% 0%',
+                          opacity: !shouldReduceMotion && bubbleEntrancePhase === 'waiting' ? 0 : 1,
+                          transform:
+                            shouldReduceMotion || bubbleEntrancePhase === 'done'
+                              ? undefined
+                              : bubbleEntrancePhase === 'waiting'
+                              ? 'translateY(-5px) scale(0.94)'
+                              : 'translateY(0px) scale(1)',
+                          transition:
+                            shouldReduceMotion || bubbleEntrancePhase !== 'entering'
+                              ? 'none'
+                              : 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 260ms cubic-bezier(0.22, 1, 0.36, 1)',
                         }}
                         className="relative flex flex-col items-center shrink-0 overflow-visible"
                       >
+                        {/* Stack Group Wrapper: reserves bottom stack height for remaining unskipped suggestions (removed in rest / single / all-skipped) */}
+                        <div
+                          id="today-suggestion-bubble-stack"
+                          style={{
+                            width: '100%',
+                            paddingBottom:
+                              isRestDay || unskippedCardIndices.length <= 1
+                                ? '0px'
+                                : unskippedCardIndices.length === 2
+                                ? '8px'
+                                : '16px',
+                            overflow: 'visible',
+                            transform: isBubblePressed ? 'scale(0.985)' : 'scale(1)',
+                            transition: shouldReduceMotion ? 'none' : 'transform 120ms ease-out',
+                          }}
+                          className="relative flex flex-col items-center shrink-0 overflow-visible"
+                        >
                         <div
                           id="today-suggestion-stack-stage"
                           style={{ overflow: 'visible' }}
@@ -3245,6 +3501,7 @@ export default function App() {
                                 e.stopPropagation();
                                 return;
                               }
+                              finishInitialBubbleEntranceImmediately();
                               if (
                                 bubbleDisplayMode === 'suggestion' &&
                                 bubbleCardIndex !== activeCardIndex
@@ -3361,88 +3618,126 @@ export default function App() {
                             </div>
 
                             {/* Row 2 (6px below Nova): Suggestion body (16px, weight 500, line-height 23px, #393640, natural wrap, full text, no ellipsis, no right chevron padding) */}
-                            <div
-                              style={{
-                                marginTop: '6px',
-                              }}
-                              className="relative w-full flex items-center"
-                            >
-                              <div className="w-full overflow-visible">
-                                <AnimatePresence
-                                  mode="popLayout"
-                                  initial={false}
-                                  custom={{
-                                    dir: bubbleSwipeDir,
-                                    pureFade:
-                                      bubbleDisplayMode !== 'suggestion' ||
-                                      isBubbleModeTransitioning,
+                            {(() => {
+                              const showTypewriterPlaceholder =
+                                !shouldReduceMotion &&
+                                (bubbleEntrancePhase === 'waiting' ||
+                                  (isBubbleTypewriterActive &&
+                                    (bubbleTypewriterTargetTextRef.current === '' ||
+                                      bubbleTypewriterTargetTextRef.current === fullBubbleText)));
+                              const visibleBubbleBodyText = showTypewriterPlaceholder
+                                ? bubbleEntrancePhase === 'waiting'
+                                  ? ''
+                                  : fullBubbleText.slice(0, bubbleTypedChars)
+                                : fullBubbleText;
+
+                              return (
+                                <div
+                                  style={{
+                                    marginTop: '6px',
                                   }}
+                                  className="relative w-full flex items-center"
                                 >
-                                  <motion.span
-                                    key={
-                                      bubbleDisplayMode === 'rest'
-                                        ? 'rest-day-bubble'
-                                        : bubbleDisplayMode === 'all-skipped'
-                                        ? 'all-skipped-bubble'
-                                        : `${bubbleCardIndex}-${bubblePlan.id}`
-                                    }
-                                    id="today-bubble-suggestion-text"
-                                    custom={{
-                                      dir: bubbleSwipeDir,
-                                      pureFade:
-                                        bubbleDisplayMode !== 'suggestion' ||
-                                        isBubbleModeTransitioning,
-                                    }}
-                                    variants={{
-                                      enter: (c: { dir: 1 | -1; pureFade: boolean }) =>
-                                        shouldReduceMotion || c.pureFade
-                                          ? { opacity: 0 }
-                                          : { opacity: 0, y: c.dir >= 0 ? 10 : -10 },
-                                      center: {
-                                        opacity: 1,
-                                        y: canRotateBubble ? bubbleDragY : 0,
-                                      },
-                                      exit: (c: { dir: 1 | -1; pureFade: boolean }) =>
-                                        shouldReduceMotion || c.pureFade
-                                          ? { opacity: 0 }
-                                          : { opacity: 0, y: c.dir >= 0 ? -10 : 10 },
-                                    }}
-                                    initial="enter"
-                                    animate="center"
-                                    exit="exit"
-                                    transition={
-                                      shouldReduceMotion
-                                        ? { duration: 0 }
-                                        : bubbleDisplayMode !== 'suggestion' ||
-                                          isBubbleModeTransitioning
-                                        ? { duration: 0.15, ease: 'easeInOut' }
-                                        : isDraggingBubble
-                                        ? { duration: 0 }
-                                        : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }
-                                    }
-                                    style={{
-                                      fontSize: '16px',
-                                      fontWeight: 500,
-                                      lineHeight: '23px',
-                                      color: '#393640',
-                                      display: 'block',
-                                      whiteSpace: 'normal',
-                                      overflow: 'visible',
-                                      textOverflow: 'clip',
-                                      wordBreak: 'break-word',
-                                    }}
-                                    className="w-full"
-                                  >
-                                    {bubbleDisplayMode === 'rest'
-                                      ? REST_DAY_COPY.bubbleBody
-                                      : bubbleDisplayMode === 'all-skipped'
-                                      ? ALL_SKIPPED_BUBBLE_COPY.bubbleBody
-                                      : bubblePlan.bubblePrompt}
-                                  </motion.span>
-                                </AnimatePresence>
-                              </div>
-                            </div>
+                                  <div className="relative w-full overflow-visible">
+                                    {/* Invisible full-text sizer preserves exact multi-line height from frame 1 without height jump or Avatar shift */}
+                                    {showTypewriterPlaceholder && (
+                                      <span
+                                        id="today-bubble-suggestion-sizer"
+                                        aria-hidden="true"
+                                        style={{
+                                          fontSize: '16px',
+                                          fontWeight: 500,
+                                          lineHeight: '23px',
+                                          display: 'block',
+                                          whiteSpace: 'normal',
+                                          overflow: 'visible',
+                                          textOverflow: 'clip',
+                                          wordBreak: 'break-word',
+                                          visibility: 'hidden',
+                                          pointerEvents: 'none',
+                                        }}
+                                        className="w-full"
+                                      >
+                                        {fullBubbleText}
+                                      </span>
+                                    )}
+                                    <AnimatePresence
+                                      mode="popLayout"
+                                      initial={false}
+                                      custom={{
+                                        dir: bubbleSwipeDir,
+                                        pureFade:
+                                          bubbleDisplayMode !== 'suggestion' ||
+                                          isBubbleModeTransitioning,
+                                      }}
+                                    >
+                                      <motion.span
+                                        key={
+                                          bubbleDisplayMode === 'rest'
+                                            ? 'rest-day-bubble'
+                                            : bubbleDisplayMode === 'all-skipped'
+                                            ? 'all-skipped-bubble'
+                                            : `${bubbleCardIndex}-${bubblePlan.id}`
+                                        }
+                                        id="today-bubble-suggestion-text"
+                                        custom={{
+                                          dir: bubbleSwipeDir,
+                                          pureFade:
+                                            bubbleDisplayMode !== 'suggestion' ||
+                                            isBubbleModeTransitioning,
+                                        }}
+                                        variants={{
+                                          enter: (c: { dir: 1 | -1; pureFade: boolean }) =>
+                                            shouldReduceMotion || c.pureFade
+                                              ? { opacity: 0 }
+                                              : { opacity: 0, y: c.dir >= 0 ? 10 : -10 },
+                                          center: {
+                                            opacity: 1,
+                                            y: canRotateBubble ? bubbleDragY : 0,
+                                          },
+                                          exit: (c: { dir: 1 | -1; pureFade: boolean }) =>
+                                            shouldReduceMotion || c.pureFade
+                                              ? { opacity: 0 }
+                                              : { opacity: 0, y: c.dir >= 0 ? -10 : 10 },
+                                        }}
+                                        initial="enter"
+                                        animate="center"
+                                        exit="exit"
+                                        transition={
+                                          shouldReduceMotion
+                                            ? { duration: 0 }
+                                            : bubbleDisplayMode !== 'suggestion' ||
+                                              isBubbleModeTransitioning
+                                            ? { duration: 0.15, ease: 'easeInOut' }
+                                            : isDraggingBubble
+                                            ? { duration: 0 }
+                                            : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }
+                                        }
+                                        style={{
+                                          fontSize: '16px',
+                                          fontWeight: 500,
+                                          lineHeight: '23px',
+                                          color: '#393640',
+                                          display: 'block',
+                                          whiteSpace: 'normal',
+                                          overflow: 'visible',
+                                          textOverflow: 'clip',
+                                          wordBreak: 'break-word',
+                                          ...(showTypewriterPlaceholder
+                                            ? { position: 'absolute', top: 0, left: 0, right: 0 }
+                                            : {}),
+                                        }}
+                                        className="w-full"
+                                      >
+                                        {visibleBubbleBodyText}
+                                      </motion.span>
+                                    </AnimatePresence>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </button>
+                        </div>
                         </div>
                       </div>
                     </motion.div>
