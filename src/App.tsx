@@ -151,6 +151,142 @@ const REST_DAY_PLAN: PlanItem = {
   mediaType: 'article'
 };
 
+const REST_DAY_BUBBLE_BODY = 'It’s okay to slow down. I’m here with you.';
+
+const REST_DAY_COPY = {
+  overlayTitle: 'Take today at your own pace.',
+  overlaySubtitle: 'There’s no rush. Rest is part of taking care of yourself.',
+  resumeLabel: 'Resume',
+  bubbleBody: REST_DAY_BUBBLE_BODY,
+  bubbleAriaLabel: `Nova: ${REST_DAY_BUBBLE_BODY} View your paused plans.`,
+} as const;
+
+const SKIP_TASK_COPY = {
+  overlayTitle: 'Saved for another day.',
+  overlaySubtitle: 'It’s okay to skip this one. You can come back whenever you’re ready.',
+  resumeLabel: 'Resume',
+} as const;
+
+const ALL_SKIPPED_BUBBLE_BODY = 'No pressure today. I’m here whenever you’re ready.';
+
+const ALL_SKIPPED_BUBBLE_COPY = {
+  bubbleBody: ALL_SKIPPED_BUBBLE_BODY,
+  bubbleAriaLabel: `Nova: ${ALL_SKIPPED_BUBBLE_BODY} View your skipped plans.`,
+} as const;
+
+interface CardPausedOverlayProps {
+  mode: 'rest' | 'skipped' | null;
+  isCenterCard: boolean;
+  shouldReduceMotion: boolean;
+  onResume: () => void;
+}
+
+function CardPausedOverlay({
+  mode,
+  isCenterCard,
+  shouldReduceMotion,
+  onResume,
+}: CardPausedOverlayProps) {
+  const copy = mode === 'rest' ? REST_DAY_COPY : SKIP_TASK_COPY;
+
+  return (
+    <AnimatePresence initial={false}>
+      {mode !== null && (
+        <motion.div
+          key="card-paused-overlay"
+          data-card-paused-overlay={mode}
+          data-card-rest-overlay={mode === 'rest' ? 'true' : undefined}
+          data-card-skip-overlay={mode === 'skipped' ? 'true' : undefined}
+          data-rest-center={isCenterCard ? 'true' : 'false'}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{
+            duration: shouldReduceMotion ? 0 : 0.18,
+            ease: 'easeOut',
+          }}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            borderRadius: 'inherit',
+            background: 'rgba(255, 255, 255, 0.78)',
+            backdropFilter: 'blur(3px)',
+            WebkitBackdropFilter: 'blur(3px)',
+            zIndex: 35,
+          }}
+          className={`flex flex-col items-center justify-center px-[24px] text-center ${
+            isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
+          }`}
+        >
+          {isCenterCard && (
+            <div className="flex flex-col items-center justify-center w-full">
+              <h3
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  lineHeight: '25px',
+                  color: '#514D60',
+                  margin: 0,
+                }}
+                className="text-center"
+              >
+                {copy.overlayTitle}
+              </h3>
+              <p
+                style={{
+                  marginTop: '8px',
+                  fontSize: '13px',
+                  fontWeight: 400,
+                  lineHeight: '20px',
+                  color: '#817B8E',
+                  maxWidth: '230px',
+                  marginBottom: 0,
+                }}
+                className="text-center"
+              >
+                {copy.overlaySubtitle}
+              </p>
+              <button
+                type="button"
+                data-card-action={mode === 'rest' ? 'restart-rest-day' : 'resume-skipped-task'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onResume();
+                }}
+                style={{
+                  marginTop: '18px',
+                  minWidth: '88px',
+                  height: '44px',
+                }}
+                className="flex items-center justify-center bg-transparent border-0 p-0 cursor-pointer transition-opacity duration-150 active:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#766D98] rounded-[16px]"
+              >
+                <span
+                  style={{
+                    height: '32px',
+                    minWidth: '88px',
+                    paddingLeft: '20px',
+                    paddingRight: '20px',
+                    borderRadius: '16px',
+                    background: 'rgba(255, 255, 255, 0.45)',
+                    border: '1px solid rgba(118, 109, 152, 0.18)',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    color: '#777086',
+                    boxShadow: 'none',
+                  }}
+                  className="inline-flex items-center justify-center whitespace-nowrap"
+                >
+                  {copy.resumeLabel}
+                </span>
+              </button>
+            </div>
+          )}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 interface SuggestionMediaThumbnailProps {
   src: string;
   title: string;
@@ -314,6 +450,7 @@ interface SuggestionCardItemState {
   plan: PlanItem;
   planState: 'suggested' | 'accepted' | 'completed';
   showPlanBHint: boolean;
+  isSkipped?: boolean;
 }
 
 const preloadedPlanImages = new Set<string>();
@@ -757,9 +894,9 @@ export default function App() {
   
   // 3 independent suggestion cards state (starts at index 0 -> 1 / 3: "How about a 5-minute stretch?")
   const [cardsState, setCardsState] = useState<SuggestionCardItemState[]>([
-    { id: 'card-0', plan: STRETCH_PLAN, planState: 'suggested', showPlanBHint: true },
-    { id: 'card-1', plan: DEFAULT_WALK_PLAN, planState: 'suggested', showPlanBHint: true },
-    { id: 'card-2', plan: MOBILITY_PLAN, planState: 'suggested', showPlanBHint: true },
+    { id: 'card-0', plan: STRETCH_PLAN, planState: 'suggested', showPlanBHint: true, isSkipped: false },
+    { id: 'card-1', plan: DEFAULT_WALK_PLAN, planState: 'suggested', showPlanBHint: true, isSkipped: false },
+    { id: 'card-2', plan: MOBILITY_PLAN, planState: 'suggested', showPlanBHint: true, isSkipped: false },
   ]);
   const [activeVirtualIndex, setActiveVirtualIndex] = useState<number>(0);
   const activeCardIndex = ((activeVirtualIndex % 3) + 3) % 3;
@@ -793,9 +930,36 @@ export default function App() {
     );
   }, []);
 
-  // Whether any of the 3 suggestions has entered 'accepted' (In progress) or 'completed' (Done) state
+  const setCardSkipped = useCallback((cardId: string, skipped: boolean) => {
+    setCardsState(prev =>
+      prev.map((item) => (item.id === cardId ? { ...item, isSkipped: skipped } : item))
+    );
+  }, []);
+
+  const unskippedCardIndices = useMemo(
+    () =>
+      cardsState.reduce<number[]>((acc, item, idx) => {
+        if (!item.isSkipped) acc.push(idx);
+        return acc;
+      }, []),
+    [cardsState]
+  );
+  const allCardsSkipped = unskippedCardIndices.length === 0;
+  const bubbleCardIndex = useMemo(() => {
+    if (allCardsSkipped) return activeCardIndex;
+    if (!cardsState[activeCardIndex]?.isSkipped) return activeCardIndex;
+    return unskippedCardIndices[0] ?? activeCardIndex;
+  }, [allCardsSkipped, activeCardIndex, cardsState, unskippedCardIndices]);
+  const bubblePlan = cardsState[bubbleCardIndex]?.plan ?? currentPlan;
+
+  // Whether any unskipped suggestion has entered 'accepted' (In progress) or 'completed' (Done) state
   const hasAnyAcceptedOrCompleted = useMemo(
-    () => cardsState.some((item) => item.planState === 'accepted' || item.planState === 'completed'),
+    () =>
+      cardsState.some(
+        (item) =>
+          !item.isSkipped &&
+          (item.planState === 'accepted' || item.planState === 'completed')
+      ),
     [cardsState]
   );
 
@@ -847,11 +1011,16 @@ export default function App() {
   // Today home defaults to ambient normal state (card collapsed into bubble below Nova)
   const [isPlanCardOpen, setIsPlanCardOpen] = useState<boolean>(false);
   const [isRestDay, setIsRestDay] = useState<boolean>(false);
-  const prevIsRestDayRef = useRef<boolean>(false);
-  const isRestModeTransitioning = prevIsRestDayRef.current !== isRestDay;
+  const bubbleDisplayMode: 'rest' | 'all-skipped' | 'suggestion' = isRestDay
+    ? 'rest'
+    : allCardsSkipped
+    ? 'all-skipped'
+    : 'suggestion';
+  const prevBubbleDisplayModeRef = useRef<'rest' | 'all-skipped' | 'suggestion'>('suggestion');
+  const isBubbleModeTransitioning = prevBubbleDisplayModeRef.current !== bubbleDisplayMode;
   useEffect(() => {
-    prevIsRestDayRef.current = isRestDay;
-  }, [isRestDay]);
+    prevBubbleDisplayModeRef.current = bubbleDisplayMode;
+  }, [bubbleDisplayMode]);
   const [showSampleDataNote, setShowSampleDataNote] = useState<boolean>(false);
   
   // Avatar mode: '3d' procedural fur character (default for test) or '2d' legacy image
@@ -1198,7 +1367,7 @@ export default function App() {
     const ro = new ResizeObserver(() => updateCompanionHeight());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [hasAnyAcceptedOrCompleted, isRestDay, activeCardIndex, cardsState, frameSize]);
+  }, [hasAnyAcceptedOrCompleted, isRestDay, allCardsSkipped, bubbleCardIndex, cardsState, frameSize]);
 
   // Target coordinates for Nova docked at top edge of chat sheet
   const drawerAvatarSize = frameSize.height < 700 ? 112 : 124;
@@ -1245,6 +1414,10 @@ export default function App() {
   const handleExitRestDay = useCallback(() => {
     setIsRestDay(false);
   }, []);
+
+  const handleResumeSkippedCard = useCallback((cardId: string) => {
+    setCardSkipped(cardId, false);
+  }, [setCardSkipped]);
 
   const centerCarouselOnCardIdx = useCallback((targetIdx: number) => {
     isProgrammaticCenteringRef.current = true;
@@ -1633,10 +1806,16 @@ export default function App() {
       ]);
       // Chat drawer remains OPEN so user can continue chatting; no setIsChatOpen(false)
     } else if (option.action === 'skip_task') {
-      // Single-task Not today: skip only the targeted card without entering global rest
+      // Single-task Not today: skip only the targeted card while preserving its content, order & pre-skip state
       const targetIdx = chatTargetCardIdxRef.current ?? activeCardIndexRef.current;
+      const targetCard = cardsState[targetIdx];
       cancelHoldImmediate();
-      setPlanState('suggested', targetIdx);
+      if (targetCard) {
+        setCardSkipped(targetCard.id, true);
+        if (pendingPlanUpdateRef.current?.cardId === targetCard.id) {
+          cancelPendingAndActiveCardUpdate();
+        }
+      }
       const now = Date.now();
       setChatMessages((prev) => [
         ...prev.map((m) =>
@@ -1856,7 +2035,8 @@ export default function App() {
 
   const startHold = useCallback((e?: React.SyntheticEvent | Event) => {
     const activeIdx = activeCardIndexRef.current;
-    if (cardsState[activeIdx]?.planState === 'completed') return;
+    const activeCard = cardsState[activeIdx];
+    if (isRestDay || activeCard?.isSkipped || activeCard?.planState === 'completed') return;
     if (e && e.type === 'mousedown' && performance.now() - lastTouchTimeRef.current < 600) return;
     if (e && e.type === 'touchstart') {
       lastTouchTimeRef.current = performance.now();
@@ -1914,7 +2094,7 @@ export default function App() {
     };
 
     holdTimerRef.current = requestAnimationFrame(update);
-  }, [cardsState, setPlanState]);
+  }, [cardsState, isRestDay, setPlanState]);
 
   // Cancel any active hold when switching cards
   useEffect(() => {
@@ -2097,20 +2277,42 @@ export default function App() {
     };
   }, []);
 
+  const canRotateBubble = !isRestDay && unskippedCardIndices.length > 1;
+
+  const stepBubbleSuggestion = useCallback((step: 1 | -1) => {
+    if (!canRotateBubble) return;
+    setBubbleSwipeDir(step);
+    setActiveVirtualIndex((prev) => {
+      const currentMod = ((prev % 3) + 3) % 3;
+      const baseIdx = !cardsState[currentMod]?.isSkipped
+        ? currentMod
+        : (unskippedCardIndices[0] ?? currentMod);
+      for (let offset = 1; offset <= 3; offset++) {
+        const candidate = (((baseIdx + step * offset) % 3) + 3) % 3;
+        if (!cardsState[candidate]?.isSkipped) {
+          let diff = candidate - currentMod;
+          if (step > 0 && diff <= 0) diff += 3;
+          if (step < 0 && diff >= 0) diff -= 3;
+          return prev + diff;
+        }
+      }
+      return prev;
+    });
+  }, [canRotateBubble, cardsState, unskippedCardIndices]);
+
   const handleBubbleWheel = useCallback((e: React.WheelEvent<HTMLElement>) => {
-    if (isPlanCardOpen || isRestDay) return;
+    if (isPlanCardOpen || !canRotateBubble) return;
     if (Math.abs(e.deltaY) >= 12 && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
       const now = performance.now();
       if (now - lastBubbleSwipeTimeRef.current < 280) return;
       lastBubbleSwipeTimeRef.current = now;
       const step: 1 | -1 = e.deltaY > 0 ? 1 : -1;
-      setBubbleSwipeDir(step);
-      setActiveVirtualIndex((prev) => prev + step);
+      stepBubbleSuggestion(step);
     }
-  }, [isPlanCardOpen, isRestDay]);
+  }, [isPlanCardOpen, canRotateBubble, stepBubbleSuggestion]);
 
   useEffect(() => {
-    if (isPlanCardOpen || isRestDay) {
+    if (isPlanCardOpen || !canRotateBubble) {
       bubbleDragRef.current = null;
       setIsDraggingBubble(false);
       setBubbleDragY(0);
@@ -2144,10 +2346,9 @@ export default function App() {
       if (Math.abs(dy) >= 12 && Math.abs(dy) > Math.abs(dx)) {
         didSwipeBubbleRef.current = true;
         lastBubbleSwipeTimeRef.current = performance.now();
-        // Swipe up (dy < 0) advances to next item (1/3 -> 2/3 -> 3/3); swipe down (dy > 0) goes to previous item
+        // Swipe up (dy < 0) advances to next unskipped item; swipe down (dy > 0) goes to previous unskipped item
         const step: 1 | -1 = dy < 0 ? 1 : -1;
-        setBubbleSwipeDir(step);
-        setActiveVirtualIndex((prev) => prev + step);
+        stepBubbleSuggestion(step);
       }
 
       setIsDraggingBubble(false);
@@ -2197,7 +2398,7 @@ export default function App() {
       window.removeEventListener('touchend', onTouchEnd);
       window.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [isPlanCardOpen, isRestDay]);
+  }, [isPlanCardOpen, canRotateBubble, stepBubbleSuggestion]);
 
   const handleCarouselPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -2346,8 +2547,8 @@ export default function App() {
 
   // Keyboard accessibility: hold Space or Enter for 3 seconds to complete
   const handleDoneKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    const activeState = cardsState[activeCardIndexRef.current]?.planState;
-    if (activeState === 'completed') return;
+    const activeCard = cardsState[activeCardIndexRef.current];
+    if (isRestDay || activeCard?.isSkipped || activeCard?.planState === 'completed') return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (!e.repeat && !isHoldingRef.current) {
@@ -2367,9 +2568,15 @@ export default function App() {
 
   // Screen reader / assistive technology click: detail === 0
   const handleDoneClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    const activeState = cardsState[activeCardIndexRef.current]?.planState;
+    const activeCard = cardsState[activeCardIndexRef.current];
     // Assistive technology (screen reader) synthesized click
-    if (e.detail === 0 && activeState !== 'completed' && !hasCompletedRef.current) {
+    if (
+      e.detail === 0 &&
+      !isRestDay &&
+      !activeCard?.isSkipped &&
+      activeCard?.planState !== 'completed' &&
+      !hasCompletedRef.current
+    ) {
       cancelHold();
       setIsAccessibleConfirmOpen(true);
       return;
@@ -2947,14 +3154,19 @@ export default function App() {
                       }}
                       className="w-full flex justify-center shrink-0 overflow-visible"
                     >
-                      {/* Stack Group Wrapper: reserves 16px bottom stack height for 3-card stack (removed in rest mode) */}
+                      {/* Stack Group Wrapper: reserves bottom stack height for remaining unskipped suggestions (removed in rest / single / all-skipped) */}
                       <div
                         id="today-suggestion-bubble-stack"
                         style={{
                           width: 'calc(100% - 72px)',
                           maxWidth: '360px',
                           marginTop: frameSize.height < 700 ? '11px' : '8px',
-                          paddingBottom: isRestDay ? '0px' : '16px',
+                          paddingBottom:
+                            isRestDay || unskippedCardIndices.length <= 1
+                              ? '0px'
+                              : unskippedCardIndices.length === 2
+                              ? '8px'
+                              : '16px',
                           overflow: 'visible',
                           transform: isBubblePressed ? 'scale(0.985)' : 'scale(1)',
                           transition: shouldReduceMotion ? 'none' : 'transform 120ms ease-out',
@@ -2966,8 +3178,8 @@ export default function App() {
                           style={{ overflow: 'visible' }}
                           className="relative w-full"
                         >
-                          {/* Layer 3 (Lowest decorative layer): hidden in global rest mode */}
-                          {!isRestDay && (
+                          {/* Layer 3 (Lowest decorative layer): shown only when >= 3 unskipped suggestions and not resting */}
+                          {!isRestDay && unskippedCardIndices.length >= 3 && (
                             <div
                               id="today-bubble-stack-layer-3"
                               aria-hidden="true"
@@ -2987,8 +3199,8 @@ export default function App() {
                             />
                           )}
 
-                          {/* Layer 2 (Middle decorative layer): hidden in global rest mode */}
-                          {!isRestDay && (
+                          {/* Layer 2 (Middle decorative layer): shown only when >= 2 unskipped suggestions and not resting */}
+                          {!isRestDay && unskippedCardIndices.length >= 2 && (
                             <div
                               id="today-bubble-stack-layer-2"
                               aria-hidden="true"
@@ -3033,13 +3245,22 @@ export default function App() {
                                 e.stopPropagation();
                                 return;
                               }
-                              setIsPlanCardOpen(true);
+                              if (
+                                bubbleDisplayMode === 'suggestion' &&
+                                bubbleCardIndex !== activeCardIndex
+                              ) {
+                                centerCarouselOnCardIdx(bubbleCardIndex);
+                              } else {
+                                setIsPlanCardOpen(true);
+                              }
                             }}
                             aria-expanded={isPlanCardOpen}
                             aria-label={
-                              isRestDay
-                                ? 'Nova: 今天慢一点也没关系，我陪你歇一会儿。点击查看休息卡片'
-                                : `Open Nova’s suggestions: ${currentPlan.bubblePrompt}`
+                              bubbleDisplayMode === 'rest'
+                                ? REST_DAY_COPY.bubbleAriaLabel
+                                : bubbleDisplayMode === 'all-skipped'
+                                ? ALL_SKIPPED_BUBBLE_COPY.bubbleAriaLabel
+                                : `Open Nova’s suggestions: ${bubblePlan.bubblePrompt}`
                             }
                             style={{
                               touchAction: 'pan-y',
@@ -3150,12 +3371,28 @@ export default function App() {
                                 <AnimatePresence
                                   mode="popLayout"
                                   initial={false}
-                                  custom={{ dir: bubbleSwipeDir, pureFade: isRestDay || isRestModeTransitioning }}
+                                  custom={{
+                                    dir: bubbleSwipeDir,
+                                    pureFade:
+                                      bubbleDisplayMode !== 'suggestion' ||
+                                      isBubbleModeTransitioning,
+                                  }}
                                 >
                                   <motion.span
-                                    key={isRestDay ? 'rest-day-bubble' : `${activeCardIndex}-${currentPlan.id}`}
+                                    key={
+                                      bubbleDisplayMode === 'rest'
+                                        ? 'rest-day-bubble'
+                                        : bubbleDisplayMode === 'all-skipped'
+                                        ? 'all-skipped-bubble'
+                                        : `${bubbleCardIndex}-${bubblePlan.id}`
+                                    }
                                     id="today-bubble-suggestion-text"
-                                    custom={{ dir: bubbleSwipeDir, pureFade: isRestDay || isRestModeTransitioning }}
+                                    custom={{
+                                      dir: bubbleSwipeDir,
+                                      pureFade:
+                                        bubbleDisplayMode !== 'suggestion' ||
+                                        isBubbleModeTransitioning,
+                                    }}
                                     variants={{
                                       enter: (c: { dir: 1 | -1; pureFade: boolean }) =>
                                         shouldReduceMotion || c.pureFade
@@ -3163,7 +3400,7 @@ export default function App() {
                                           : { opacity: 0, y: c.dir >= 0 ? 10 : -10 },
                                       center: {
                                         opacity: 1,
-                                        y: isRestDay ? 0 : bubbleDragY,
+                                        y: canRotateBubble ? bubbleDragY : 0,
                                       },
                                       exit: (c: { dir: 1 | -1; pureFade: boolean }) =>
                                         shouldReduceMotion || c.pureFade
@@ -3176,7 +3413,8 @@ export default function App() {
                                     transition={
                                       shouldReduceMotion
                                         ? { duration: 0 }
-                                        : isRestDay || isRestModeTransitioning
+                                        : bubbleDisplayMode !== 'suggestion' ||
+                                          isBubbleModeTransitioning
                                         ? { duration: 0.15, ease: 'easeInOut' }
                                         : isDraggingBubble
                                         ? { duration: 0 }
@@ -3195,9 +3433,11 @@ export default function App() {
                                     }}
                                     className="w-full"
                                   >
-                                    {isRestDay
-                                      ? '今天慢一点也没关系，我陪你歇一会儿。'
-                                      : currentPlan.bubblePrompt}
+                                    {bubbleDisplayMode === 'rest'
+                                      ? REST_DAY_COPY.bubbleBody
+                                      : bubbleDisplayMode === 'all-skipped'
+                                      ? ALL_SKIPPED_BUBBLE_COPY.bubbleBody
+                                      : bubblePlan.bubblePrompt}
                                   </motion.span>
                                 </AnimatePresence>
                               </div>
@@ -3269,12 +3509,13 @@ export default function App() {
                         {/* 3 Shared Task Rows: min-height 48px, 3-col grid (minmax(0,1fr) auto 12px), gap 8px, py 10px */}
                         <div className="flex flex-col shrink-0">
                           {cardsState.map((item, idx) => {
-                            const statusLabel =
-                              item.planState === 'completed'
-                                ? 'Done'
-                                : item.planState === 'accepted'
-                                ? 'In progress'
-                                : 'To try';
+                            const statusLabel = item.isSkipped
+                              ? 'Skipped'
+                              : item.planState === 'completed'
+                              ? 'Done'
+                              : item.planState === 'accepted'
+                              ? 'In progress'
+                              : 'To try';
 
                             return (
                               <button
@@ -3321,7 +3562,20 @@ export default function App() {
                                 </span>
 
                                 {/* Col 2: Status (no capsule background, 11px, 500, 16px) */}
-                                {item.planState === 'completed' ? (
+                                {item.isSkipped ? (
+                                  <span
+                                    data-list-row-badge={idx}
+                                    style={{
+                                      fontSize: '11px',
+                                      fontWeight: 500,
+                                      lineHeight: '16px',
+                                      color: '#85818F',
+                                    }}
+                                    className="inline-flex items-center whitespace-nowrap"
+                                  >
+                                    Skipped
+                                  </span>
+                                ) : item.planState === 'completed' ? (
                                   <span
                                     data-list-row-badge={idx}
                                     style={{
@@ -3498,6 +3752,13 @@ export default function App() {
                     const closeBtnOpacity = Math.max(0, 1 - absOffset * 2.6);
 
                     const cardProgress = isCenterCard ? holdProgress : 0;
+                    const isCardSkipped = Boolean(cardItem.isSkipped);
+                    const pauseOverlayMode: 'rest' | 'skipped' | null = isRestDay
+                      ? 'rest'
+                      : isCardSkipped
+                      ? 'skipped'
+                      : null;
+                    const isCardPaused = pauseOverlayMode !== null;
 
                     return (
                       <div
@@ -3566,10 +3827,10 @@ export default function App() {
 
                         {/* Top Card Header: Compacted, 20px horizontal padding, 44x44 close hit area kept clear of title & thumbnail */}
                         <div
-                          inert={isRestDay ? true : undefined}
+                          inert={isCardPaused ? true : undefined}
                           style={{ opacity: innerContentOpacity }}
                           className={`px-[20px] pt-0 w-full shrink-0 ${
-                            isCenterCard && !isRestDay ? 'pointer-events-auto' : 'pointer-events-none'
+                            isCenterCard && !isCardPaused ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
                           <div className="h-[44px] flex items-center pr-[36px]">
@@ -3641,12 +3902,12 @@ export default function App() {
                         {/* Card Body Content: 20px horizontal padding */}
                         <div
                           ref={isCenterCard ? cardContentRef : undefined}
-                          inert={isRestDay ? true : undefined}
+                          inert={isCardPaused ? true : undefined}
                           style={{ opacity: innerContentOpacity }}
                           className={`px-[20px] ${
                             cardState === 'suggested' ? 'pb-3' : 'pb-1.5'
                           } w-full flex-1 flex flex-col justify-between ${
-                            isCenterCard && !isRestDay ? 'pointer-events-auto' : 'pointer-events-none'
+                            isCenterCard && !isCardPaused ? 'pointer-events-auto' : 'pointer-events-none'
                           }`}
                         >
                           {/* 2. SUGGESTED EXTRA: 10px below title -> Two-Column Content Row (minmax(0,1fr) + 80px/72px thumb, 12px gap) -> 18px gap -> 2 Buttons (>=44px) */}
@@ -3997,99 +4258,17 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Global Rest Day Frosted Overlay (on all 3 cards; copy & Restart button only on center card) */}
-                        <AnimatePresence initial={false}>
-                          {isRestDay && (
-                            <motion.div
-                              key="card-rest-overlay"
-                              data-card-rest-overlay="true"
-                              data-rest-center={isCenterCard ? 'true' : 'false'}
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              exit={{ opacity: 0 }}
-                              transition={{
-                                duration: shouldReduceMotion ? 0 : 0.18,
-                                ease: 'easeOut',
-                              }}
-                              style={{
-                                position: 'absolute',
-                                inset: 0,
-                                borderRadius: 'inherit',
-                                background: 'rgba(255, 255, 255, 0.78)',
-                                backdropFilter: 'blur(3px)',
-                                WebkitBackdropFilter: 'blur(3px)',
-                                zIndex: 35,
-                              }}
-                              className={`flex flex-col items-center justify-center px-[24px] text-center ${
-                                isCenterCard ? 'pointer-events-auto' : 'pointer-events-none'
-                              }`}
-                            >
-                              {isCenterCard && (
-                                <div className="flex flex-col items-center justify-center w-full">
-                                  <h3
-                                    style={{
-                                      fontSize: '18px',
-                                      fontWeight: 600,
-                                      lineHeight: '25px',
-                                      color: '#514D60',
-                                      margin: 0,
-                                    }}
-                                    className="text-center"
-                                  >
-                                    今天，安心休息。
-                                  </h3>
-                                  <p
-                                    style={{
-                                      marginTop: '8px',
-                                      fontSize: '13px',
-                                      fontWeight: 400,
-                                      lineHeight: '20px',
-                                      color: '#817B8E',
-                                      maxWidth: '230px',
-                                      marginBottom: 0,
-                                    }}
-                                    className="text-center"
-                                  >
-                                    不必赶进度，照顾自己也是今天的计划。
-                                  </p>
-                                  <button
-                                    type="button"
-                                    data-card-action="restart-rest-day"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleExitRestDay();
-                                    }}
-                                    style={{
-                                      marginTop: '18px',
-                                      minWidth: '88px',
-                                      height: '44px',
-                                    }}
-                                    className="flex items-center justify-center bg-transparent border-0 p-0 cursor-pointer transition-opacity duration-150 active:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#766D98] rounded-[16px]"
-                                  >
-                                    <span
-                                      style={{
-                                        height: '32px',
-                                        minWidth: '88px',
-                                        paddingLeft: '20px',
-                                        paddingRight: '20px',
-                                        borderRadius: '16px',
-                                        background: 'rgba(255, 255, 255, 0.45)',
-                                        border: '1px solid rgba(118, 109, 152, 0.18)',
-                                        fontSize: '13px',
-                                        fontWeight: 500,
-                                        color: '#777086',
-                                        boxShadow: 'none',
-                                      }}
-                                      className="inline-flex items-center justify-center whitespace-nowrap"
-                                    >
-                                      重启
-                                    </span>
-                                  </button>
-                                </div>
-                              )}
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
+                        {/* Reusable Paused Overlay: Global Rest Day (priority) or Single-Task Skip */}
+                        <CardPausedOverlay
+                          mode={pauseOverlayMode}
+                          isCenterCard={isCenterCard}
+                          shouldReduceMotion={Boolean(shouldReduceMotion)}
+                          onResume={
+                            pauseOverlayMode === 'rest'
+                              ? handleExitRestDay
+                              : () => handleResumeSkippedCard(cardItem.id)
+                          }
+                        />
                       </div>
                     );
                   })}
