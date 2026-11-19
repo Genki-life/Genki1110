@@ -24,6 +24,21 @@ import {
 
 import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
 import { FurryNovaStaticAvatar } from './components/Avatar3D/FurryNovaStaticAvatar';
+import {
+  ActivityCategory,
+  ActivityCompletionRecord,
+  addRestDayKey,
+  inferActivityCategory,
+  inferDurationMinutes,
+  loadCompletionRecords,
+  loadRestDayKeys,
+  removeCompletionRecordBySourceKey,
+  removeRestDayKey,
+  saveCompletionRecords,
+  saveRestDayKeys,
+  toLocalDateKey,
+  upsertCompletionRecordList,
+} from './utils/weeklyPlanStore';
 
 const LazyMyPlanView = React.lazy(() =>
   import('./components/MyPlanView').then((module) => ({ default: module.MyPlanView }))
@@ -53,6 +68,8 @@ interface PlanItem {
   tip2: string;
   thumbnailUrl: string;
   mediaType: 'article';
+  activityCategory?: ActivityCategory;
+  durationMinutes?: number;
 }
 
 const DEFAULT_WALK_PLAN: PlanItem = {
@@ -68,7 +85,9 @@ const DEFAULT_WALK_PLAN: PlanItem = {
   tip1: 'Best window: right after lunch (1:15 PM) to aid light digestion and mental reset.',
   tip2: 'Zero pace requirement. Walk as slowly as you like—just let your eyes rest from screens.',
   thumbnailUrl: mindfulWalkThumbUrl,
-  mediaType: 'article'
+  mediaType: 'article',
+  activityCategory: 'walk',
+  durationMinutes: 15
 };
 
 const STRETCH_PLAN: PlanItem = {
@@ -84,7 +103,9 @@ const STRETCH_PLAN: PlanItem = {
   tip1: 'No mat or workout clothes required. Stand or sit comfortably near your desk or couch.',
   tip2: 'Focus on loosening tense shoulders, neck, and lower back with deep, unhurried breaths.',
   thumbnailUrl: stretchPoseSvgUrl,
-  mediaType: 'article'
+  mediaType: 'article',
+  activityCategory: 'stretch',
+  durationMinutes: 5
 };
 
 const MOBILITY_PLAN: PlanItem = {
@@ -100,7 +121,9 @@ const MOBILITY_PLAN: PlanItem = {
   tip1: 'Great for mid-afternoon when your shoulders start creeping up toward your ears.',
   tip2: 'Move only within a comfortable range—let gravity and slow exhales do the work.',
   thumbnailUrl: shoulderNeckPoseSvgUrl,
-  mediaType: 'article'
+  mediaType: 'article',
+  activityCategory: 'stretch',
+  durationMinutes: 8
 };
 
 const BREATH_RESET_PLAN: PlanItem = {
@@ -116,7 +139,9 @@ const BREATH_RESET_PLAN: PlanItem = {
   tip1: 'Keep your feet flat on the floor and let your hands rest heavy on your lap.',
   tip2: 'Make each exhale slightly longer than your inhale to signal calm to your nervous system.',
   thumbnailUrl: discoverBreathUrl,
-  mediaType: 'article'
+  mediaType: 'article',
+  activityCategory: 'other',
+  durationMinutes: 3
 };
 
 const TOMORROW_WALK_PLAN: PlanItem = {
@@ -132,7 +157,9 @@ const TOMORROW_WALK_PLAN: PlanItem = {
   tip1: 'Planned for tomorrow at 9:30 AM before your calendar fills up.',
   tip2: 'Today is officially a recharge window. Rest is an essential part of the journey.',
   thumbnailUrl: discoverTrailUrl,
-  mediaType: 'article'
+  mediaType: 'article',
+  activityCategory: 'walk',
+  durationMinutes: 15
 };
 
 const REST_DAY_PLAN: PlanItem = {
@@ -148,7 +175,9 @@ const REST_DAY_PLAN: PlanItem = {
   tip1: 'Stay hydrated and give your body space to recuperate.',
   tip2: 'No checklists tonight. Nova will check back in tomorrow morning.',
   thumbnailUrl: discoverEveningUrl,
-  mediaType: 'article'
+  mediaType: 'article',
+  activityCategory: 'rest',
+  durationMinutes: 0
 };
 
 const REST_DAY_BUBBLE_BODY = 'It’s okay to slow down. I’m here with you.';
@@ -902,7 +931,14 @@ export default function App() {
   const activeCardIndex = ((activeVirtualIndex % 3) + 3) % 3;
   const activeCardIndexRef = useRef<number>(activeCardIndex);
   activeCardIndexRef.current = activeCardIndex;
+  const cardsStateRef = useRef<SuggestionCardItemState[]>(cardsState);
+  cardsStateRef.current = cardsState;
   const chatTargetCardIdxRef = useRef<number>(activeCardIndex);
+
+  // Real Today completion records & user-chosen rest days linked to Plan -> This week / Weekly review
+  const [completionRecords, setCompletionRecords] = useState<ActivityCompletionRecord[]>(loadCompletionRecords);
+  const [restDayKeys, setRestDayKeys] = useState<string[]>(loadRestDayKeys);
+  const cardCompletionSourceKeyRef = useRef<Record<string, string>>({});
 
   const currentCard = cardsState[activeCardIndex];
   const currentPlan = currentCard.plan;
@@ -922,6 +958,69 @@ export default function App() {
       prev.map((item, i) => (i === idx ? { ...item, planState: nextState } : item))
     );
   }, []);
+
+  const recordCardCompleted = useCallback((targetIdx?: number) => {
+    const idx = targetIdx ?? activeCardIndexRef.current;
+    const card = cardsStateRef.current[idx];
+    if (!card || card.planState === 'completed') return;
+
+    setPlanState('completed', idx);
+
+    const category =
+      card.plan.activityCategory ?? inferActivityCategory(card.plan.id, card.plan.title);
+    if (category === 'rest') return;
+
+    const now = new Date();
+    const dateKey = toLocalDateKey(now);
+    const sourceKey = `${dateKey}::${card.id}`;
+    cardCompletionSourceKeyRef.current[card.id] = sourceKey;
+
+    const nextRecord: ActivityCompletionRecord = {
+      id: sourceKey,
+      sourceKey,
+      cardId: card.id,
+      planId: card.plan.id,
+      title: card.plan.title,
+      category,
+      durationMinutes:
+        typeof card.plan.durationMinutes === 'number'
+          ? card.plan.durationMinutes
+          : inferDurationMinutes(card.plan.title),
+      completedAt: now.toISOString(),
+      dateKey,
+      hasExactTimestamp: true,
+      isSample: false,
+    };
+
+    setCompletionRecords((prev) => {
+      const updated = upsertCompletionRecordList(prev, nextRecord);
+      saveCompletionRecords(updated);
+      return updated;
+    });
+  }, [setPlanState]);
+
+  const undoCardCompleted = useCallback((targetIdx: number) => {
+    const card = cardsStateRef.current[targetIdx];
+    if (!card) return;
+
+    hasCompletedRef.current = false;
+    isHoldingRef.current = false;
+    holdProgressRef.current = 0;
+    setIsCompletedPop(false);
+    setPlanState('accepted', targetIdx);
+    setHoldProgress(0);
+
+    const sourceKey =
+      cardCompletionSourceKeyRef.current[card.id] ||
+      `${toLocalDateKey(new Date())}::${card.id}`;
+    delete cardCompletionSourceKeyRef.current[card.id];
+
+    setCompletionRecords((prev) => {
+      const updated = removeCompletionRecordBySourceKey(prev, sourceKey);
+      saveCompletionRecords(updated);
+      return updated;
+    });
+  }, [setPlanState]);
 
   const setShowPlanBHint = useCallback((show: boolean, targetIdx?: number) => {
     const idx = targetIdx ?? activeCardIndexRef.current;
@@ -1500,7 +1599,7 @@ export default function App() {
       bubbleTypewriterTargetTextRef.current !== '' &&
       bubbleTypewriterTargetTextRef.current !== fullBubbleText;
 
-    if ((bubbleEntrancePhase !== 'done' && leftBubbleView) || textChangedMidTyping) {
+    if ((isActiveOrPending && leftBubbleView) || textChangedMidTyping) {
       finishInitialBubbleEntranceImmediately();
     }
   }, [
@@ -1642,6 +1741,12 @@ export default function App() {
 
   const handleExitRestDay = useCallback(() => {
     setIsRestDay(false);
+    const todayKey = toLocalDateKey(new Date());
+    setRestDayKeys((prev) => {
+      const updated = removeRestDayKey(prev, todayKey);
+      saveRestDayKeys(updated);
+      return updated;
+    });
   }, []);
 
   const handleResumeSkippedCard = useCallback((cardId: string) => {
@@ -1957,6 +2062,12 @@ export default function App() {
         adjustSessionRef.current = null;
         cancelPendingAndActiveCardUpdate();
         setIsRestDay(true);
+        const todayKey = toLocalDateKey(new Date());
+        setRestDayKeys((prev) => {
+          const updated = addRestDayKey(prev, todayKey);
+          saveRestDayKeys(updated);
+          return updated;
+        });
 
         const now = Date.now();
         setChatMessages((prev) => [
@@ -2312,7 +2423,7 @@ export default function App() {
           setHoldProgress(100);
           setIsCompletedPop(true);
           setTimeout(() => setIsCompletedPop(false), 180);
-          setPlanState('completed', activeCardIndexRef.current);
+          recordCardCompleted(activeCardIndexRef.current);
           if (typeof navigator !== 'undefined' && navigator.vibrate) {
             try { navigator.vibrate(50); } catch (_) {}
           }
@@ -2323,7 +2434,7 @@ export default function App() {
     };
 
     holdTimerRef.current = requestAnimationFrame(update);
-  }, [cardsState, isRestDay, setPlanState]);
+  }, [cardsState, isRestDay, recordCardCompleted]);
 
   // Cancel any active hold when switching cards
   useEffect(() => {
@@ -3136,7 +3247,11 @@ export default function App() {
         >
           <span
             id="today-brand-title"
-            className="text-[28px] sm:text-[30px] font-bold tracking-[-0.024em] text-[#1C1C1E] leading-tight"
+            className={
+              activeTab === 'Plan'
+                ? 'text-[32px] font-bold leading-[38px] tracking-[-0.024em] text-[#1C1C1E]'
+                : 'text-[28px] sm:text-[30px] font-bold tracking-[-0.024em] text-[#1C1C1E] leading-tight'
+            }
           >
             {activeTab === 'Today' ? 'Genki' : activeTab}
           </span>
@@ -4446,12 +4561,7 @@ export default function App() {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (isCenterCard) {
-                                        hasCompletedRef.current = false;
-                                        isHoldingRef.current = false;
-                                        holdProgressRef.current = 0;
-                                        setIsCompletedPop(false);
-                                        setPlanState('accepted', slotCardIdx);
-                                        setHoldProgress(0);
+                                        undoCardCompleted(slotCardIdx);
                                       }
                                     }}
                                     className="min-h-[44px] px-6 rounded-[12px] text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
@@ -4611,7 +4721,12 @@ export default function App() {
             <React.Suspense
               fallback={<div className="flex-1 w-full h-full bg-transparent" aria-hidden="true" />}
             >
-              <LazyMyPlanView phoneFrameRef={phoneFrameRef} />
+              <LazyMyPlanView
+                phoneFrameRef={phoneFrameRef}
+                completionRecords={completionRecords}
+                restDayKeys={restDayKeys}
+                onNavigateToToday={() => setActiveTab('Today')}
+              />
             </React.Suspense>
           )}
         </div>
@@ -5079,7 +5194,7 @@ export default function App() {
                     isHoldingRef.current = false;
                     holdProgressRef.current = 100;
                     setIsAccessibleConfirmOpen(false);
-                    setPlanState('completed');
+                    recordCardCompleted(activeCardIndexRef.current);
                     setHoldProgress(100);
                   }}
                   className="px-4 py-2 rounded-[16px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] text-white text-xs font-bold shadow-[0_4px_14px_rgba(94,91,174,0.22)] active:scale-95 transition-all min-h-[44px]"

@@ -2,10 +2,10 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
+  ChevronLeft,
   ChevronRight,
   ChevronDown,
   Sparkles,
-  Compass,
   Heart,
   Moon,
   Flame,
@@ -15,10 +15,7 @@ import {
   Clock,
   Calendar as CalendarIcon,
   TrendingUp,
-  Sliders,
   ShieldCheck,
-  Pause,
-  Play,
   HelpCircle,
   BarChart2,
   AlertCircle,
@@ -30,6 +27,45 @@ import {
   CornerDownRight
 } from 'lucide-react';
 import { FurryNovaStaticAvatar } from './Avatar3D/FurryNovaStaticAvatar';
+import {
+  ActivityCompletionRecord,
+  DEFAULT_WEEKLY_DRAFT,
+  WeeklyAdjustmentProposal,
+  WeeklyReviewFeedback,
+  WeeklyReviewFeeling,
+  WeeklySchedule,
+  applyWeeklyAdjustmentProposal,
+  buildWeeklyAdjustmentProposal,
+  buildWeeklyReviewObservation,
+  buildWeeklyReviewSummary,
+  getLastCompletedWeekBounds,
+  getLocalWeekBounds,
+  isDateKeyInWeek,
+  loadResolvedAdjustmentKeys,
+  loadWeeklyReviewFeedbacks,
+  loadWeeklySchedule,
+  saveResolvedAdjustmentKeys,
+  saveWeeklyReviewFeedbacks,
+  saveWeeklySchedule,
+} from '../utils/weeklyPlanStore';
+import {
+  PlanPhase,
+  PlanPathState,
+  loadInitialPlanPath,
+  savePlanPathState,
+} from '../utils/planPhaseStore';
+import {
+  MemoryCategory,
+  PreferenceItem,
+  deriveShortPreferenceTag,
+  formatAsCheckQuestion,
+  getConfirmedPreferenceTags,
+  loadPreferences,
+  savePreferences,
+} from '../utils/preferencesStore';
+
+export type { MemoryCategory };
+export type MemoryItem = PreferenceItem;
 
 
 // ============================================================================
@@ -37,7 +73,7 @@ import { FurryNovaStaticAvatar } from './Avatar3D/FurryNovaStaticAvatar';
 // ============================================================================
 
 type RhythmTimeframe = '7d' | 'month';
-type SecondaryModuleType = 'activity' | 'rhythm' | 'direction' | 'memory' | 'health' | null;
+type SecondaryModuleType = 'path' | 'history' | 'preferences' | 'health' | null;
 
 // --- A. Unified Activity Record Model ---
 // Supports Active (with distinct sessionsCount & durationMinutes), Mindful Rest, or No Record
@@ -185,13 +221,13 @@ function createInitialActivityLogs(baseYear: number, baseMonth: number, baseDay:
     }
   }
 
-  // Populate current month up to baseDay
+  // Populate past days of current month strictly before Today (never fabricate a record for Today)
   const currentActiveDays = [1, 2, 4, 6, 8, 9, 11, 13, 15, 16, 18, 20, 22, 24, 26, 28];
   const currentDoubleDays = [2, 11, 20];
   const currentRestDays = [3, 10, 17, 23];
 
   for (const d of currentActiveDays) {
-    if (d <= baseDay) {
+    if (d < baseDay) {
       const isDouble = currentDoubleDays.includes(d);
       const isWalk = d % 2 === 0 || d === 1;
       logs[formatDateKey(baseYear, baseMonth, d)] = {
@@ -204,38 +240,24 @@ function createInitialActivityLogs(baseYear: number, baseMonth: number, baseDay:
           : '5-min living room stretch',
         durationMinutes: isDouble ? 20 : isWalk ? 15 : 5,
         sessionsCount: isDouble ? 2 : 1,
-        note: d === baseDay ? 'Completed after lunch' : 'Light gentle pacing',
+        note: 'Light gentle pacing',
         isSample: true
       };
     }
   }
 
   for (const d of currentRestDays) {
-    if (d <= baseDay) {
+    if (d < baseDay) {
       logs[formatDateKey(baseYear, baseMonth, d)] = {
         date: formatDateKey(baseYear, baseMonth, d),
         type: 'rest',
         title: 'Mindful rest day',
         durationMinutes: 0,
         sessionsCount: 0,
-        note: 'Intentional recovery pause — no guilt',
+        note: 'Intentional recovery pause',
         isSample: true
       };
     }
-  }
-
-  // Ensure Today has an active sample record by default
-  const todayKey = formatDateKey(baseYear, baseMonth, baseDay);
-  if (!logs[todayKey]) {
-    logs[todayKey] = {
-      date: todayKey,
-      type: 'active',
-      title: '15-min mindful walk',
-      durationMinutes: 15,
-      sessionsCount: 1,
-      note: 'Post-lunch outdoor walk',
-      isSample: true
-    };
   }
 
   return logs;
@@ -267,126 +289,136 @@ interface RecentSummaryData {
   dailyBreakdown: DailyBarItem[];
 }
 
-// --- C. Your Direction Dataset ---
-interface DirectionPresetGoal {
-  id: string;
-  title: string;
-  description: string;
-  defaultApproach: string;
-  tailoredReason: string;
-}
-
-const PRESET_DIRECTION_GOALS: DirectionPresetGoal[] = [
-  {
-    id: 'energy',
-    title: 'Rebuild steady daily energy',
-    description: 'Focus on low-friction movement after meals and gentle afternoon decompression.',
-    defaultApproach: '10–15 min light outdoor walks after lunch + 5 min desk stretches on busy days',
-    tailoredReason: 'Matched to your preference for zero-equipment afternoon resets and flexible rest days.',
-  },
-  {
-    id: 'sleep',
-    title: 'Unwind for deeper evening rest',
-    description: 'Release physical shoulder and neck tension before bedtime for smoother sleep onset.',
-    defaultApproach: '5–10 min evening floor stretches + 15 min screen-free wind-down audio',
-    tailoredReason: 'Designed around your 7h 24m sleep baseline to ease late-evening mental restlessness.',
-  },
-  {
-    id: 'mobility',
-    title: 'Ease desk stiffness & posture fatigue',
-    description: 'Counteract long sitting blocks with brief micro-mobility breaks.',
-    defaultApproach: '5 min neck & shoulder mobility flow twice a week + gentle midday walks',
-    tailoredReason: 'Built for high-meeting workdays where leaving home for a full workout feels overwhelming.',
-  },
+// --- C. Your Focus Dataset & Persistence ---
+const FOCUS_STORAGE_KEY = 'genki.plan.focus.v1';
+const LEGACY_DIRECTION_STORAGE_KEYS = [
+  'genki.plan.direction.v1',
+  'genki.plan.direction',
+  'genki_direction',
+  'your_direction'
 ];
 
 interface DirectionState {
   status: 'active' | 'paused';
   goalId: string;
   goalTitle: string;
+  phase: string;
   description: string;
   executionApproach: string;
   tailoredReason: string;
   nextReviewDate: string;
   reviewDaysLeft: number;
+  isSample?: boolean;
 }
 
-// --- D. What Nova Knows (Memory Dataset) ---
-export type MemoryCategory = 'matters' | 'feels_right' | 'check';
+const DEFAULT_SAMPLE_FOCUS: DirectionState = {
+  status: 'active',
+  goalId: 'energy',
+  goalTitle: 'Feel more energetic',
+  phase: 'Start small',
+  description: 'Short walks and gentle stretches.',
+  executionApproach: 'Short walks and gentle stretches.',
+  tailoredReason: '',
+  nextReviewDate: 'Review on Sunday',
+  reviewDaysLeft: 0,
+  isSample: true,
+};
 
-export interface MemoryItem {
-  id: string;
-  category: MemoryCategory;
-  title: string;
-  summary: string;
-  learnedFrom: string;
-  howItHelps: string;
-  updatedAt: string;
-  isConfirmed: boolean;
+function normalizeFocusRecord(raw: unknown): DirectionState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+
+  const focusRaw =
+    typeof obj.focus === 'string'
+      ? obj.focus
+      : typeof obj.goalTitle === 'string'
+      ? obj.goalTitle
+      : '';
+  const goalTitle = focusRaw.trim();
+  if (!goalTitle) return null;
+
+  const phaseRaw = typeof obj.phase === 'string' ? obj.phase.trim() : '';
+  const phase = phaseRaw || 'Start small';
+
+  const approachRaw =
+    typeof obj.approach === 'string'
+      ? obj.approach
+      : typeof obj.executionApproach === 'string'
+      ? obj.executionApproach
+      : typeof obj.description === 'string'
+      ? obj.description
+      : '';
+  const executionApproach = approachRaw.trim();
+
+  const reviewRaw =
+    typeof obj.reviewDate === 'string'
+      ? obj.reviewDate
+      : typeof obj.nextReviewDate === 'string'
+      ? obj.nextReviewDate
+      : '';
+  const nextReviewDate = reviewRaw.trim() || 'Review on Sunday';
+
+  return {
+    status: obj.status === 'paused' ? 'paused' : 'active',
+    goalId: typeof obj.goalId === 'string' && obj.goalId ? obj.goalId : 'custom',
+    goalTitle,
+    phase,
+    description: executionApproach,
+    executionApproach,
+    tailoredReason: typeof obj.tailoredReason === 'string' ? obj.tailoredReason : '',
+    nextReviewDate,
+    reviewDaysLeft: typeof obj.reviewDaysLeft === 'number' ? obj.reviewDaysLeft : 0,
+    isSample: obj.isSample === true,
+  };
 }
 
-const INITIAL_MEMORIES: MemoryItem[] = [
-  {
-    id: 'mem-walk-window',
-    category: 'feels_right',
-    title: 'Preferred midday walking window is 1:15 PM – 1:45 PM',
-    summary: 'Short 15-minute outdoor walks right after lunch feel easiest to start and help clear afternoon screen fatigue.',
-    learnedFrom: 'Observed from completed post-lunch walks over the past two weeks.',
-    howItHelps: 'Nova schedules outdoor walk suggestions after 1:00 PM instead of early mornings.',
-    updatedAt: 'Updated 2 days ago',
-    isConfirmed: true
-  },
-  {
-    id: 'mem-home-stretch',
-    category: 'feels_right',
-    title: 'Prefers low-friction living room stretches over gym routines',
-    summary: 'No-mat, no-workout-clothes 5-minute stretches in the living room work best when workdays run late.',
-    learnedFrom: 'You chose “5-minute stretch at home” as your Plan B on busy workdays.',
-    howItHelps: 'When energy or time is low, Nova defaults to standing or seated home stretches with zero setup.',
-    updatedAt: 'Updated 5 days ago',
-    isConfirmed: true
-  },
-  {
-    id: 'mem-steady-energy',
-    category: 'matters',
-    title: 'Gradual nervous system reset without guilt or pace targets',
-    summary: 'Building a calm, sustainable daily rhythm matters more than hitting calorie, step, or streak targets.',
-    learnedFrom: 'Shared during your initial onboarding conversation with Nova.',
-    howItHelps: 'Nova keeps all suggestions pressure-free and treats rest days as positive progress.',
-    updatedAt: 'Saved Oct 28',
-    isConfirmed: true
-  },
-  {
-    id: 'mem-neck-tension',
-    category: 'matters',
-    title: 'Relieving afternoon neck and shoulder stiffness from desk work',
-    summary: 'Long blocks of laptop work cause upper-back tightness by late afternoon.',
-    learnedFrom: 'You mentioned “My shoulders feel super tight after meetings” in chat last week.',
-    howItHelps: 'Prioritizes gentle shoulder rolls and upper-back decompression in your Plan B audio guides.',
-    updatedAt: 'Saved Nov 1',
-    isConfirmed: true
-  },
-  {
-    id: 'mem-rainy-days',
-    category: 'check',
-    title: 'Switch to indoor breathing & mobility on rainy or cold days?',
-    summary: 'It looks like you prefer staying indoors when temperatures drop below 12°C or when it rains.',
-    learnedFrom: 'Noticed you switched outdoor walks to indoor Plan B on two rainy afternoons.',
-    howItHelps: 'If confirmed, Nova will automatically suggest indoor sessions whenever wet or chilly weather is detected.',
-    updatedAt: 'New observation',
-    isConfirmed: false
-  },
-  {
-    id: 'mem-sunday-recharge',
-    category: 'check',
-    title: 'Keep Sundays as a protected, notification-free rest day?',
-    summary: 'You usually take Sundays off from structured plans to recharge quietly at home.',
-    learnedFrom: 'Observed from your past Sundays marked as Mindful Rest.',
-    howItHelps: 'If confirmed, Nova will default Sundays to a quiet rest state without prompting for workouts.',
-    updatedAt: 'New observation',
-    isConfirmed: false
+function persistFocusToStorage(next: DirectionState): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const payload = {
+      focus: next.goalTitle,
+      phase: next.phase,
+      approach: next.executionApproach,
+      reviewDate: next.nextReviewDate,
+      status: next.status,
+      goalId: next.goalId,
+      isSample: false,
+    };
+    window.localStorage.setItem(FOCUS_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota or private mode errors
   }
-];
+}
+
+function loadInitialFocus(): DirectionState {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const savedRaw = window.localStorage.getItem(FOCUS_STORAGE_KEY);
+      if (savedRaw) {
+        const parsed = normalizeFocusRecord(JSON.parse(savedRaw));
+        if (parsed) return parsed;
+      }
+
+      for (const legacyKey of LEGACY_DIRECTION_STORAGE_KEYS) {
+        const legacyRaw = window.localStorage.getItem(legacyKey);
+        if (!legacyRaw) continue;
+        const migrated = normalizeFocusRecord(JSON.parse(legacyRaw));
+        if (migrated) {
+          if (!migrated.isSample) {
+            persistFocusToStorage(migrated);
+          }
+          return migrated;
+        }
+      }
+    } catch {
+      // Ignore malformed JSON in localStorage and fall back to sample data
+    }
+  }
+
+  return DEFAULT_SAMPLE_FOCUS;
+}
+
+// --- D. Preferences (Migrated from What Nova Knows via preferencesStore.ts) ---
 
 interface MemoryChatProposal {
   mode: 'update' | 'add';
@@ -404,63 +436,38 @@ interface MemoryChatMessage {
   proposalAccepted?: boolean;
 }
 
-// --- E. Health Data Metrics ---
+// --- E. Health Data Metrics (Unconnected empty definitions — never fabricated) ---
 interface HealthMetricDefinition {
   id: string;
   name: string;
-  sampleValue: string;
   unit: string;
-  source: string;
-  lastUpdated: string;
   icon: React.ElementType;
-  iconColor: string;
-  iconBg: string;
 }
 
 const HEALTH_METRICS_DEFINITIONS: HealthMetricDefinition[] = [
   {
     id: 'rhr',
-    name: 'Resting Heart Rate',
-    sampleValue: '62',
+    name: 'Resting heart rate',
     unit: 'bpm',
-    source: 'Apple Watch (Sample)',
-    lastUpdated: 'Today, 8:30 AM',
     icon: Heart,
-    iconColor: 'text-[#E11D48]',
-    iconBg: 'bg-[#FFE4E6]',
   },
   {
     id: 'sleep',
-    name: 'Sleep Duration',
-    sampleValue: '7h 24m',
-    unit: 'avg',
-    source: 'Apple Health (Sample)',
-    lastUpdated: 'Today, 7:15 AM',
+    name: 'Sleep duration',
+    unit: 'hours',
     icon: Moon,
-    iconColor: 'text-[#5E5BAE]',
-    iconBg: 'bg-[#EDEBF9]',
   },
   {
     id: 'energy',
-    name: 'Active Energy',
-    sampleValue: '285',
+    name: 'Active energy',
     unit: 'kcal',
-    source: 'Apple Health (Sample)',
-    lastUpdated: 'Today, 9:20 AM',
     icon: Flame,
-    iconColor: 'text-[#EA580C]',
-    iconBg: 'bg-[#FFEDD5]',
   },
   {
     id: 'steps',
-    name: 'Step Count',
-    sampleValue: '5,420',
+    name: 'Daily steps',
     unit: 'steps',
-    source: 'iPhone Motion (Sample)',
-    lastUpdated: 'Today, 9:35 AM',
     icon: Footprints,
-    iconColor: 'text-[#0D9488]',
-    iconBg: 'bg-[#CCFBF1]',
   },
 ];
 
@@ -542,17 +549,17 @@ function MonthlyTrendCurve({
                 r={isLatest ? 4.5 : 3}
                 className={
                   isLatest
-                    ? 'fill-[#FF7A32] stroke-white stroke-2'
-                    : 'fill-[#5E5BAE] stroke-white stroke-[1.5]'
+                    ? 'fill-[#5E5BAE] stroke-white stroke-2'
+                    : 'fill-[#8E8CD6] stroke-white stroke-[1.5]'
                 }
               />
               {(!compact || isLatest || idx === 0 || idx === 2 || idx === 4) && (
                 <text
                   x={pt.x}
-                  y={pt.y - 7}
+                  y={pt.y - 8}
                   textAnchor="middle"
-                  className={`text-[9px] font-bold ${
-                    isLatest ? 'fill-[#5E5BAE]' : 'fill-[#7A7895]'
+                  className={`text-[11px] font-semibold ${
+                    isLatest ? 'fill-[#5E5BAE]' : 'fill-[#6E6E78]'
                   }`}
                 >
                   {pt.activeDays}d
@@ -563,11 +570,11 @@ function MonthlyTrendCurve({
         })}
       </svg>
 
-      <div className="flex items-center justify-between px-1.5 mt-1 text-[10px] font-medium text-[#7A7895]">
+      <div className="flex items-center justify-between px-1.5 mt-1.5 text-[12px] font-medium text-[#6E6E78]">
         {series.map((item, idx) => (
           <span
             key={item.key}
-            className={idx === series.length - 1 ? 'text-[#5E5BAE] font-bold' : ''}
+            className={idx === series.length - 1 ? 'text-[#5E5BAE] font-semibold' : ''}
           >
             {item.month}
           </span>
@@ -588,7 +595,7 @@ function ActiveMinutesBarChart({
 
   return (
     <div className="pt-2">
-      <div className="flex items-end justify-between gap-2 h-24 px-2 pt-4 border-b border-[#26263F]/[0.06]">
+      <div className="flex items-end justify-between gap-2 h-24 px-1 pt-4 border-b border-[#26263F]/[0.06]">
         {items.map((bar, idx) => {
           const heightPct =
             bar.minutes === 0
@@ -597,8 +604,8 @@ function ActiveMinutesBarChart({
                 : 6
               : Math.max(22, Math.round((bar.minutes / maxVal) * 100));
           return (
-            <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end">
-              <span className="text-[9.5px] font-semibold text-[#7A7895]">
+            <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end min-w-0">
+              <span className="text-[11px] font-medium text-[#6E6E78] truncate">
                 {bar.minutes > 0 ? `${bar.minutes}m` : bar.status === 'rest' ? 'Rest' : '–'}
               </span>
               <div
@@ -617,9 +624,9 @@ function ActiveMinutesBarChart({
           );
         })}
       </div>
-      <div className="flex items-center justify-between gap-2 px-2 mt-1.5">
+      <div className="flex items-center justify-between gap-2 px-1 mt-1.5">
         {items.map((bar, idx) => (
-          <span key={idx} className="flex-1 text-center text-[10px] font-medium text-[#7A7895]">
+          <span key={idx} className="flex-1 text-center text-[12px] font-medium text-[#6E6E78] truncate">
             {bar.label}
           </span>
         ))}
@@ -634,9 +641,17 @@ function ActiveMinutesBarChart({
 
 interface MyPlanViewProps {
   phoneFrameRef?: React.RefObject<HTMLDivElement | null>;
+  completionRecords?: ActivityCompletionRecord[];
+  restDayKeys?: string[];
+  onNavigateToToday?: () => void;
 }
 
-export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
+export function MyPlanView({
+  phoneFrameRef,
+  completionRecords = [],
+  restDayKeys = [],
+  onNavigateToToday,
+}: MyPlanViewProps) {
   // Real device date state with automatic local midnight & background-resume sync
   const [deviceToday, setDeviceToday] = useState(getDeviceTodayState);
 
@@ -724,56 +739,61 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
   // 4. Methodology Info Popup State (Inside Your Rhythm Secondary Sheet)
   const [isMethodologyOpen, setIsMethodologyOpen] = useState<boolean>(false);
 
-  // 5. Your Direction State & Edit Mode / Nova Direction Chat Mode
-  const [direction, setDirection] = useState<DirectionState>({
-    status: 'active',
-    goalId: 'energy',
-    goalTitle: PRESET_DIRECTION_GOALS[0].title,
-    description: PRESET_DIRECTION_GOALS[0].description,
-    executionApproach: PRESET_DIRECTION_GOALS[0].defaultApproach,
-    tailoredReason: PRESET_DIRECTION_GOALS[0].tailoredReason,
-    nextReviewDate: 'Nov 30, 2026',
-    reviewDaysLeft: 12,
-  });
-
-  const [isEditingDirection, setIsEditingDirection] = useState<boolean>(false);
-  const [directionDraft, setDirectionDraft] = useState<DirectionState>(direction);
+  // 5. Your Focus & Up Next Shared Phase State
+  const [direction, setDirection] = useState<DirectionState>(loadInitialFocus);
+  const [planPath, setPlanPath] = useState<PlanPathState>(() =>
+    loadInitialPlanPath(direction.phase)
+  );
+  const [isFocusAdjustOpen, setIsFocusAdjustOpen] = useState<boolean>(false);
+  const [focusDraftTitle, setFocusDraftTitle] = useState<string>(direction.goalTitle);
+  const [focusDraftApproach, setFocusDraftApproach] = useState<string>(direction.executionApproach);
+  const [focusDraftReview, setFocusDraftReview] = useState<string>(direction.nextReviewDate);
+  const [focusKeyboardInset, setFocusKeyboardInset] = useState<number>(0);
   const [directionToast, setDirectionToast] = useState<boolean>(false);
 
-  // Conversational Direction Adjustment with Nova (References memory without creating/modifying memories)
-  const [isDirectionChatOpen, setIsDirectionChatOpen] = useState<boolean>(false);
-  const [directionChatInput, setDirectionChatInput] = useState<string>('');
-  const [directionChatMessages, setDirectionChatMessages] = useState<
-    {
-      id: string;
-      sender: 'ai' | 'user';
-      text: string;
-      proposedDirection?: {
-        goalTitle: string;
-        description: string;
-        executionApproach: string;
-        tailoredReason: string;
-      };
-      accepted?: boolean;
-    }[]
-  >([]);
-  const directionChatEndRef = useRef<HTMLDivElement>(null);
+  // 5a. Up Next Detail & Edit Path Sheet State
+  const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(null);
+  const [isConfirmingPhaseSwitch, setIsConfirmingPhaseSwitch] = useState<boolean>(false);
+  const [isPathEditOpen, setIsPathEditOpen] = useState<boolean>(false);
+  const [pathDraftPhases, setPathDraftPhases] = useState<PlanPhase[]>(() =>
+    planPath.phases.slice(0, 3)
+  );
 
-  // 6. What Nova Knows (Memory State & Sheets)
-  const [memories, setMemories] = useState<MemoryItem[]>(INITIAL_MEMORIES);
-  const [selectedMemory, setSelectedMemory] = useState<MemoryItem | null>(null);
-  const [memoryToDelete, setMemoryToDelete] = useState<MemoryItem | null>(null);
+  // 5b. This Week Schedule, Progress & Sheets State
+  const [weeklySchedule, setWeeklySchedule] = useState<WeeklySchedule | null>(loadWeeklySchedule);
+  const [isWeekAdjustOpen, setIsWeekAdjustOpen] = useState<boolean>(false);
+  const [weekDraft, setWeekDraft] = useState<WeeklySchedule>(() => weeklySchedule ?? DEFAULT_WEEKLY_DRAFT);
+  const [activeWeekCategoryList, setActiveWeekCategoryList] = useState<'walk' | 'stretch' | null>(null);
+
+  // 5c. Weekly Review Feedback & On-Demand Adjustment State
+  const [weeklyReviewFeedbacks, setWeeklyReviewFeedbacks] = useState<
+    Record<string, WeeklyReviewFeedback>
+  >(loadWeeklyReviewFeedbacks);
+  const [resolvedAdjustmentKeys, setResolvedAdjustmentKeys] = useState<string[]>(
+    loadResolvedAdjustmentKeys
+  );
+  const [lastAppliedAdjustment, setLastAppliedAdjustment] = useState<{
+    proposal: WeeklyAdjustmentProposal;
+    previousSchedule: WeeklySchedule;
+  } | null>(null);
+
+  // 6. Preferences (Migrated from What Nova Knows)
+  const [memories, setMemories] = useState<PreferenceItem[]>(loadPreferences);
+  const [selectedMemory, setSelectedMemory] = useState<PreferenceItem | null>(null);
+  const [memoryToDelete, setMemoryToDelete] = useState<PreferenceItem | null>(null);
   const [isMemoryInfoModalOpen, setIsMemoryInfoModalOpen] = useState<boolean>(false);
+  const [isPrefFormOpen, setIsPrefFormOpen] = useState<boolean>(false);
+  const [prefFormEditingId, setPrefFormEditingId] = useState<string | null>(null);
+  const [prefDraftTitle, setPrefDraftTitle] = useState<string>('');
+  const [prefDraftTag, setPrefDraftTag] = useState<string>('');
+  const [prefDraftSummary, setPrefDraftSummary] = useState<string>('');
 
-  // Conversational Memory Sheet (Supports editing an existing memory OR supplementing/adding a new memory)
+  // Conversational Memory Sheet (Supports editing an existing preference OR adding a new one with confirmation)
   const [isMemoryChatOpen, setIsMemoryChatOpen] = useState<boolean>(false);
-  const [editingMemory, setEditingMemory] = useState<MemoryItem | null>(null);
+  const [editingMemory, setEditingMemory] = useState<PreferenceItem | null>(null);
   const [memoryChatMessages, setMemoryChatMessages] = useState<MemoryChatMessage[]>([]);
   const [memoryChatInput, setMemoryChatInput] = useState<string>('');
   const memoryChatEndRef = useRef<HTMLDivElement>(null);
-
-  // 7. Apple Health Connection Toggle (Frontend Demo Simulation)
-  const [isAppleHealthConnected, setIsAppleHealthConnected] = useState<boolean>(true);
 
   // Scroll chat containers to bottom
   useEffect(() => {
@@ -782,15 +802,108 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
     }
   }, [memoryChatMessages, isMemoryChatOpen]);
 
+  // VisualViewport keyboard avoidance for all bottom-sheet forms
   useEffect(() => {
-    if (isDirectionChatOpen) {
-      directionChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (
+      (!isFocusAdjustOpen &&
+        !isPathEditOpen &&
+        !isPrefFormOpen &&
+        !isWeekAdjustOpen &&
+        !isMemoryChatOpen &&
+        !activeDayModalDate) ||
+      typeof window === 'undefined'
+    ) {
+      setFocusKeyboardInset(0);
+      return;
     }
-  }, [directionChatMessages, isDirectionChatOpen]);
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const updateInset = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+      setFocusKeyboardInset(inset);
+    };
+
+    updateInset();
+    vv.addEventListener('resize', updateInset);
+    vv.addEventListener('scroll', updateInset);
+    return () => {
+      vv.removeEventListener('resize', updateInset);
+      vv.removeEventListener('scroll', updateInset);
+    };
+  }, [
+    isFocusAdjustOpen,
+    isPathEditOpen,
+    isPrefFormOpen,
+    isWeekAdjustOpen,
+    isMemoryChatOpen,
+    activeDayModalDate,
+  ]);
+
+  // Shared phase derivations for BOTH Your focus and Up next (single source of truth)
+  const visiblePhases = useMemo(() => planPath.phases.slice(0, 3), [planPath.phases]);
+  const currentPhaseIndex = useMemo(() => {
+    const idx = visiblePhases.findIndex((p) => p.id === planPath.currentPhaseId);
+    return idx >= 0 ? idx : 0;
+  }, [visiblePhases, planPath.currentPhaseId]);
+  const currentPhase = visiblePhases[currentPhaseIndex] ?? visiblePhases[0];
 
   // ============================================================================
-  // 4. UNIFIED DATA DERIVATIONS (ACTIVITY + YOUR RHYTHM + NOVA OBSERVATION)
+  // 4. UNIFIED DATA DERIVATIONS (ACTIVITY + TODAY SYNC + HISTORY)
   // ============================================================================
+
+  // Overlay real Today completions and rest days onto local History records
+  const effectiveActivityLogs = useMemo(() => {
+    const merged: Record<string, DayActivityRecord> = { ...activityLogs };
+
+    const realByDate: Record<string, ActivityCompletionRecord[]> = {};
+    for (const rec of completionRecords) {
+      if (rec.isSample === true || rec.category === 'rest') continue;
+      if (!realByDate[rec.dateKey]) realByDate[rec.dateKey] = [];
+      realByDate[rec.dateKey].push(rec);
+    }
+
+    for (const [dateKey, recs] of Object.entries(realByDate)) {
+      const totalMins = recs.reduce((sum, r) => sum + (r.durationMinutes || 0), 0);
+      const titles = recs.map((r) => r.title).filter(Boolean);
+      merged[dateKey] = {
+        date: dateKey,
+        type: 'active',
+        title:
+          titles.length <= 2
+            ? titles.join(' + ')
+            : `${titles[0]} + ${titles.length - 1} more`,
+        durationMinutes: totalMins,
+        sessionsCount: recs.length,
+        note: 'Completed on Today',
+        isSample: false,
+      };
+    }
+
+    for (const restKey of restDayKeys) {
+      if (!realByDate[restKey]) {
+        const existing = merged[restKey];
+        if (!existing || existing.isSample) {
+          merged[restKey] = {
+            date: restKey,
+            type: 'rest',
+            title: 'Rest day',
+            durationMinutes: 0,
+            sessionsCount: 0,
+            note: 'Chosen on Today',
+            isSample: false,
+          };
+        }
+      }
+    }
+
+    return merged;
+  }, [activityLogs, completionRecords, restDayKeys]);
+
+  const hasAnySampleHistory = useMemo(
+    () => Object.values(effectiveActivityLogs).some((r) => r.isSample),
+    [effectiveActivityLogs]
+  );
 
   const daysInCurrentMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
@@ -798,8 +911,8 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
 
   const monthPrefix = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
   const currentMonthRecords = useMemo(
-    () => Object.values(activityLogs).filter((r) => r.date.startsWith(monthPrefix)),
-    [activityLogs, monthPrefix]
+    () => Object.values(effectiveActivityLogs).filter((r) => r.date.startsWith(monthPrefix)),
+    [effectiveActivityLogs, monthPrefix]
   );
 
   // Distinguish Active Days (活动天数) vs Completed Activities / Sessions (活动次数)
@@ -826,7 +939,166 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
     [currentMonthRecords]
   );
 
-  // 6-Month Trend Series derived directly from activityLogs ending at viewed month (or deviceToday month)
+  // Current local week bounds (Monday start -> Sunday end) & real Today completions in this week
+  const currentWeekBounds = useMemo(
+    () => getLocalWeekBounds(new Date(deviceToday.year, deviceToday.month, deviceToday.day)),
+    [deviceToday.year, deviceToday.month, deviceToday.day]
+  );
+
+  const thisWeekCompletions = useMemo(() => {
+    return completionRecords
+      .filter(
+        (record) =>
+          record.isSample !== true &&
+          isDateKeyInWeek(
+            record.dateKey,
+            currentWeekBounds.weekStartKey,
+            currentWeekBounds.weekEndKey
+          )
+      )
+      .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+  }, [completionRecords, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey]);
+
+  const thisWeekWalkRecords = useMemo(
+    () => thisWeekCompletions.filter((r) => r.category === 'walk'),
+    [thisWeekCompletions]
+  );
+
+  const thisWeekStretchRecords = useMemo(
+    () => thisWeekCompletions.filter((r) => r.category === 'stretch'),
+    [thisWeekCompletions]
+  );
+
+  // Last completed calendar week (Monday start -> Sunday end) for Weekly review
+  const lastCompletedWeekBounds = useMemo(
+    () => getLastCompletedWeekBounds(new Date(deviceToday.year, deviceToday.month, deviceToday.day)),
+    [deviceToday.year, deviceToday.month, deviceToday.day]
+  );
+
+  const lastWeekCompletions = useMemo(() => {
+    return completionRecords.filter(
+      (record) =>
+        record.isSample !== true &&
+        record.category !== 'rest' &&
+        isDateKeyInWeek(
+          record.dateKey,
+          lastCompletedWeekBounds.weekStartKey,
+          lastCompletedWeekBounds.weekEndKey
+        )
+    );
+  }, [
+    completionRecords,
+    lastCompletedWeekBounds.weekStartKey,
+    lastCompletedWeekBounds.weekEndKey,
+  ]);
+
+  const lastWeekRestDayCount = useMemo(() => {
+    return restDayKeys.filter((key) =>
+      isDateKeyInWeek(
+        key,
+        lastCompletedWeekBounds.weekStartKey,
+        lastCompletedWeekBounds.weekEndKey
+      )
+    ).length;
+  }, [
+    restDayKeys,
+    lastCompletedWeekBounds.weekStartKey,
+    lastCompletedWeekBounds.weekEndKey,
+  ]);
+
+  const lastWeekSummaryText = useMemo(
+    () => buildWeeklyReviewSummary(lastWeekCompletions),
+    [lastWeekCompletions]
+  );
+
+  const lastWeekObservationText = useMemo(
+    () => buildWeeklyReviewObservation(lastWeekCompletions, lastWeekRestDayCount),
+    [lastWeekCompletions, lastWeekRestDayCount]
+  );
+
+  const lastWeekFeedback =
+    weeklyReviewFeedbacks[lastCompletedWeekBounds.weekStartKey] ?? null;
+
+  const selectedWeeklyReviewFeeling = lastWeekFeedback?.feeling ?? null;
+
+  const activeAdjustmentProposal = useMemo(
+    () =>
+      buildWeeklyAdjustmentProposal(
+        weeklySchedule,
+        lastWeekFeedback,
+        resolvedAdjustmentKeys
+      ),
+    [weeklySchedule, lastWeekFeedback, resolvedAdjustmentKeys]
+  );
+
+  const handleSelectWeeklyReviewFeeling = (feeling: WeeklyReviewFeeling) => {
+    const weekStartKey = lastCompletedWeekBounds.weekStartKey;
+    const nextFeedbacks: Record<string, WeeklyReviewFeedback> = {
+      ...weeklyReviewFeedbacks,
+      [weekStartKey]: {
+        weekStartKey,
+        feeling,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    setWeeklyReviewFeedbacks(nextFeedbacks);
+    saveWeeklyReviewFeedbacks(nextFeedbacks);
+  };
+
+  const handleAcceptAdjustment = () => {
+    if (!activeAdjustmentProposal || !weeklySchedule) return;
+    const previousSchedule = weeklySchedule;
+    const nextSchedule = applyWeeklyAdjustmentProposal(
+      weeklySchedule,
+      activeAdjustmentProposal
+    );
+    setWeeklySchedule(nextSchedule);
+    saveWeeklySchedule(nextSchedule);
+
+    const nextResolved = Array.from(
+      new Set([
+        ...resolvedAdjustmentKeys,
+        activeAdjustmentProposal.resolutionKey,
+        activeAdjustmentProposal.id,
+      ])
+    );
+    setResolvedAdjustmentKeys(nextResolved);
+    saveResolvedAdjustmentKeys(nextResolved);
+    setLastAppliedAdjustment({
+      proposal: activeAdjustmentProposal,
+      previousSchedule,
+    });
+  };
+
+  const handleUndoAdjustment = () => {
+    if (!lastAppliedAdjustment) return;
+    const { proposal, previousSchedule } = lastAppliedAdjustment;
+    setWeeklySchedule(previousSchedule);
+    saveWeeklySchedule(previousSchedule);
+
+    const nextResolved = resolvedAdjustmentKeys.filter(
+      (k) => k !== proposal.resolutionKey && k !== proposal.id
+    );
+    setResolvedAdjustmentKeys(nextResolved);
+    saveResolvedAdjustmentKeys(nextResolved);
+    setLastAppliedAdjustment(null);
+  };
+
+  const handleDismissAdjustment = () => {
+    if (!activeAdjustmentProposal) return;
+    const nextResolved = Array.from(
+      new Set([
+        ...resolvedAdjustmentKeys,
+        activeAdjustmentProposal.resolutionKey,
+        activeAdjustmentProposal.id,
+      ])
+    );
+    setResolvedAdjustmentKeys(nextResolved);
+    saveResolvedAdjustmentKeys(nextResolved);
+    setLastAppliedAdjustment(null);
+  };
+
+  // 6-Month Trend Series derived directly from effectiveActivityLogs ending at viewed month
   const monthlyTrendSeries: MonthlyTrendPoint[] = useMemo(() => {
     const series: MonthlyTrendPoint[] = [];
     for (let offset = -5; offset <= 0; offset++) {
@@ -834,7 +1106,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       const y = mDate.getFullYear();
       const m = mDate.getMonth();
       const prefix = `${y}-${String(m + 1).padStart(2, '0')}`;
-      const records = Object.values(activityLogs).filter((r) => r.date.startsWith(prefix));
+      const records = Object.values(effectiveActivityLogs).filter((r) => r.date.startsWith(prefix));
       const activeRecs = records.filter((r) => r.type === 'active');
 
       series.push({
@@ -846,7 +1118,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       });
     }
     return series;
-  }, [activityLogs, viewYear, viewMonth]);
+  }, [effectiveActivityLogs, viewYear, viewMonth]);
 
   // Dynamic 7-Day and Month Rhythm Summaries derived from the exact same activityLogs
   const rhythmSummaries: Record<RhythmTimeframe, RecentSummaryData> = useMemo(() => {
@@ -891,7 +1163,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
         anchorDateObj.getDate() - i
       );
       const dKey = formatDateKey(dObj.getFullYear(), dObj.getMonth(), dObj.getDate());
-      const rec = activityLogs[dKey];
+      const rec = effectiveActivityLogs[dKey];
       const dayLabel = SHORT_WEEKDAYS[dObj.getDay()];
 
       if (rec?.type === 'active') {
@@ -995,7 +1267,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       }
     };
   }, [
-    activityLogs,
+    effectiveActivityLogs,
     currentMonthRecords,
     deviceToday,
     isCurrentMonth,
@@ -1009,115 +1281,19 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
 
   const currentRecentData = rhythmSummaries[rhythmFilter];
 
-  // --- Computed Memories (Confirmed vs Pending Check) ---
+  // --- Computed Preferences (User-confirmed vs Pending confirmation) ---
   const confirmedMemories = useMemo(
-    () => memories.filter((m) => m.isConfirmed),
+    () => memories.filter((m) => m.isConfirmed && m.source === 'user_explicit'),
     [memories]
   );
   const checkMemories = useMemo(
-    () => memories.filter((m) => !m.isConfirmed),
+    () => memories.filter((m) => !m.isConfirmed || m.source !== 'user_explicit'),
     [memories]
   );
-  const mattersMemories = useMemo(
-    () => memories.filter((m) => m.category === 'matters' && m.isConfirmed),
+  const confirmedPreferenceTags = useMemo(
+    () => getConfirmedPreferenceTags(memories, 3),
     [memories]
   );
-  const feelsRightMemories = useMemo(
-    () => memories.filter((m) => m.category === 'feels_right' && m.isConfirmed),
-    [memories]
-  );
-
-  // Level-1 "What Nova knows" strictly shows ONLY confirmed memories (up to 3)
-  const representativeConfirmedMemories = useMemo(
-    () => confirmedMemories.slice(0, 3),
-    [confirmedMemories]
-  );
-
-  // --- Computed Top Nova Observation (Strictly Data-Driven, <= 2 lines, No Repeated Counts) ---
-  const { novaTopObservation, isNovaObservationSample } = useMemo(() => {
-    const sevenDaySummary = rhythmSummaries['7d'];
-    const totalRecentRecordedDays =
-      currentMonthRecords.length > 0
-        ? currentMonthRecords.length
-        : sevenDaySummary.activeDaysCount + sevenDaySummary.restDaysCount;
-
-    // Insufficient data fallback
-    if (totalRecentRecordedDays < 3) {
-      return {
-        novaTopObservation: 'I’m getting to know your rhythm.',
-        isNovaObservationSample: false
-      };
-    }
-
-    const recordsToAnalyze =
-      currentMonthRecords.length >= 3
-        ? currentMonthRecords
-        : Object.values(activityLogs).slice(-7);
-
-    const activeRecs = recordsToAnalyze.filter((r) => r.type === 'active');
-    const restRecs = recordsToAnalyze.filter((r) => r.type === 'rest');
-    const walkRecs = activeRecs.filter((r) => /\bwalk(s|ing)?\b/i.test(r.title || ''));
-    const stretchRecs = activeRecs.filter((r) => /\bstretch(es|ing)?\b/i.test(r.title || ''));
-    const otherActiveCount = activeRecs.filter(
-      (r) =>
-        !/\bwalk(s|ing)?\b/i.test(r.title || '') &&
-        !/\bstretch(es|ing)?\b/i.test(r.title || '')
-    ).length;
-
-    const walkCount = walkRecs.length;
-    const stretchCount = stretchRecs.length;
-
-    // Only use "Short walks" when every walk record is a single-session walk with confirmed duration <= 15 min
-    const allWalksConfirmedShort =
-      walkCount > 0 &&
-      walkRecs.every(
-        (r) =>
-          (r.sessionsCount ?? 1) === 1 &&
-          typeof r.durationMinutes === 'number' &&
-          r.durationMinutes > 0 &&
-          r.durationMinutes <= 15
-      );
-    const walkLabel = allWalksConfirmedShort ? 'Short walks' : 'Walks';
-
-    const hasSampleRecords = recordsToAnalyze.some((r) => r.isSample);
-
-    let text = '';
-    if (activeRecs.length > 0 && walkCount > 0 && walkCount >= stretchCount && walkCount >= otherActiveCount) {
-      if (restRecs.length > 0 && stretchCount > 0) {
-        text = `${walkLabel}, stretches, and rest days are shaping your rhythm.`;
-      } else if (restRecs.length > 0) {
-        text = `${walkLabel} and rest days have been anchoring your rhythm.`;
-      } else if (stretchCount > 0) {
-        text = `${walkLabel} and stretches have been anchoring your rhythm.`;
-      } else {
-        text = `${walkLabel} have been a steady part of your rhythm.`;
-      }
-    } else if (
-      activeRecs.length > 0 &&
-      stretchCount > 0 &&
-      stretchCount > walkCount &&
-      stretchCount >= otherActiveCount
-    ) {
-      if (restRecs.length > 0) {
-        text = 'Stretches and rest days have been anchoring your rhythm.';
-      } else {
-        text = 'Stretches have been a steady part of your rhythm.';
-      }
-    } else if (activeRecs.length > 0) {
-      if (restRecs.length > 0) {
-        text = 'Steady activity and rest days are balancing your rhythm.';
-      } else {
-        text = 'Steady activity has been anchoring your recent rhythm.';
-      }
-    } else {
-      text = 'Mindful rest days are giving you space to recharge.';
-    }
-
-    return {
-      novaTopObservation: text,
-      isNovaObservationSample: hasSampleRecords
-    };
-  }, [currentMonthRecords, rhythmSummaries, activityLogs]);
 
   const hasSampleInCurrentMonth = useMemo(
     () => currentMonthRecords.some((r) => r.isSample),
@@ -1166,7 +1342,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
 
   // --- Handlers for Day Detail & Record Correction ---
   const handleOpenDayDetail = (dateStr: string) => {
-    const existing = activityLogs[dateStr];
+    const existing = effectiveActivityLogs[dateStr];
     setActiveDayModalDate(dateStr);
     if (existing) {
       setDayDraftType(existing.type);
@@ -1220,161 +1396,255 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
     setActiveDayModalDate(null);
   };
 
-  // --- Handlers for Direction ---
-  const handleStartEditDirection = () => {
-    setDirectionDraft(direction);
-    setIsEditingDirection(true);
+  // --- Handlers for Your Focus ---
+  const handleOpenFocusAdjust = () => {
+    setFocusDraftTitle(direction.goalTitle);
+    setFocusDraftApproach(direction.executionApproach);
+    setFocusDraftReview(direction.nextReviewDate);
+    setIsFocusAdjustOpen(true);
   };
 
-  const handleConfirmDirectionChanges = () => {
-    setDirection(directionDraft);
-    setIsEditingDirection(false);
-    setDirectionToast(true);
-    setTimeout(() => setDirectionToast(false), 2800);
+  const handleCloseFocusAdjust = () => {
+    setIsFocusAdjustOpen(false);
   };
 
-  const handleCancelDirectionChanges = () => {
-    setDirectionDraft(direction);
-    setIsEditingDirection(false);
-  };
+  const handleSaveFocusAdjust = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmedFocus = focusDraftTitle.trim();
+    if (!trimmedFocus) return;
 
-  const handleTogglePausePlan = () => {
-    const nextStatus = direction.status === 'active' ? 'paused' : 'active';
-    const updated = { ...direction, status: nextStatus as 'active' | 'paused' };
+    const trimmedApproach = focusDraftApproach.trim();
+    const trimmedReview = focusDraftReview.trim() || 'Review on Sunday';
+
+    const updated: DirectionState = {
+      ...direction,
+      phase: currentPhase.name,
+      goalTitle: trimmedFocus,
+      description: trimmedApproach,
+      executionApproach: trimmedApproach,
+      nextReviewDate: trimmedReview,
+      isSample: false,
+    };
+
     setDirection(updated);
-    setDirectionDraft(updated);
+    persistFocusToStorage(updated);
+    setIsFocusAdjustOpen(false);
     setDirectionToast(true);
-    setTimeout(() => setDirectionToast(false), 2800);
+    setTimeout(() => setDirectionToast(false), 2600);
   };
 
-  const handleOpenDirectionChat = () => {
-    const referencedMem =
-      confirmedMemories[0]?.title || 'your preference for midday walks and low-friction stretches';
-    setDirectionChatInput('');
-    setDirectionChatMessages([
-      {
-        id: `dir-ai-init-${Date.now()}`,
-        sender: 'ai',
-        text: `Right now your direction is “${direction.goalTitle}” (${direction.executionApproach}). Keeping in mind what I know about you — ${referencedMem.toLowerCase()} — how would you like to adjust your focus or pace?`
+  const handleFieldFocusScroll = (
+    e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => {
+    const target = e.currentTarget;
+    window.setTimeout(() => {
+      target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }, 120);
+  };
+
+  // --- Handlers for Up Next & View Path ---
+  const syncFocusPhaseName = (nextPhaseName: string) => {
+    setDirection((prev) => {
+      const updated = { ...prev, phase: nextPhaseName };
+      if (!prev.isSample) {
+        persistFocusToStorage({ ...updated, isSample: false });
       }
-    ]);
-    setIsDirectionChatOpen(true);
+      return updated;
+    });
   };
 
-  const handleSendDirectionChat = (textOverride?: string) => {
-    const raw = (textOverride ?? directionChatInput).trim();
-    if (!raw) return;
+  const handleOpenPhaseDetail = (phaseId: string) => {
+    setSelectedPhaseId(phaseId);
+    setIsConfirmingPhaseSwitch(false);
+  };
 
-    const userMsg = {
-      id: `dir-user-${Date.now()}`,
-      sender: 'user' as const,
-      text: raw
+  const handleClosePhaseDetail = () => {
+    setSelectedPhaseId(null);
+    setIsConfirmingPhaseSwitch(false);
+  };
+
+  const handleConfirmPhaseSwitch = (targetPhase: PlanPhase) => {
+    const nextState: PlanPathState = {
+      phases: visiblePhases,
+      currentPhaseId: targetPhase.id,
+      isSample: false,
     };
+    setPlanPath(nextState);
+    savePlanPathState(nextState);
+    syncFocusPhaseName(targetPhase.name);
+    setSelectedPhaseId(null);
+    setIsConfirmingPhaseSwitch(false);
+    setDayUpdateToast(`Current phase: ${targetPhase.name}`);
+    setTimeout(() => setDayUpdateToast(null), 2600);
+  };
 
-    const lower = raw.toLowerCase();
-    let proposed = {
-      goalTitle: direction.goalTitle,
-      description: direction.description,
-      executionApproach: raw,
-      tailoredReason: 'Updated in conversation with Nova, referencing your known rhythm preferences.'
+  const handleOpenPathEdit = () => {
+    setPathDraftPhases(visiblePhases.map((p) => ({ ...p })));
+    setIsPathEditOpen(true);
+  };
+
+  const handleClosePathEdit = () => {
+    setIsPathEditOpen(false);
+  };
+
+  const handleSavePathEdit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanedPhases: PlanPhase[] = pathDraftPhases.slice(0, 3).map((draft, idx) => {
+      const existing = visiblePhases[idx];
+      return {
+        id: draft.id,
+        name: draft.name.trim(),
+        description: draft.description.trim() || existing?.description || '',
+      };
+    });
+
+    if (cleanedPhases.some((p) => !p.name)) return;
+
+    const nextState: PlanPathState = {
+      phases: cleanedPhases,
+      currentPhaseId: currentPhase.id,
+      isSample: false,
     };
+    setPlanPath(nextState);
+    savePlanPathState(nextState);
 
-    if (
-      lower.includes('sleep') ||
-      lower.includes('evening') ||
-      lower.includes('night') ||
-      lower.includes('unwind')
-    ) {
-      proposed = {
-        goalTitle: 'Unwind for deeper evening rest',
-        description:
-          'Release physical shoulder and neck tension before bedtime for smoother sleep onset.',
-        executionApproach: '5–10 min evening floor stretches + 15 min screen-free wind-down audio',
-        tailoredReason:
-          'Aligned with your known preference for low-friction home stretches and calm recovery.'
-      };
-    } else if (
-      lower.includes('stiff') ||
-      lower.includes('neck') ||
-      lower.includes('shoulder') ||
-      lower.includes('desk')
-    ) {
-      proposed = {
-        goalTitle: 'Ease desk stiffness & posture fatigue',
-        description: 'Counteract long sitting blocks with brief micro-mobility breaks.',
-        executionApproach: '5 min neck & shoulder mobility flow twice a week + gentle midday walks',
-        tailoredReason:
-          'References your afternoon shoulder stiffness memory while keeping sessions short.'
-      };
-    } else if (
-      lower.includes('3') ||
-      lower.includes('lighter') ||
-      lower.includes('gentle') ||
-      lower.includes('slow')
-    ) {
-      proposed = {
-        goalTitle: direction.goalTitle,
-        description: direction.description,
-        executionApproach:
-          '3 light 10-min afternoon walks per week + guilt-free rest days whenever work runs late',
-        tailoredReason:
-          'Softened weekly frequency to match your no-pressure, nervous-system-first approach.'
-      };
+    const updatedCurrent = cleanedPhases.find((p) => p.id === currentPhase.id) ?? cleanedPhases[0];
+    if (updatedCurrent) {
+      syncFocusPhaseName(updatedCurrent.name);
     }
 
-    const aiMsg = {
-      id: `dir-ai-${Date.now() + 1}`,
-      sender: 'ai' as const,
-      text: 'Here is the updated direction I drafted for you. It references your preferences without overwriting your saved memories. Would you like to apply it?',
-      proposedDirection: proposed,
-      accepted: false
-    };
-
-    setDirectionChatMessages((prev) => [...prev, userMsg, aiMsg]);
-    if (!textOverride) setDirectionChatInput('');
+    setIsPathEditOpen(false);
+    setDayUpdateToast('Path updated');
+    setTimeout(() => setDayUpdateToast(null), 2600);
   };
 
-  const handleAcceptDirectionProposal = (msgId: string) => {
-    const targetMsg = directionChatMessages.find((m) => m.id === msgId);
-    if (!targetMsg || !targetMsg.proposedDirection) return;
-
-    const { goalTitle, description, executionApproach, tailoredReason } =
-      targetMsg.proposedDirection;
-    const nextDir: DirectionState = {
-      ...direction,
-      goalTitle,
-      description,
-      executionApproach,
-      tailoredReason
-    };
-    setDirection(nextDir);
-    setDirectionDraft(nextDir);
-    setDirectionChatMessages((prev) =>
-      prev.map((m) => (m.id === msgId ? { ...m, accepted: true } : m))
-    );
-    setDirectionToast(true);
-    setTimeout(() => {
-      setIsDirectionChatOpen(false);
-    }, 550);
-    setTimeout(() => setDirectionToast(false), 2800);
+  // --- Handlers for This Week ---
+  const handleOpenWeekAdjust = () => {
+    setWeekDraft(weeklySchedule ?? DEFAULT_WEEKLY_DRAFT);
+    setIsWeekAdjustOpen(true);
   };
 
-  // --- Handlers for What Nova Knows (Memory) ---
+  const handleCloseWeekAdjust = () => {
+    setIsWeekAdjustOpen(false);
+  };
+
+  const handleSaveWeekAdjust = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const nextSchedule: WeeklySchedule = {
+      walk: {
+        targetCount: weekDraft.walk.targetCount,
+        durationLabel: weekDraft.walk.durationLabel.trim() || DEFAULT_WEEKLY_DRAFT.walk.durationLabel,
+      },
+      stretch: {
+        targetCount: weekDraft.stretch.targetCount,
+        durationLabel:
+          weekDraft.stretch.durationLabel.trim() || DEFAULT_WEEKLY_DRAFT.stretch.durationLabel,
+      },
+      restNote: 'As needed',
+      updatedAt: new Date().toISOString(),
+    };
+    setWeeklySchedule(nextSchedule);
+    saveWeeklySchedule(nextSchedule);
+    setLastAppliedAdjustment(null);
+    setIsWeekAdjustOpen(false);
+    setDayUpdateToast('This week updated');
+    setTimeout(() => setDayUpdateToast(null), 2600);
+  };
+
+  // --- Handlers for Preferences ---
   const showMemoryFeedback = (text: string) => {
     setDayUpdateToast(text);
     setTimeout(() => setDayUpdateToast(null), 2600);
   };
 
+  const updatePreferencesState = (
+    updater: (prev: PreferenceItem[]) => PreferenceItem[]
+  ) => {
+    setMemories((prev) => {
+      const next = updater(prev);
+      savePreferences(next);
+      return next;
+    });
+  };
+
+  const handleOpenAddPreference = () => {
+    setPrefFormEditingId(null);
+    setPrefDraftTitle('');
+    setPrefDraftTag('');
+    setPrefDraftSummary('');
+    setIsPrefFormOpen(true);
+  };
+
+  const handleOpenEditPreference = (item: PreferenceItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedMemory(null);
+    setPrefFormEditingId(item.id);
+    setPrefDraftTitle(item.title.replace(/\?+$/, '').trim());
+    setPrefDraftTag(item.shortTag || deriveShortPreferenceTag(item));
+    setPrefDraftSummary(item.summary);
+    setIsPrefFormOpen(true);
+  };
+
+  const handleSavePreferenceForm = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmedTitle = prefDraftTitle.trim();
+    if (!trimmedTitle) return;
+
+    const trimmedTag = prefDraftTag.trim();
+    const trimmedSummary = prefDraftSummary.trim();
+
+    if (prefFormEditingId) {
+      updatePreferencesState((prev) =>
+        prev.map((m) =>
+          m.id === prefFormEditingId
+            ? {
+                ...m,
+                title: trimmedTitle,
+                shortTag: trimmedTag || undefined,
+                summary: trimmedSummary,
+                isConfirmed: true,
+                source: 'user_explicit',
+                category: m.category === 'check' ? 'feels_right' : m.category,
+                updatedAt: 'Updated just now',
+              }
+            : m
+        )
+      );
+      showMemoryFeedback('Preference updated');
+    } else {
+      const newItem: PreferenceItem = {
+        id: `pref-user-${Date.now()}`,
+        category: 'feels_right',
+        title: trimmedTitle,
+        shortTag: trimmedTag || undefined,
+        summary: trimmedSummary,
+        learnedFrom: 'Added by you.',
+        howItHelps: '',
+        updatedAt: 'Saved just now',
+        isConfirmed: true,
+        source: 'user_explicit',
+      };
+      updatePreferencesState((prev) => [newItem, ...prev]);
+      showMemoryFeedback('Preference saved');
+    }
+
+    setIsPrefFormOpen(false);
+    setPrefFormEditingId(null);
+  };
+
   const handleConfirmPendingMemory = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setMemories((prev) =>
+    updatePreferencesState((prev) =>
       prev.map((m) =>
         m.id === id
           ? {
               ...m,
+              title: m.title.replace(/\?+$/, '').trim(),
               category: 'feels_right',
               isConfirmed: true,
-              updatedAt: 'Confirmed just now'
+              source: 'user_explicit',
+              learnedFrom: 'Confirmed by you.',
+              updatedAt: 'Confirmed just now',
             }
           : m
       )
@@ -1382,26 +1652,34 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
     if (selectedMemory?.id === id) {
       setSelectedMemory((prev) =>
         prev
-          ? { ...prev, category: 'feels_right', isConfirmed: true, updatedAt: 'Confirmed just now' }
+          ? {
+              ...prev,
+              title: prev.title.replace(/\?+$/, '').trim(),
+              category: 'feels_right',
+              isConfirmed: true,
+              source: 'user_explicit',
+              learnedFrom: 'Confirmed by you.',
+              updatedAt: 'Confirmed just now',
+            }
           : null
       );
     }
-    showMemoryFeedback('Memory confirmed and saved');
+    showMemoryFeedback('Preference confirmed');
   };
 
   const handleDismissPendingMemory = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setMemories((prev) => prev.filter((m) => m.id !== id));
+    updatePreferencesState((prev) => prev.filter((m) => m.id !== id));
     if (selectedMemory?.id === id) {
       setSelectedMemory(null);
     }
-    showMemoryFeedback('Observation discarded');
+    showMemoryFeedback('Suggestion ignored');
   };
 
   const handleDeleteMemoryConfirmed = () => {
     if (!memoryToDelete) return;
     const targetId = memoryToDelete.id;
-    setMemories((prev) => prev.filter((m) => m.id !== targetId));
+    updatePreferencesState((prev) => prev.filter((m) => m.id !== targetId));
     if (selectedMemory?.id === targetId) {
       setSelectedMemory(null);
     }
@@ -1410,7 +1688,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       setIsMemoryChatOpen(false);
     }
     setMemoryToDelete(null);
-    showMemoryFeedback('Removed from What Nova knows');
+    showMemoryFeedback('Preference removed');
   };
 
   const handleStartTalkToNovaMemory = (item?: MemoryItem | null, e?: React.MouseEvent) => {
@@ -1566,35 +1844,37 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
     const { mode, targetMemoryId, newTitle, newSummary, newCategory } = targetMsg.proposal;
 
     if (mode === 'update' && targetMemoryId) {
-      setMemories((prev) =>
+      updatePreferencesState((prev) =>
         prev.map((m) =>
           m.id === targetMemoryId
             ? {
                 ...m,
-                title: newTitle,
+                title: newTitle.replace(/\?+$/, '').trim(),
                 summary: newSummary,
-                category: newCategory,
+                category: newCategory === 'check' ? 'feels_right' : newCategory,
                 isConfirmed: true,
-                learnedFrom: 'Refined directly in conversation with Nova.',
+                source: 'user_explicit',
+                learnedFrom: 'Updated by you in chat.',
                 updatedAt: 'Updated just now'
               }
             : m
         )
       );
-      showMemoryFeedback('Memory updated after your confirmation');
+      showMemoryFeedback('Preference updated');
     } else {
-      const newItem: MemoryItem = {
-        id: `mem-custom-${Date.now()}`,
-        category: newCategory,
-        title: newTitle,
+      const newItem: PreferenceItem = {
+        id: `pref-chat-${Date.now()}`,
+        category: newCategory === 'check' ? 'feels_right' : newCategory,
+        title: newTitle.replace(/\?+$/, '').trim(),
         summary: newSummary,
-        learnedFrom: 'Shared directly in conversation with Nova.',
-        howItHelps: 'Nova will factor this preference into your future daily suggestions and pacing.',
+        learnedFrom: 'Shared by you in chat.',
+        howItHelps: '',
         updatedAt: 'Saved just now',
-        isConfirmed: true
+        isConfirmed: true,
+        source: 'user_explicit',
       };
-      setMemories((prev) => [newItem, ...prev]);
-      showMemoryFeedback('New memory saved after your confirmation');
+      updatePreferencesState((prev) => [newItem, ...prev]);
+      showMemoryFeedback('Preference saved');
     }
 
     setMemoryChatMessages((prev) =>
@@ -1608,7 +1888,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 sm:px-5 pt-2 pb-[96px] flex flex-col gap-3 sm:gap-3.5 z-10 scrollbar-none select-none">
+    <div className="flex-1 overflow-y-auto px-5 pt-[18px] pb-[calc(104px+env(safe-area-inset-bottom,0px))] flex flex-col gap-6 z-10 scrollbar-none select-none">
       {/* Toast Notifications */}
       <AnimatePresence>
         {directionToast && (
@@ -1620,7 +1900,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
           >
             <div className="flex items-center gap-2">
               <Check className="w-4 h-4 stroke-[2.5]" />
-              <span>Direction updated</span>
+              <span>Focus updated</span>
             </div>
             <span className="text-[11px] text-white/80">Saved</span>
           </motion.div>
@@ -1645,464 +1925,646 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       </AnimatePresence>
 
       {/* ============================================================ */}
-      {/* 1. Nova's One-Sentence Observation (Data-Driven + Sample Tag) */}
+      {/* 1. Your focus                                                */}
       {/* ============================================================ */}
       <section
-        id="plan-nova-observation"
-        aria-label="Nova's observation"
-        className="bg-white rounded-[24px] p-4 sm:p-4.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05),0_1px_3px_rgba(0,0,0,0.02)] flex items-start gap-3.5"
+        id="plan-module-focus"
+        aria-labelledby="plan-heading-focus"
+        className="flex flex-col gap-2.5"
       >
-        <div className="w-9 h-9 rounded-full bg-gradient-to-b from-[#F4EEFE] to-[#FDF1F5] border border-black/[0.04] shadow-2xs overflow-hidden shrink-0 flex items-center justify-center mt-0.5">
-          <FurryNovaStaticAvatar size={36} className="w-full h-full" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-[14px] font-medium text-[#1C1C1E] leading-snug tracking-[-0.01em]">
-            “{novaTopObservation}”
+        <h2
+          id="plan-heading-focus"
+          className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+        >
+          Your focus
+        </h2>
+
+        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
+          <p
+            id="focus-card-title"
+            className="text-[22px] font-semibold leading-[28px] tracking-[-0.02em] text-[#1C1C1E]"
+          >
+            {direction.goalTitle}
           </p>
-          {isNovaObservationSample && (
-            <span className="inline-block mt-1.5 text-[10.5px] font-medium text-[#6C6C70] bg-[#F2F2F7] px-2.5 py-0.5 rounded-full">
-              Based on sample data
+
+          <p
+            id="focus-card-phase"
+            className="mt-3 text-[13px] font-medium leading-[18px] text-[#5E5BAE]"
+          >
+            {currentPhase.name}
+          </p>
+
+          {direction.executionApproach && (
+            <p
+              id="focus-card-approach"
+              className="mt-1 text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+            >
+              {direction.executionApproach}
+            </p>
+          )}
+
+          <div className="mt-4 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-3">
+            <span
+              id="focus-card-review"
+              className="text-[13px] font-normal leading-[18px] text-[#6E6E78] min-w-0"
+            >
+              {direction.nextReviewDate}
             </span>
+
+            <button
+              type="button"
+              id="plan-focus-action-btn"
+              onClick={handleOpenFocusAdjust}
+              className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+            >
+              Adjust
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/* 2. This week                                                 */}
+      {/* ============================================================ */}
+      <section
+        id="plan-module-this-week"
+        aria-labelledby="plan-heading-this-week"
+        className="flex flex-col gap-2.5"
+      >
+        <div className="flex items-baseline justify-between gap-3">
+          <h2
+            id="plan-heading-this-week"
+            className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+          >
+            This week
+          </h2>
+          <span
+            id="this-week-date-range"
+            className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0"
+          >
+            {currentWeekBounds.rangeLabel}
+          </span>
+        </div>
+
+        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
+          {!weeklySchedule ? (
+            <>
+              <p
+                id="this-week-empty-text"
+                className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+              >
+                Start with a simple week.
+              </p>
+
+              <div className="mt-4 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+                <button
+                  type="button"
+                  id="plan-week-action-btn"
+                  onClick={handleOpenWeekAdjust}
+                  className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+                >
+                  Set up
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex flex-col divide-y divide-black/[0.06] -my-1">
+                {/* Row 1: Walk */}
+                <button
+                  type="button"
+                  id="this-week-row-walk"
+                  onClick={() => setActiveWeekCategoryList('walk')}
+                  className="w-full min-h-[64px] py-2.5 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                      <Footprints className="w-4 h-4 stroke-[2]" />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span
+                        id="this-week-walk-title"
+                        className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]"
+                      >
+                        Walk
+                      </span>
+                      <span
+                        id="this-week-walk-subtitle"
+                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+                      >
+                        {weeklySchedule.walk.targetCount !== null
+                          ? `${weeklySchedule.walk.targetCount} × ${weeklySchedule.walk.durationLabel}`
+                          : `Flexible · ${weeklySchedule.walk.durationLabel}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {thisWeekWalkRecords.length > 0 && (
+                      <span
+                        id="this-week-progress-walk"
+                        className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]"
+                      >
+                        {weeklySchedule.walk.targetCount !== null
+                          ? `${thisWeekWalkRecords.length} of ${weeklySchedule.walk.targetCount}`
+                          : `${thisWeekWalkRecords.length} ${
+                              thisWeekWalkRecords.length === 1 ? 'session' : 'sessions'
+                            }`}
+                      </span>
+                    )}
+                    <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
+                  </div>
+                </button>
+
+                {/* Row 2: Stretch */}
+                <button
+                  type="button"
+                  id="this-week-row-stretch"
+                  onClick={() => setActiveWeekCategoryList('stretch')}
+                  className="w-full min-h-[64px] py-2.5 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                      <Sparkles className="w-4 h-4 stroke-[2]" />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span
+                        id="this-week-stretch-title"
+                        className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]"
+                      >
+                        Stretch
+                      </span>
+                      <span
+                        id="this-week-stretch-subtitle"
+                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+                      >
+                        {weeklySchedule.stretch.targetCount !== null
+                          ? `${weeklySchedule.stretch.targetCount} × ${weeklySchedule.stretch.durationLabel}`
+                          : `Flexible · ${weeklySchedule.stretch.durationLabel}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {thisWeekStretchRecords.length > 0 && (
+                      <span
+                        id="this-week-progress-stretch"
+                        className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]"
+                      >
+                        {weeklySchedule.stretch.targetCount !== null
+                          ? `${thisWeekStretchRecords.length} of ${weeklySchedule.stretch.targetCount}`
+                          : `${thisWeekStretchRecords.length} ${
+                              thisWeekStretchRecords.length === 1 ? 'session' : 'sessions'
+                            }`}
+                      </span>
+                    )}
+                    <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
+                  </div>
+                </button>
+
+                {/* Row 3: Rest (As needed, never counted as exercise target) */}
+                <div
+                  id="this-week-row-rest"
+                  className="w-full min-h-[64px] py-2.5 flex items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                      <Moon className="w-4 h-4 stroke-[2]" />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span
+                        id="this-week-rest-title"
+                        className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]"
+                      >
+                        Rest
+                      </span>
+                      <span
+                        id="this-week-rest-subtitle"
+                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+                      >
+                        As needed
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+                <button
+                  type="button"
+                  id="plan-week-action-btn"
+                  onClick={handleOpenWeekAdjust}
+                  className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+                >
+                  Adjust week
+                </button>
+              </div>
+            </>
           )}
         </div>
       </section>
 
       {/* ============================================================ */}
-      {/* 2. Module: Activity (Compact Grid + History Entry + This month) */}
+      {/* 2b. On-demand adjustment card (Shown only with clear evidence) */}
+      {/* ============================================================ */}
+      {(activeAdjustmentProposal || lastAppliedAdjustment) && (
+        <section
+          id="plan-module-adjustment"
+          aria-labelledby="plan-heading-adjustment"
+          className="flex flex-col gap-2.5"
+        >
+          <h2
+            id="plan-heading-adjustment"
+            className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+          >
+            A small adjustment
+          </h2>
+
+          <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
+            {lastAppliedAdjustment ? (
+              <div
+                id="plan-adjustment-updated-state"
+                className="flex items-center justify-between gap-3"
+              >
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <span
+                    id="plan-adjustment-updated-label"
+                    className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]"
+                  >
+                    Updated
+                  </span>
+                  <span
+                    id="plan-adjustment-updated-change"
+                    className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+                  >
+                    {lastAppliedAdjustment.proposal.changeLabel}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  id="plan-adjustment-undo-btn"
+                  onClick={handleUndoAdjustment}
+                  className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+                >
+                  Undo
+                </button>
+              </div>
+            ) : activeAdjustmentProposal ? (
+              <>
+                <p
+                  id="plan-adjustment-headline"
+                  className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]"
+                >
+                  {activeAdjustmentProposal.headline}
+                </p>
+
+                <p
+                  id="plan-adjustment-change"
+                  className="mt-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE]"
+                >
+                  {activeAdjustmentProposal.changeLabel}
+                </p>
+
+                <p
+                  id="plan-adjustment-reason"
+                  className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+                >
+                  {activeAdjustmentProposal.reason}
+                </p>
+
+                <div className="mt-3.5 pt-3 border-t border-black/[0.06] flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    id="plan-adjustment-accept-btn"
+                    onClick={handleAcceptAdjustment}
+                    className="min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold leading-[20px] transition-colors cursor-pointer"
+                  >
+                    Try this
+                  </button>
+
+                  <button
+                    type="button"
+                    id="plan-adjustment-dismiss-btn"
+                    onClick={handleDismissAdjustment}
+                    className="min-h-[44px] px-3.5 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[14px] font-medium leading-[20px] transition-colors cursor-pointer"
+                  >
+                    Keep my plan
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </section>
+      )}
+
+      {/* ============================================================ */}
+      {/* 3. Up next                                                   */}
       {/* ============================================================ */}
       <section
-        id="plan-module-activity"
-        className="bg-white rounded-[24px] p-4 sm:p-4.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05),0_1px_3px_rgba(0,0,0,0.02)] flex flex-col gap-3 relative"
-        aria-label="Activity Monthly Records"
+        id="plan-module-up-next"
+        aria-labelledby="plan-heading-up-next"
+        className="flex flex-col gap-2.5"
       >
-        <div className="flex items-center justify-between gap-1.5">
-          <div className="flex items-center gap-1.5 min-w-0 shrink">
-            <span className="text-[17px] font-bold text-[#1C1C1E] tracking-[-0.02em] shrink-0">Activity</span>
-            <button
-              type="button"
-              onClick={() => {
-                setPickerYear(viewYear);
-                setIsMonthPickerOpen(true);
-              }}
-              className="flex items-center gap-1 text-[11.5px] sm:text-[12px] font-semibold text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 px-2.5 py-1 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
-              aria-label="Select month"
-            >
-              <span>
-                {isCurrentMonth ? MONTH_NAMES[viewMonth] : SHORT_MONTH_NAMES[viewMonth]} {viewYear}
-              </span>
-              <ChevronDown className="w-3 h-3 text-[#5E5BAE] opacity-85 shrink-0" />
-            </button>
-          </div>
+        <h2
+          id="plan-heading-up-next"
+          className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+        >
+          Up next
+        </h2>
 
-          <div className="flex items-center gap-1 shrink-0">
-            {!isCurrentMonth && (
-              <button
-                type="button"
-                id="activity-this-month-btn"
-                onClick={handleJumpToThisMonth}
-                className="flex items-center gap-1 text-[11px] font-semibold text-[#5E5BAE] bg-[#5E5BAE]/10 hover:bg-[#5E5BAE]/18 active:scale-95 px-2.5 py-1 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
-                aria-label="Return to this month"
-              >
-                <RotateCcw className="w-2.5 h-2.5 stroke-[2.2]" />
-                <span className="hidden min-[380px]:inline">This month</span>
-                <span className="min-[380px]:hidden">Now</span>
-              </button>
-            )}
-
-            {/* Lightweight Activity History Entry */}
-            <button
-              type="button"
-              id="activity-history-entry-btn"
-              onClick={() => setSelectedModule('activity')}
-              className="flex items-center gap-0.5 text-[11.5px] font-semibold text-[#5E5BAE] hover:text-[#4B4895] bg-[#F2F2F7] hover:bg-[#E5E5EA] px-2.5 py-1 rounded-full transition-all cursor-pointer active:scale-95 whitespace-nowrap shrink-0"
-              aria-label="Open Activity History"
-            >
-              <span>History</span>
-              <ChevronRight className="w-3 h-3 stroke-[2.2]" />
-            </button>
-          </div>
-        </div>
-
-        {/* Weekday indicators */}
-        <div className="grid grid-cols-7 gap-1.5 text-center select-none pt-0.5">
-          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayInitial, idx) => (
-            <span key={idx} className="text-[10px] font-semibold text-[#8E8E93] uppercase tracking-wider">
-              {dayInitial}
-            </span>
-          ))}
-        </div>
-
-        {/* Compact Monthly Illuminated Dot Grid */}
-        <div className="relative select-none overflow-hidden touch-pan-y">
-          <motion.div
-            key={`${viewYear}-${viewMonth}`}
-            initial={{ opacity: 0, x: slideDirection * 24 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
-            drag="x"
-            dragConstraints={{ left: 0, right: 0 }}
-            dragElastic={0.15}
-            onDragEnd={(_, info) => {
-              if (info.offset.x > 40) handlePrevMonth();
-              else if (info.offset.x < -40) handleNextMonth();
-            }}
-            className="grid grid-cols-7 gap-1.5 cursor-grab active:cursor-grabbing py-1"
-          >
-            {Array.from({ length: firstDayOfWeek }).map((_, idx) => (
-              <div key={`empty-prefix-${idx}`} className="aspect-square w-full" />
-            ))}
-
-            {Array.from({ length: daysInCurrentMonth }, (_, i) => i + 1).map((dayNum) => {
-              const dStr = formatDateKey(viewYear, viewMonth, dayNum);
-              const record = activityLogs[dStr];
-              const isToday =
-                viewYear === deviceToday.year &&
-                viewMonth === deviceToday.month &&
-                dayNum === deviceToday.day;
-              const isFuture =
-                viewYear > deviceToday.year ||
-                (viewYear === deviceToday.year && viewMonth > deviceToday.month) ||
-                (viewYear === deviceToday.year &&
-                  viewMonth === deviceToday.month &&
-                  dayNum > deviceToday.day);
+        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
+          <div className="flex flex-col">
+            {visiblePhases.map((phase, idx) => {
+              const isCurrent = idx === currentPhaseIndex;
+              const isNext = idx === currentPhaseIndex + 1;
+              const isCollapsedPhase = !isCurrent && !isNext;
+              const hasTopLine = idx > 0;
+              const hasBottomLine = idx < visiblePhases.length - 1;
 
               return (
                 <button
+                  key={phase.id}
                   type="button"
-                  key={dStr}
-                  onClick={() => handleOpenDayDetail(dStr)}
-                  aria-label={`${dStr}: ${record?.type || 'no record'}`}
-                  className={`aspect-square w-full max-w-[34px] mx-auto rounded-[8px] flex items-center justify-center transition-all duration-150 relative cursor-pointer active:scale-88 ${
-                    isToday ? 'ring-2 ring-[#5E5BAE] ring-offset-2 ring-offset-white' : ''
-                  } ${
-                    record?.type === 'active'
-                      ? 'bg-[#5E5BAE] shadow-[0_2px_6px_rgba(94,91,174,0.25)] hover:brightness-105'
-                      : record?.type === 'rest'
-                      ? 'bg-[#E59980] shadow-[0_2px_6px_rgba(229,153,128,0.25)] hover:brightness-105'
-                      : isFuture
-                      ? 'bg-[#F2F2F7]/70 border border-dashed border-[#D1D1D6] hover:bg-[#E5E5EA]'
-                      : 'bg-[#F2F2F7] hover:bg-[#E5E5EA]'
-                  }`}
+                  id={`up-next-phase-row-${idx}`}
+                  data-phase-id={phase.id}
+                  data-phase-state={isCurrent ? 'current' : isNext ? 'next' : 'collapsed'}
+                  onClick={() => handleOpenPhaseDetail(phase.id)}
+                  className="w-full min-h-[44px] flex items-stretch gap-3 text-left transition-opacity active:opacity-70 cursor-pointer group"
                 >
-                  {isToday && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-white absolute top-1 right-1 shadow-xs pointer-events-none" />
-                  )}
+                  {/* Vertical timeline rail: small dots & thin connecting line */}
+                  <div
+                    className="w-4 shrink-0 flex flex-col items-center"
+                    aria-hidden="true"
+                  >
+                    <div
+                      className={`w-[1.5px] ${
+                        isCurrent ? 'h-[13px]' : 'h-[14px]'
+                      } shrink-0 ${hasTopLine ? 'bg-[#DEDCEB]' : 'bg-transparent'}`}
+                    />
+                    <span
+                      data-phase-dot={isCurrent ? 'current' : 'future'}
+                      className={`rounded-full shrink-0 transition-colors ${
+                        isCurrent
+                          ? 'w-2.5 h-2.5 bg-[#5E5BAE] ring-[3px] ring-[#5E5BAE]/15'
+                          : 'w-2 h-2 bg-[#CFCDE3]'
+                      }`}
+                    />
+                    <div
+                      className={`w-[1.5px] flex-1 min-h-[10px] ${
+                        hasBottomLine ? 'bg-[#DEDCEB]' : 'bg-transparent'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Phase content */}
+                  <div
+                    className={`flex-1 min-w-0 flex items-start justify-between gap-2 ${
+                      isCurrent ? 'pt-2 pb-4' : isNext ? 'pt-2 pb-3.5' : 'py-2'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0 flex flex-col">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span
+                          className={`text-[15px] font-semibold leading-[20px] ${
+                            isCollapsedPhase ? 'text-[#6E6E78]' : 'text-[#1C1C1E]'
+                          }`}
+                        >
+                          {phase.name}
+                        </span>
+                        {isCurrent && (
+                          <span className="text-[12px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
+                            Current
+                          </span>
+                        )}
+                      </div>
+
+                      {isCurrent && (
+                        <p className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                          {phase.description}
+                        </p>
+                      )}
+
+                      {isNext && (
+                        <p className="mt-0.5 text-[13px] font-normal leading-[18px] text-[#6E6E78] line-clamp-1">
+                          {phase.description}
+                        </p>
+                      )}
+                    </div>
+
+                    <ChevronRight className="w-4 h-4 text-[#6E6E78]/70 stroke-[2] shrink-0 mt-0.5" />
+                  </div>
                 </button>
               );
             })}
-          </motion.div>
-        </div>
-
-        {/* Status Legend & Sample Data Label */}
-        <div className="pt-2.5 border-t border-black/[0.05] flex items-center justify-between text-[11px] text-[#6C6C70]">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#5E5BAE]" />
-              <span className="text-[#1C1C1E] font-medium">Active</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E59980]" />
-              <span className="text-[#1C1C1E] font-medium">Rest</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E5E5EA]" />
-              <span>No record</span>
-            </div>
           </div>
-          {hasSampleInCurrentMonth && (
-            <span className="text-[10.5px] font-medium text-[#6C6C70] bg-[#F2F2F7] px-2 py-0.5 rounded-full">
-              Sample data
-            </span>
-          )}
-        </div>
-      </section>
 
-      {/* ============================================================ */}
-      {/* 3. Module: Your rhythm (Synced with Activity Logs; distinguishes Active days vs Activities) */}
-      {/* ============================================================ */}
-      <section
-        id="plan-module-rhythm"
-        onClick={() => setSelectedModule('rhythm')}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => e.key === 'Enter' && setSelectedModule('rhythm')}
-        aria-label="View Your rhythm details"
-        className="group bg-white hover:bg-[#FAFAFC] active:scale-[0.99] transition-all duration-200 rounded-[24px] p-4 sm:p-4.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05),0_1px_3px_rgba(0,0,0,0.02)] flex flex-col gap-3 relative cursor-pointer"
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-[17px] font-bold text-[#1C1C1E] tracking-[-0.02em]">Your rhythm</span>
-          <ChevronRight className="w-4 h-4 text-[#8E8E93] group-hover:text-[#5E5BAE] group-hover:translate-x-0.5 transition-all stroke-[2.2]" />
-        </div>
-
-        {/* 6-Month Trend Curve (Active days per month) with explicit "6-month trend" tag */}
-        <div className="bg-[#F2F2F7]/75 px-3.5 py-2.5 rounded-[18px] flex flex-col gap-1">
-          <div className="flex items-center justify-between">
-            <span className="text-[11.5px] font-semibold text-[#1C1C1E]">6-month trend</span>
-            <span className="text-[10.5px] font-medium text-[#6C6C70]">Active days</span>
-          </div>
-          <MonthlyTrendCurve series={monthlyTrendSeries} compact={true} />
-        </div>
-
-        {/* Recent Stats Header + 7 days / Month Toggle (Explicitly scopes toggle to recent stats below) */}
-        <div className="flex flex-col gap-2 pt-1 border-t border-black/[0.05]">
-          <div className="flex items-center justify-between gap-2 pt-0.5">
-            <span className="text-[12px] font-semibold text-[#1C1C1E] truncate">
-              {currentRecentData.rangeLabel}
-            </span>
-
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="bg-[#E5E5EA] p-0.5 rounded-full inline-flex shrink-0"
+          <div className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+            <button
+              type="button"
+              id="plan-up-next-view-path-btn"
+              onClick={() => setSelectedModule('path')}
+              className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
             >
-              <button
-                type="button"
-                onClick={() => setRhythmFilter('7d')}
-                className={`px-2.5 py-1 text-[11px] rounded-full transition-all cursor-pointer ${
-                  rhythmFilter === '7d'
-                    ? 'bg-white text-[#1C1C1E] font-semibold shadow-[0_1px_3px_rgba(0,0,0,0.1)]'
-                    : 'text-[#6C6C70] font-medium hover:text-[#1C1C1E]'
-                }`}
-              >
-                7 days
-              </button>
-              <button
-                type="button"
-                onClick={() => setRhythmFilter('month')}
-                className={`px-2.5 py-1 text-[11px] rounded-full transition-all cursor-pointer ${
-                  rhythmFilter === 'month'
-                    ? 'bg-white text-[#1C1C1E] font-semibold shadow-[0_1px_3px_rgba(0,0,0,0.1)]'
-                    : 'text-[#6C6C70] font-medium hover:text-[#1C1C1E]'
-                }`}
-              >
-                Month
-              </button>
-            </div>
-          </div>
-
-          {/* Recent Stats: Explicitly distinguishes Active days (活动天数) vs Activities (活动次数) + Duration */}
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-[#F2F2F7]/75 px-2.5 py-2.5 rounded-[16px] flex flex-col justify-between min-h-[64px]">
-              <span className="text-[11px] font-medium text-[#6C6C70]">Active days</span>
-              <div className="flex items-baseline gap-1 mt-1 tabular-nums">
-                <span className="text-[20px] font-bold text-[#1C1C1E] tracking-[-0.02em] leading-none">
-                  {currentRecentData.activeDaysCount}
-                </span>
-                <span className="text-[10.5px] font-medium text-[#8E8E93]">days</span>
-              </div>
-            </div>
-
-            <div className="bg-[#F2F2F7]/75 px-2.5 py-2.5 rounded-[16px] flex flex-col justify-between min-h-[64px]">
-              <span className="text-[11px] font-medium text-[#6C6C70]">Activities</span>
-              <div className="flex items-baseline gap-1 mt-1 tabular-nums">
-                <span className="text-[20px] font-bold text-[#1C1C1E] tracking-[-0.02em] leading-none">
-                  {currentRecentData.completedCount}
-                </span>
-                <span className="text-[10.5px] font-medium text-[#8E8E93]">done</span>
-              </div>
-            </div>
-
-            <div className="bg-[#F2F2F7]/75 px-2.5 py-2.5 rounded-[16px] flex flex-col justify-between min-h-[64px]">
-              <span className="text-[11px] font-medium text-[#6C6C70]">Duration</span>
-              <div className="flex items-baseline gap-1 mt-1 tabular-nums">
-                <span className="text-[20px] font-bold text-[#1C1C1E] tracking-[-0.02em] leading-none">
-                  {currentRecentData.activeMinutes}
-                </span>
-                <span className="text-[10.5px] font-medium text-[#8E8E93]">min</span>
-              </div>
-            </div>
+              View path
+            </button>
           </div>
         </div>
       </section>
 
       {/* ============================================================ */}
-      {/* 4. Module: Your direction (Goal, 1-line approach, next review) */}
+      {/* 4. Weekly review                                             */}
       {/* ============================================================ */}
       <section
-        id="plan-module-direction"
-        onClick={() => setSelectedModule('direction')}
-        className="group bg-white hover:bg-[#FAFAFC] active:scale-[0.99] transition-all duration-200 rounded-[24px] p-4 sm:p-4.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05),0_1px_3px_rgba(0,0,0,0.02)] cursor-pointer flex flex-col gap-2.5 relative"
-        role="button"
-        tabIndex={0}
-        aria-label="View Your direction details"
-        onKeyDown={(e) => e.key === 'Enter' && setSelectedModule('direction')}
+        id="plan-module-weekly-review"
+        aria-labelledby="plan-heading-weekly-review"
+        className="flex flex-col gap-2.5"
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-[17px] font-bold text-[#1C1C1E] tracking-[-0.02em]">Your direction</span>
-            {direction.status === 'paused' && (
-              <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full bg-[#C27838]/15 text-[#C27838]">
-                Paused
-              </span>
-            )}
-          </div>
-          <ChevronRight className="w-4 h-4 text-[#8E8E93] group-hover:text-[#5E5BAE] group-hover:translate-x-0.5 transition-all stroke-[2.2]" />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <h4 className="text-[16px] font-bold text-[#1C1C1E] tracking-[-0.015em] leading-snug">
-            {direction.goalTitle}
-          </h4>
-          <p className="text-[13px] text-[#6C6C70] truncate leading-normal">
-            {direction.executionApproach}
-          </p>
-        </div>
-
-        <div className="pt-2 border-t border-black/[0.05] flex items-center justify-between text-[11.5px] text-[#6C6C70]">
-          <span className="flex items-center gap-1.5">
-            <CalendarIcon className="w-3.5 h-3.5 stroke-[2] shrink-0 text-[#5E5BAE]" />
-            <span>
-              Next review: <strong className="text-[#1C1C1E] font-semibold">{direction.nextReviewDate}</strong>
-            </span>
+        <div className="flex items-baseline justify-between gap-3">
+          <h2
+            id="plan-heading-weekly-review"
+            className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+          >
+            Weekly review
+          </h2>
+          <span
+            id="weekly-review-date-range"
+            className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0"
+          >
+            {lastCompletedWeekBounds.rangeLabel}
           </span>
         </div>
+
+        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
+          <p
+            id="weekly-review-summary"
+            className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+          >
+            {lastWeekSummaryText}
+          </p>
+
+          {lastWeekObservationText && (
+            <p
+              id="weekly-review-observation"
+              className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+            >
+              {lastWeekObservationText}
+            </p>
+          )}
+
+          <div className="mt-3.5 pt-3 border-t border-black/[0.06] flex flex-col gap-2.5">
+            <p
+              id="weekly-review-question"
+              className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+            >
+              How did the week feel?
+            </p>
+
+            <div
+              role="group"
+              aria-labelledby="weekly-review-question"
+              className="flex flex-wrap gap-2"
+            >
+              {(
+                [
+                  { value: 'too_much', label: 'Too much' },
+                  { value: 'about_right', label: 'About right' },
+                  { value: 'ready_for_more', label: 'Ready for more' },
+                ] as const
+              ).map((opt) => {
+                const isSelected = selectedWeeklyReviewFeeling === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    id={`weekly-review-option-${opt.value}`}
+                    aria-pressed={isSelected}
+                    onClick={() => handleSelectWeeklyReviewFeeling(opt.value)}
+                    className={`min-h-[44px] px-3.5 py-2 rounded-[14px] text-[14px] font-medium leading-[20px] border transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
+                        : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-3 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+            {selectedWeeklyReviewFeeling ? (
+              <button
+                type="button"
+                id="weekly-review-adjust-next-week-btn"
+                onClick={handleOpenWeekAdjust}
+                className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
+              >
+                Adjust next week
+              </button>
+            ) : (
+              <button
+                type="button"
+                id="weekly-review-view-history-btn"
+                onClick={() => setSelectedModule('history')}
+                className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
+              >
+                View history
+              </button>
+            )}
+          </div>
+        </div>
       </section>
 
       {/* ============================================================ */}
-      {/* 5. Module: What Nova knows (Confirmed Memories ONLY + Separate Pending Prompt) */}
+      {/* 5. Bottom Auxiliary Entries: History, Preferences, Health data */}
       {/* ============================================================ */}
       <section
-        id="plan-module-memory"
-        aria-label="What Nova knows"
-        className="bg-white rounded-[24px] p-4 sm:p-4.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05),0_1px_3px_rgba(0,0,0,0.02)] flex flex-col gap-2.5 relative"
+        id="plan-auxiliary-entries"
+        aria-label="Additional plan sections"
+        className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col divide-y divide-black/[0.06]"
       >
         <button
           type="button"
-          onClick={() => setSelectedModule('memory')}
-          className="w-full flex items-center justify-between text-left group cursor-pointer"
-          aria-label="View all memories in What Nova knows"
+          id="plan-entry-history"
+          onClick={() => setSelectedModule('history')}
+          className="w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
-          <span className="text-[17px] font-bold text-[#1C1C1E] tracking-[-0.02em]">What Nova knows</span>
-          <div className="flex items-center gap-1 text-[12px] font-semibold text-[#5E5BAE]">
-            <span>All ({confirmedMemories.length})</span>
-            <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform stroke-[2.2]" />
+          <span className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+            History
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+              {MONTH_NAMES[viewMonth]}
+            </span>
+            <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
           </div>
         </button>
 
-        {/* Confirmed Memories List (Strictly isConfirmed === true, 2–3 representative items) */}
-        {representativeConfirmedMemories.length === 0 ? (
-          <div
-            onClick={() => setSelectedModule('memory')}
-            className="bg-[#F2F2F7]/75 rounded-[16px] p-3.5 text-[12.5px] text-[#6C6C70] cursor-pointer"
-          >
-            No confirmed preferences saved yet. Talk to Nova to share what works for you.
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {representativeConfirmedMemories.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setSelectedMemory(item)}
-                className="w-full bg-[#F2F2F7]/75 hover:bg-[#E5E5EA]/80 active:scale-[0.99] transition-all px-3.5 py-2.5 rounded-[16px] flex items-center justify-between gap-2.5 text-left cursor-pointer group"
-              >
-                <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#5E5BAE] shrink-0" />
-                  <span className="text-[13.5px] font-semibold text-[#1C1C1E] truncate">
-                    {item.title}
-                  </span>
-                </div>
-                <ChevronRight className="w-3.5 h-3.5 text-[#8E8E93] group-hover:text-[#5E5BAE] shrink-0 stroke-[2.2]" />
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Separate Prompt for Pending / Unconfirmed Items */}
-        {checkMemories.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setSelectedModule('memory')}
-            className="w-full px-3.5 py-2.5 rounded-[16px] bg-[#F5F3FF] hover:bg-[#EDE9FE] border border-[#5E5BAE]/15 flex items-center justify-between text-left transition-all cursor-pointer group"
-          >
-            <div className="flex items-center gap-1.5 min-w-0">
-              <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE] shrink-0 stroke-[2.2]" />
-              <span className="text-[12px] font-semibold text-[#5E5BAE] truncate">
-                Can I check something? ({checkMemories.length} pending)
-              </span>
-            </div>
-            <ChevronRight className="w-3.5 h-3.5 text-[#5E5BAE] group-hover:translate-x-0.5 transition-transform shrink-0 stroke-[2.2]" />
-          </button>
-        )}
-
-        {/* Conversational Entry: Modify, Supplement, or Correct via Nova */}
-        <div className="pt-1 flex items-center justify-between">
-          <button
-            type="button"
-            id="plan-memory-talk-btn"
-            onClick={() => handleStartTalkToNovaMemory(null)}
-            className="w-full py-2.5 px-3.5 rounded-[16px] bg-[#5E5BAE]/[0.08] hover:bg-[#5E5BAE]/[0.14] active:scale-[0.99] text-[#5E5BAE] text-[13px] font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-          >
-            <MessageSquare className="w-3.5 h-3.5 stroke-[2.2]" />
-            <span>Talk to Nova to update or add</span>
-          </button>
-        </div>
-      </section>
-
-      {/* ============================================================ */}
-      {/* 6. Module: Health data (Only 2 core metrics + source status) */}
-      {/* ============================================================ */}
-      <section
-        id="plan-module-health"
-        onClick={() => setSelectedModule('health')}
-        className="group bg-white hover:bg-[#FAFAFC] active:scale-[0.99] transition-all duration-200 rounded-[24px] p-4 sm:p-4.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05),0_1px_3px_rgba(0,0,0,0.02)] cursor-pointer flex flex-col gap-3 relative"
-        role="button"
-        tabIndex={0}
-        aria-label="View Health data details"
-        onKeyDown={(e) => e.key === 'Enter' && setSelectedModule('health')}
-      >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-[17px] font-bold text-[#1C1C1E] tracking-[-0.02em]">Health data</span>
-            <span
-              className={`text-[10.5px] font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1 ${
-                isAppleHealthConnected
-                  ? 'text-[#E11D48] bg-[#FFE4E6]/85'
-                  : 'text-[#6C6C70] bg-[#F2F2F7]'
-              }`}
-            >
-              <Heart className="w-2.5 h-2.5 fill-current" />
-              {isAppleHealthConnected ? 'Sample sync' : 'Not connected'}
+        <button
+          type="button"
+          id="plan-entry-preferences"
+          onClick={() => setSelectedModule('preferences')}
+          className="w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+        >
+          <div className="flex flex-col min-w-0">
+            <span className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+              Preferences
             </span>
-          </div>
-          <ChevronRight className="w-4 h-4 text-[#8E8E93] group-hover:text-[#5E5BAE] group-hover:translate-x-0.5 transition-all stroke-[2.2]" />
-        </div>
-
-        {/* 2 Core Metrics Only on Level-1 (Resting Heart Rate & Sleep Duration) */}
-        <div className="grid grid-cols-2 gap-2.5">
-          {HEALTH_METRICS_DEFINITIONS.slice(0, 2).map((metric) => {
-            const displayValue = isAppleHealthConnected
-              ? metric.sampleValue
-              : metric.id === 'rhr'
-              ? 'Not connected'
-              : 'No data';
-            const displayUnit = isAppleHealthConnected ? metric.unit : '';
-
-            return (
-              <div
-                key={metric.id}
-                className="bg-[#F2F2F7]/75 px-3.5 py-3 rounded-[18px] flex flex-col justify-between gap-1.5 min-h-[72px]"
+            {confirmedPreferenceTags.length > 0 && (
+              <span
+                id="plan-entry-preferences-tags"
+                className="text-[13px] font-normal leading-[18px] text-[#6E6E78] truncate"
               >
-                <span className="text-[11.5px] font-medium text-[#6C6C70] leading-snug">
-                  {metric.name}
-                </span>
+                {confirmedPreferenceTags.join(' · ')}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {checkMemories.length > 0 && confirmedPreferenceTags.length === 0 && (
+              <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                {checkMemories.length} to confirm
+              </span>
+            )}
+            <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
+          </div>
+        </button>
 
-                <div className="flex items-baseline gap-1 flex-wrap tabular-nums">
-                  <span
-                    className={`font-bold text-[#1C1C1E] tracking-[-0.02em] leading-none ${
-                      isAppleHealthConnected ? 'text-[22px]' : 'text-[13px] text-[#8E8E93]'
-                    }`}
-                  >
-                    {displayValue}
-                  </span>
-                  {displayUnit && (
-                    <span className="text-[11px] text-[#8E8E93] font-medium">{displayUnit}</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <button
+          type="button"
+          id="plan-entry-health"
+          onClick={() => setSelectedModule('health')}
+          className="w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+        >
+          <span className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+            Health data
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span
+              id="plan-entry-health-status"
+              className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+            >
+              Not connected
+            </span>
+            <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
+          </div>
+        </button>
       </section>
+
+      {/* Unified low-emphasis local demo data attribution (shown once at page level, never repeated per card) */}
+      {(direction.isSample || hasAnySampleHistory) && (
+        <p
+          id="plan-demo-source-note"
+          className="px-1 -mt-2 text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+        >
+          {direction.isSample && hasAnySampleHistory
+            ? 'Default focus and past calendar history include local demo examples until you update them.'
+            : direction.isSample
+            ? 'Default focus uses a local demo example until you adjust it.'
+            : 'Past calendar history includes local demo entries.'}
+        </p>
+      )}
 
       {/* ============================================================ */}
       {/* SECONDARY DETAIL SHEETS (Rendered via React Portal)           */}
@@ -2119,7 +2581,6 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                   transition={{ duration: 0.2 }}
                   onClick={() => {
                     setSelectedModule(null);
-                    setIsEditingDirection(false);
                   }}
                   className="absolute inset-0 bg-black/25 backdrop-blur-xs"
                 />
@@ -2129,70 +2590,309 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
                   transition={{ type: 'spring', damping: 28, stiffness: 280 }}
-                  className="relative w-full max-h-[88%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-5 sm:p-6 shadow-2xl border-t border-white/90 overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
+                  className="relative w-full max-h-[88%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-5 sm:p-6 pb-[calc(24px+env(safe-area-inset-bottom,0px))] shadow-2xl border-t border-white/90 overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
                   id="my-plan-secondary-sheet"
                 >
-                  {/* Sheet Header */}
-                  <div className="flex items-center justify-between pb-2 border-b border-black/[0.06] shrink-0">
-                    <div>
-                      <h3 className="text-[18px] font-bold text-[#1C1C1E] tracking-[-0.02em]">
-                        {selectedModule === 'activity' && 'Activity History'}
-                        {selectedModule === 'rhythm' && 'Your rhythm'}
-                        {selectedModule === 'direction' && 'Your direction'}
-                        {selectedModule === 'memory' && 'What Nova knows'}
-                        {selectedModule === 'health' && 'Health data'}
-                      </h3>
-                      <span className="text-[11.5px] text-[#6C6C70]">
-                        {selectedModule === 'activity' && 'Monthly action log & intervals'}
-                        {selectedModule === 'rhythm' && 'Long-term trends & recent summary'}
-                        {selectedModule === 'direction' && 'Long-term focus & conversational pacing'}
-                        {selectedModule === 'memory' && 'Preferences & context Nova remembers'}
-                        {selectedModule === 'health' && 'Apple Health integration & metrics'}
-                      </span>
-                    </div>
+                  {/* Sheet Header with clear Back navigation */}
+                  <div className="flex flex-col gap-1.5 pb-3 border-b border-black/[0.06] shrink-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        id="secondary-sheet-back-btn"
+                        onClick={() => {
+                          setSelectedModule(null);
+                        }}
+                        className="min-h-[44px] -ml-2 px-2 flex items-center gap-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 transition-opacity cursor-pointer"
+                        aria-label="Return to Plan"
+                      >
+                        <ChevronLeft className="w-5 h-5 stroke-[2.2]" />
+                        <span>Plan</span>
+                      </button>
 
-                    <div className="flex items-center gap-1.5">
-                      {selectedModule === 'memory' && (
+                      {selectedModule === 'preferences' && (
                         <button
                           type="button"
                           onClick={() => setIsMemoryInfoModalOpen(true)}
-                          className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#5E5BAE] transition-colors cursor-pointer"
-                          aria-label="How memory works"
+                          className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#5E5BAE] transition-colors cursor-pointer"
+                          aria-label="How preferences work"
                         >
                           <HelpCircle className="w-4 h-4 stroke-[2.2]" />
                         </button>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedModule(null);
-                          setIsEditingDirection(false);
-                        }}
-                        className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6C6C70] hover:text-[#1C1C1E] transition-colors cursor-pointer"
-                        aria-label="Return to Plan"
-                      >
-                        <X className="w-4 h-4 stroke-[2.2]" />
-                      </button>
+                    </div>
+
+                    <div>
+                      <h3 className="text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
+                        {selectedModule === 'path' && 'Your path'}
+                        {selectedModule === 'history' && 'History'}
+                        {selectedModule === 'preferences' && 'Preferences'}
+                        {selectedModule === 'health' && 'Health data'}
+                      </h3>
+                      <p className="text-[13px] leading-[18px] text-[#6E6E78] mt-0.5">
+                        {selectedModule === 'path' && 'Flexible pacing phases · move only when you choose'}
+                        {selectedModule === 'history' && 'Activity calendar, 6-month trend & detailed stats'}
+                        {selectedModule === 'preferences' && 'Saved preferences and pending questions'}
+                        {selectedModule === 'health' && 'Wearable & Apple Health connection status'}
+                      </p>
                     </div>
                   </div>
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 1: YOUR RHYTHM                           */}
+                  {/* SECONDARY PAGE 0: VIEW PATH (All 3 Phases + Edit Entry) */}
                   {/* ======================================================= */}
-                  {selectedModule === 'rhythm' && (
+                  {selectedModule === 'path' && (
+                    <div id="view-path-secondary-page" className="flex flex-col gap-4 text-[#1C1C1E]">
+                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                        Staying at your current pace, stepping back, or taking a rest day are all valid choices. Phases never advance automatically.
+                      </p>
+
+                      <div className="rounded-[24px] p-4 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col">
+                        <div className="flex flex-col">
+                          {visiblePhases.map((phase, idx) => {
+                            const isCurrent = idx === currentPhaseIndex;
+                            const hasTopLine = idx > 0;
+                            const hasBottomLine = idx < visiblePhases.length - 1;
+
+                            return (
+                              <button
+                                key={phase.id}
+                                type="button"
+                                id={`view-path-phase-row-${idx}`}
+                                onClick={() => handleOpenPhaseDetail(phase.id)}
+                                className="w-full min-h-[44px] flex items-stretch gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+                              >
+                                <div
+                                  className="w-4 shrink-0 flex flex-col items-center"
+                                  aria-hidden="true"
+                                >
+                                  <div
+                                    className={`w-[1.5px] ${
+                                      isCurrent ? 'h-[13px]' : 'h-[14px]'
+                                    } shrink-0 ${hasTopLine ? 'bg-[#DEDCEB]' : 'bg-transparent'}`}
+                                  />
+                                  <span
+                                    className={`rounded-full shrink-0 ${
+                                      isCurrent
+                                        ? 'w-2.5 h-2.5 bg-[#5E5BAE] ring-[3px] ring-[#5E5BAE]/15'
+                                        : 'w-2 h-2 bg-[#CFCDE3]'
+                                    }`}
+                                  />
+                                  <div
+                                    className={`w-[1.5px] flex-1 min-h-[10px] ${
+                                      hasBottomLine ? 'bg-[#DEDCEB]' : 'bg-transparent'
+                                    }`}
+                                  />
+                                </div>
+
+                                <div className="flex-1 min-w-0 py-2.5 flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0 flex flex-col">
+                                    <div className="flex items-baseline justify-between gap-2">
+                                      <span className="text-[15px] font-semibold leading-[20px] text-[#1C1C1E]">
+                                        {phase.name}
+                                      </span>
+                                      {isCurrent && (
+                                        <span className="text-[12px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
+                                          Current
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                                      {phase.description}
+                                    </p>
+                                  </div>
+
+                                  <ChevronRight className="w-4 h-4 text-[#6E6E78]/70 stroke-[2] shrink-0 mt-0.5" />
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+                          <button
+                            type="button"
+                            id="view-path-edit-btn"
+                            onClick={handleOpenPathEdit}
+                            className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ======================================================= */}
+                  {/* SECONDARY PAGE 1: HISTORY (Activity Calendar + 6-Month Trend + Detailed Stats) */}
+                  {/* ======================================================= */}
+                  {selectedModule === 'history' && (
                     <div className="flex flex-col gap-4 text-xs text-[#3C3C43]">
+                      {/* Activity Monthly Calendar */}
+                      <div className="p-4 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPickerYear(viewYear);
+                              setIsMonthPickerOpen(true);
+                            }}
+                            className="min-h-[44px] flex items-center gap-1.5 text-[14px] font-semibold text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
+                            aria-label="Select month"
+                          >
+                            <CalendarIcon className="w-4 h-4 text-[#5E5BAE]" />
+                            <span>
+                              {isCurrentMonth ? MONTH_NAMES[viewMonth] : SHORT_MONTH_NAMES[viewMonth]} {viewYear}
+                            </span>
+                            <ChevronDown className="w-3.5 h-3.5 text-[#5E5BAE] opacity-85 shrink-0" />
+                          </button>
+
+                          {!isCurrentMonth && (
+                            <button
+                              type="button"
+                              id="activity-this-month-btn"
+                              onClick={handleJumpToThisMonth}
+                              className="min-h-[44px] flex items-center gap-1.5 text-[13px] font-semibold text-[#5E5BAE] bg-[#5E5BAE]/10 hover:bg-[#5E5BAE]/18 active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
+                              aria-label="Return to this month"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5 stroke-[2.2]" />
+                              <span>This month</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Weekday indicators */}
+                        <div className="grid grid-cols-7 gap-1.5 text-center select-none pt-0.5">
+                          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayInitial, idx) => (
+                            <span key={idx} className="text-[11px] font-semibold text-[#6E6E78] uppercase tracking-wider">
+                              {dayInitial}
+                            </span>
+                          ))}
+                        </div>
+
+                        {/* Monthly Illuminated Dot Grid */}
+                        <div className="relative select-none overflow-hidden touch-pan-y">
+                          <motion.div
+                            key={`${viewYear}-${viewMonth}`}
+                            initial={{ opacity: 0, x: slideDirection * 24 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ duration: 0.2, ease: 'easeOut' }}
+                            drag="x"
+                            dragConstraints={{ left: 0, right: 0 }}
+                            dragElastic={0.15}
+                            onDragEnd={(_, info) => {
+                              if (info.offset.x > 40) handlePrevMonth();
+                              else if (info.offset.x < -40) handleNextMonth();
+                            }}
+                            className="grid grid-cols-7 gap-1.5 cursor-grab active:cursor-grabbing py-1"
+                          >
+                            {Array.from({ length: firstDayOfWeek }).map((_, idx) => (
+                              <div key={`empty-prefix-${idx}`} className="aspect-square w-full" />
+                            ))}
+
+                            {Array.from({ length: daysInCurrentMonth }, (_, i) => i + 1).map((dayNum) => {
+                              const dStr = formatDateKey(viewYear, viewMonth, dayNum);
+                              const record = effectiveActivityLogs[dStr];
+                              const isToday =
+                                viewYear === deviceToday.year &&
+                                viewMonth === deviceToday.month &&
+                                dayNum === deviceToday.day;
+                              const isFuture =
+                                viewYear > deviceToday.year ||
+                                (viewYear === deviceToday.year && viewMonth > deviceToday.month) ||
+                                (viewYear === deviceToday.year &&
+                                  viewMonth === deviceToday.month &&
+                                  dayNum > deviceToday.day);
+
+                              return (
+                                <button
+                                  type="button"
+                                  key={dStr}
+                                  onClick={() => handleOpenDayDetail(dStr)}
+                                  aria-label={`${dStr}: ${record?.type || 'no record'}`}
+                                  className={`aspect-square w-full max-w-[36px] mx-auto rounded-[8px] flex items-center justify-center transition-all duration-150 relative cursor-pointer active:scale-88 ${
+                                    isToday ? 'ring-2 ring-[#5E5BAE] ring-offset-2 ring-offset-white' : ''
+                                  } ${
+                                    record?.type === 'active'
+                                      ? 'bg-[#5E5BAE] shadow-[0_2px_6px_rgba(94,91,174,0.25)] hover:brightness-105'
+                                      : record?.type === 'rest'
+                                      ? 'bg-[#E59980] shadow-[0_2px_6px_rgba(229,153,128,0.25)] hover:brightness-105'
+                                      : isFuture
+                                      ? 'bg-[#F2F2F7]/70 border border-dashed border-[#D1D1D6] hover:bg-[#E5E5EA]'
+                                      : 'bg-[#F2F2F7] hover:bg-[#E5E5EA]'
+                                  }`}
+                                >
+                                  {isToday && (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-white absolute top-1 right-1 shadow-xs pointer-events-none" />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </motion.div>
+                        </div>
+
+                        {/* Status Legend & Unified History Source Note */}
+                        <div className="pt-2.5 border-t border-black/[0.05] flex flex-col gap-1.5 text-[13px] leading-[18px] text-[#6E6E78]">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#5E5BAE]" />
+                              <span className="text-[#1C1C1E] font-medium">Active</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E59980]" />
+                              <span className="text-[#1C1C1E] font-medium">Rest</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E5E5EA]" />
+                              <span>No record</span>
+                            </div>
+                          </div>
+                          {hasSampleInCurrentMonth && (
+                            <p
+                              id="history-sample-source-note"
+                              className="text-[12px] leading-[16px] text-[#6E6E78]"
+                            >
+                              Past dates include local demo entries. Completions from Today appear automatically.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 6-Month Trend */}
+                      <div
+                        id="history-trend-chart-card"
+                        className="bg-white p-4 rounded-[24px] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2"
+                      >
+                        <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5">
+                            <TrendingUp className="w-4 h-4 text-[#5E5BAE]" />
+                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[21px]">
+                              Monthly active days
+                            </span>
+                          </div>
+                          <span className="text-[13px] text-[#6E6E78] shrink-0">
+                            {monthlyTrendSeries[0]?.month}–{monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month} {viewYear} · Unit: days (d)
+                          </span>
+                        </div>
+                        <p className="text-[13px] leading-[18px] text-[#6E6E78]">
+                          Days with at least one recorded activity per month across the past 6 months.
+                        </p>
+
+                        <MonthlyTrendCurve series={monthlyTrendSeries} compact={false} />
+                      </div>
+
+                      {/* Detailed Stats Range Toggle */}
                       <div className="flex items-center justify-between bg-[#F2F2F7]/80 p-1 rounded-full border border-black/[0.04]">
                         <span className="text-xs font-semibold text-[#1C1C1E] pl-3">
-                          Time range ({currentRecentData.rangeLabel})
+                          {currentRecentData.rangeLabel}
                         </span>
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => setRhythmFilter('7d')}
-                            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                            className={`min-h-[44px] px-4 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                               rhythmFilter === '7d'
                                 ? 'bg-white text-[#1C1C1E] shadow-2xs'
-                                : 'text-[#6C6C70] hover:text-[#1C1C1E]'
+                                : 'text-[#6E6E78] hover:text-[#1C1C1E]'
                             }`}
                           >
                             7 days
@@ -2200,10 +2900,10 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                           <button
                             type="button"
                             onClick={() => setRhythmFilter('month')}
-                            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                            className={`min-h-[44px] px-4 rounded-full text-xs font-semibold transition-all cursor-pointer ${
                               rhythmFilter === 'month'
                                 ? 'bg-white text-[#1C1C1E] shadow-2xs'
-                                : 'text-[#6C6C70] hover:text-[#1C1C1E]'
+                                : 'text-[#6E6E78] hover:text-[#1C1C1E]'
                             }`}
                           >
                             Month
@@ -2211,714 +2911,103 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                         </div>
                       </div>
 
-                      <div className="bg-[#F4EEFE]/75 p-3.5 rounded-[18px] border border-[#5E5BAE]/15 flex flex-col gap-1.5">
+                      <div className="bg-[#F4EEFE]/75 p-4 rounded-[20px] border border-[#5E5BAE]/15 flex flex-col gap-1.5">
                         <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
                           <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                          <span>Nova noticed</span>
+                          <span>Summary</span>
                         </div>
-                        <p className="text-[12.5px] leading-relaxed text-[#1C1C1E]">
+                        <p className="text-[13px] leading-[19px] text-[#1C1C1E]">
                           “{currentRecentData.novaObservation}”
                         </p>
                       </div>
 
                       {/* 4 Distinct Metrics: Active Days vs Activities vs Active Time vs Rest Days */}
-                      <div className="grid grid-cols-4 gap-2">
-                        <div className="bg-[#F2F2F7]/75 p-2.5 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[64px]">
-                          <span className="text-[10px] font-medium text-[#6C6C70]">Active days</span>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
+                          <span className="text-[11px] font-medium text-[#6E6E78]">Active days</span>
                           <div className="mt-1">
-                            <span className="text-[17px] font-bold text-[#1C1C1E] leading-none">
+                            <span className="text-[18px] font-bold text-[#1C1C1E] leading-none">
                               {currentRecentData.activeDaysCount}
                             </span>
-                            <span className="text-[9.5px] text-[#8E8E93] block mt-0.5">days</span>
+                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">days</span>
                           </div>
                         </div>
 
-                        <div className="bg-[#F2F2F7]/75 p-2.5 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[64px]">
-                          <span className="text-[10px] font-medium text-[#6C6C70]">Activities</span>
+                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
+                          <span className="text-[11px] font-medium text-[#6E6E78]">Activities</span>
                           <div className="mt-1">
-                            <span className="text-[17px] font-bold text-[#5E5BAE] leading-none">
+                            <span className="text-[18px] font-bold text-[#5E5BAE] leading-none">
                               {currentRecentData.completedCount}
                             </span>
-                            <span className="text-[9.5px] text-[#8E8E93] block mt-0.5">sessions</span>
+                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">sessions</span>
                           </div>
                         </div>
 
-                        <div className="bg-[#F2F2F7]/75 p-2.5 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[64px]">
-                          <span className="text-[10px] font-medium text-[#6C6C70]">Duration</span>
+                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
+                          <span className="text-[11px] font-medium text-[#6E6E78]">Duration</span>
                           <div className="mt-1">
-                            <span className="text-[17px] font-bold text-[#1C1C1E] leading-none">
+                            <span className="text-[18px] font-bold text-[#1C1C1E] leading-none">
                               {currentRecentData.activeMinutes}
                             </span>
-                            <span className="text-[9.5px] text-[#8E8E93] block mt-0.5">minutes</span>
+                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">minutes</span>
                           </div>
                         </div>
 
-                        <div className="bg-[#F2F2F7]/75 p-2.5 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[64px]">
-                          <span className="text-[10px] font-medium text-[#6C6C70]">Rest days</span>
+                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
+                          <span className="text-[11px] font-medium text-[#6E6E78]">Rest days</span>
                           <div className="mt-1">
-                            <span className="text-[17px] font-bold text-[#E59980] leading-none">
+                            <span className="text-[18px] font-bold text-[#E59980] leading-none">
                               {currentRecentData.restDaysCount}
                             </span>
-                            <span className="text-[9.5px] text-[#8E8E93] block mt-0.5">rests</span>
+                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">rests</span>
                           </div>
                         </div>
                       </div>
 
-                      <div className="bg-white p-4 rounded-[22px] border border-black/[0.04] shadow-2xs flex flex-col gap-2">
-                        <div className="flex items-center justify-between">
+                      <div
+                        id="history-minutes-chart-card"
+                        className="bg-white p-4 rounded-[24px] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2"
+                      >
+                        <div className="flex items-baseline justify-between gap-2 flex-wrap">
                           <div className="flex items-center gap-1.5">
-                            <BarChart2 className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                            <span className="font-bold text-[#1C1C1E] text-[12.5px]">
+                            <BarChart2 className="w-4 h-4 text-[#5E5BAE]" />
+                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[21px]">
                               Active minutes ({rhythmFilter === '7d' ? 'by day' : 'by week'})
                             </span>
                           </div>
-                          <span className="text-[11px] font-semibold text-[#5E5BAE]">
+                          <span className="text-[13px] font-medium text-[#5E5BAE]">
                             {currentRecentData.activeMinutes} min total
                           </span>
                         </div>
+                        <p className="text-[13px] leading-[18px] text-[#6E6E78]">
+                          Total recorded activity duration in minutes (m). Rest days are shown separately without adding minutes.
+                        </p>
 
                         <ActiveMinutesBarChart
                           items={currentRecentData.dailyBreakdown}
                           timeframe={rhythmFilter}
                         />
 
-                        <div className="pt-2 border-t border-black/[0.04] flex items-center justify-between text-[10.5px] text-[#6C6C70]">
-                          <span>Purple bars: Active sessions</span>
-                          <span className="text-[#E59980]">Peach bars: Rest days</span>
+                        <div className="pt-2 border-t border-black/[0.04] flex flex-wrap items-center justify-between gap-2 text-[12px] text-[#6E6E78]">
+                          <span>Purple: Active minutes (m)</span>
+                          <span className="text-[#C7765C]">Peach: Rest days</span>
                         </div>
                       </div>
 
-                      <div className="bg-white p-4 rounded-[22px] border border-black/[0.04] shadow-2xs flex flex-col gap-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <TrendingUp className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                            <span className="font-bold text-[#1C1C1E] text-[12.5px]">
-                              Monthly active days (6-month trend)
-                            </span>
-                          </div>
-                          <span className="text-[11px] text-[#6C6C70]">
-                            {monthlyTrendSeries[0]?.month} – {monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month} {viewYear}
-                          </span>
-                        </div>
-
-                        <MonthlyTrendCurve series={monthlyTrendSeries} compact={false} />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => setIsMethodologyOpen(true)}
-                        className="w-full py-2.5 px-3 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-[11.5px] font-medium text-[#6C6C70] hover:text-[#1C1C1E] flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
-                      >
-                        <HelpCircle className="w-3.5 h-3.5 stroke-[2]" />
-                        <span>Data source & calculation methodology</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* ======================================================= */}
-                  {/* SECONDARY PAGE 2: YOUR DIRECTION                        */}
-                  {/* ======================================================= */}
-                  {selectedModule === 'direction' && (
-                    <div className="flex flex-col gap-4 text-xs text-[#6C6C70]">
-                      {!isEditingDirection && (
-                        <>
-                          <div className="flex items-center justify-between p-4 rounded-[22px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)]">
-                            <div>
-                              <span className="text-[10.5px] uppercase font-bold text-[#8E8E93] tracking-wider block">
-                                Plan Status
-                              </span>
-                              <div className="flex items-center gap-2 mt-0.5">
-                                <span
-                                  className={`w-2 h-2 rounded-full ${
-                                    direction.status === 'active' ? 'bg-[#5E5BAE]' : 'bg-[#C27838]'
-                                  }`}
-                                />
-                                <span className="text-[14px] font-bold text-[#1C1C1E]">
-                                  {direction.status === 'active' ? 'Active & Paced' : 'Paused for Recovery'}
-                                </span>
-                              </div>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={handleTogglePausePlan}
-                              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1 ${
-                                direction.status === 'active'
-                                  ? 'bg-[#F4EEFE] text-[#5E5BAE] border-[#5E5BAE]/20 hover:bg-[#EDE5FB]'
-                                  : 'bg-[#5E5BAE] text-white border-transparent'
-                              }`}
-                            >
-                              {direction.status === 'active' ? (
-                                <>
-                                  <Pause className="w-3 h-3 stroke-[2.4]" />
-                                  <span>Pause Plan</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Play className="w-3 h-3 fill-current" />
-                                  <span>Resume Plan</span>
-                                </>
-                              )}
-                            </button>
-                          </div>
-
-                          <div className="p-4 rounded-[22px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2">
-                            <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                              <Compass className="w-3.5 h-3.5 stroke-[2.2]" />
-                              <span>Current Goal</span>
-                            </div>
-                            <h4 className="text-[16px] font-bold text-[#1C1C1E] leading-tight">
-                              {direction.goalTitle}
-                            </h4>
-                            <p className="text-[12.5px] leading-relaxed text-[#6C6C70]">
-                              {direction.description}
-                            </p>
-                          </div>
-
-                          <div className="p-4 rounded-[22px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2">
-                            <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                              <Clock className="w-3.5 h-3.5 stroke-[2.2]" />
-                              <span>Current Execution Approach</span>
-                            </div>
-                            <p className="text-[13px] font-medium text-[#1C1C1E] leading-relaxed">
-                              {direction.executionApproach}
-                            </p>
-                          </div>
-
-                          <div className="p-4 rounded-[22px] bg-[#F4EEFE]/75 border border-[#5E5BAE]/15 flex flex-col gap-2">
-                            <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                              <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                              <span>Informed by what Nova knows</span>
-                            </div>
-                            <p className="text-[12.5px] leading-relaxed text-[#1C1C1E]">
-                              {direction.tailoredReason}
-                            </p>
-                          </div>
-
-                          <div className="p-3.5 rounded-[18px] bg-[#F2F2F7]/75 border border-black/[0.04] flex items-center justify-between text-xs text-[#8E8E93]">
-                            <div className="flex items-center gap-1.5">
-                              <CalendarIcon className="w-3.5 h-3.5 stroke-[2]" />
-                              <span>
-                                Next review: <strong className="text-[#1C1C1E]">{direction.nextReviewDate}</strong>
-                              </span>
-                            </div>
-                            <span>{direction.reviewDaysLeft} days remaining</span>
-                          </div>
-
-                          <div className="flex flex-col gap-2">
-                            <button
-                              type="button"
-                              onClick={handleOpenDirectionChat}
-                              className="w-full py-3 rounded-[18px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-bold shadow-2xs flex items-center justify-center gap-2 transition-transform active:scale-[0.99] cursor-pointer"
-                            >
-                              <MessageSquare className="w-4 h-4 stroke-[2.2]" />
-                              <span>Talk to Nova to adjust direction</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={handleStartEditDirection}
-                              className="w-full py-2.5 rounded-[16px] bg-white hover:bg-[#FAFAFC] text-[#5E5BAE] border border-[#5E5BAE]/20 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
-                            >
-                              <Sliders className="w-3.5 h-3.5 stroke-[2]" />
-                              <span>Select preset or edit manually</span>
-                            </button>
-                          </div>
-                        </>
-                      )}
-
-                      {isEditingDirection && (
-                        <div className="flex flex-col gap-4">
-                          <div className="bg-[#F4EEFE] p-3 rounded-[18px] border border-[#5E5BAE]/20 text-xs text-[#5E5BAE] flex items-center gap-2">
-                            <Sliders className="w-4 h-4 stroke-[2] shrink-0" />
-                            <span>Adjusting direction. Changes apply only after you confirm below.</span>
-                          </div>
-
-                          <div className="flex flex-col gap-2">
-                            <span className="font-bold text-[#1C1C1E] text-xs">
-                              Select Health Focus Goal:
-                            </span>
-                            <div className="space-y-2">
-                              {PRESET_DIRECTION_GOALS.map((preset) => {
-                                const isSelected = directionDraft.goalId === preset.id;
-                                return (
-                                  <div
-                                    key={preset.id}
-                                    onClick={() => {
-                                      setDirectionDraft((prev) => ({
-                                        ...prev,
-                                        goalId: preset.id,
-                                        goalTitle: preset.title,
-                                        description: preset.description,
-                                        executionApproach: preset.defaultApproach,
-                                        tailoredReason: preset.tailoredReason
-                                      }));
-                                    }}
-                                    className={`p-3.5 rounded-[18px] border transition-all cursor-pointer ${
-                                      isSelected
-                                        ? 'bg-white border-[#5E5BAE] shadow-2xs ring-1 ring-[#5E5BAE]/20'
-                                        : 'bg-white border-black/[0.04] hover:bg-[#FAFAFC]'
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <span
-                                        className={`text-[13px] font-bold ${
-                                          isSelected ? 'text-[#5E5BAE]' : 'text-[#1C1C1E]'
-                                        }`}
-                                      >
-                                        {preset.title}
-                                      </span>
-                                      {isSelected && <Check className="w-4 h-4 text-[#5E5BAE] stroke-[2.5]" />}
-                                    </div>
-                                    <p className="text-[11.5px] text-[#6C6C70] mt-1 leading-relaxed">
-                                      {preset.description}
-                                    </p>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1.5">
-                            <span className="font-bold text-[#1C1C1E] text-xs">
-                              Execution Approach:
-                            </span>
-                            <textarea
-                              rows={2}
-                              value={directionDraft.executionApproach}
-                              onChange={(e) =>
-                                setDirectionDraft((prev) => ({ ...prev, executionApproach: e.target.value }))
-                              }
-                              className="w-full bg-[#F2F2F7] p-3 rounded-[16px] border border-black/[0.06] text-xs text-[#1C1C1E] outline-none focus:border-[#5E5BAE] focus:bg-white transition-all resize-none shadow-2xs"
-                              placeholder="Describe your execution pace and time window..."
-                            />
-                          </div>
-
-                          <div className="flex items-center justify-between p-3.5 rounded-[18px] bg-white border border-black/[0.04] shadow-2xs">
-                            <span className="font-bold text-[#1C1C1E] text-xs">
-                              Plan Status:
-                            </span>
-                            <div className="bg-[#F2F2F7] p-0.5 rounded-full inline-flex border border-black/[0.04]">
-                              <button
-                                type="button"
-                                onClick={() => setDirectionDraft((prev) => ({ ...prev, status: 'active' }))}
-                                className={`px-3 py-1 text-xs rounded-full transition-all cursor-pointer ${
-                                  directionDraft.status === 'active'
-                                    ? 'bg-[#5E5BAE] text-white font-bold shadow-2xs'
-                                    : 'text-[#8E8E93] font-medium'
-                                }`}
-                              >
-                                Active
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setDirectionDraft((prev) => ({ ...prev, status: 'paused' }))}
-                                className={`px-3 py-1 text-xs rounded-full transition-all cursor-pointer ${
-                                  directionDraft.status === 'paused'
-                                    ? 'bg-[#C27838] text-white font-bold shadow-2xs'
-                                    : 'text-[#8E8E93] font-medium'
-                                }`}
-                              >
-                                Paused
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-2.5 pt-2">
-                            <button
-                              type="button"
-                              onClick={handleCancelDirectionChanges}
-                              className="flex-1 py-3 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-xs font-semibold border border-black/[0.04] active:scale-[0.98] transition-all cursor-pointer"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleConfirmDirectionChanges}
-                              className="flex-1 py-3 rounded-[16px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-bold shadow-md active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                            >
-                              <Check className="w-4 h-4 stroke-[2.5]" />
-                              <span>Confirm Changes</span>
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* ======================================================= */}
-                  {/* SECONDARY PAGE 3: WHAT NOVA KNOWS (All Memories Sheet)  */}
-                  {/* ======================================================= */}
-                  {selectedModule === 'memory' && (
-                    <div className="flex flex-col gap-4 text-xs text-[#6C6C70]">
-                      <button
-                        type="button"
-                        onClick={() => handleStartTalkToNovaMemory(null)}
-                        className="w-full p-3.5 rounded-[20px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.99]"
-                      >
-                        <MessageSquare className="w-4 h-4 stroke-[2.2]" />
-                        <span>Talk to Nova to add, refine, or correct</span>
-                      </button>
-
-                      {/* Group 1: What matters to you */}
-                      <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-1.5 px-1">
-                          <Compass className="w-3.5 h-3.5 text-[#5E5BAE] stroke-[2.2]" />
-                          <span className="text-[13px] font-bold text-[#1C1C1E]">What matters to you</span>
-                        </div>
-                        {mattersMemories.length === 0 ? (
-                          <div className="bg-[#F2F2F7]/75 rounded-[18px] p-3.5 border border-black/[0.04] text-xs text-[#8E8E93]">
-                            No long-term focus items saved right now.
-                          </div>
-                        ) : (
-                          mattersMemories.map((item) => (
-                            <div
-                              key={item.id}
-                              onClick={() => setSelectedMemory(item)}
-                              role="button"
-                              tabIndex={0}
-                              onKeyDown={(e) => e.key === 'Enter' && setSelectedMemory(item)}
-                              className="group bg-white hover:bg-[#FAFAFC] rounded-[20px] p-3.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-1.5 cursor-pointer transition-all"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <h4 className="text-[13.5px] font-bold text-[#1C1C1E] leading-snug">
-                                  {item.title}
-                                </h4>
-                                <ChevronRight className="w-4 h-4 text-[#5E5BAE] shrink-0 mt-0.5 stroke-[2.2]" />
-                              </div>
-                              <p className="text-[12px] text-[#6C6C70] leading-relaxed line-clamp-2">
-                                {item.summary}
-                              </p>
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      {/* Group 2: What feels right */}
-                      <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-1.5 px-1">
-                          <Heart className="w-3.5 h-3.5 text-[#5E5BAE] stroke-[2.2]" />
-                          <span className="text-[13px] font-bold text-[#1C1C1E]">What feels right</span>
-                        </div>
-                        {feelsRightMemories.length === 0 ? (
-                          <div className="bg-[#F2F2F7]/75 rounded-[18px] p-3.5 border border-black/[0.04] text-xs text-[#8E8E93]">
-                            No rhythm preferences saved right now.
-                          </div>
-                        ) : (
-                          feelsRightMemories.map((item) => (
-                            <div
-                              key={item.id}
-                              onClick={() => setSelectedMemory(item)}
-                              role="button"
-                              tabIndex={0}
-                              onKeyDown={(e) => e.key === 'Enter' && setSelectedMemory(item)}
-                              className="group bg-white hover:bg-[#FAFAFC] rounded-[20px] p-3.5 border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-1.5 cursor-pointer transition-all"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <h4 className="text-[13.5px] font-bold text-[#1C1C1E] leading-snug">
-                                  {item.title}
-                                </h4>
-                                <ChevronRight className="w-4 h-4 text-[#5E5BAE] shrink-0 mt-0.5 stroke-[2.2]" />
-                              </div>
-                              <p className="text-[12px] text-[#6C6C70] leading-relaxed line-clamp-2">
-                                {item.summary}
-                              </p>
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      {/* Group 3: Can I check something? */}
-                      <div className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between px-1">
-                          <div className="flex items-center gap-1.5">
-                            <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE] stroke-[2.2]" />
-                            <span className="text-[13px] font-bold text-[#1C1C1E]">Can I check something?</span>
-                          </div>
-                          {checkMemories.length > 0 && (
-                            <span className="text-[10px] font-bold text-[#5E5BAE] bg-[#F4EEFE] px-2 py-0.5 rounded-full border border-[#5E5BAE]/20">
-                              {checkMemories.length} new
-                            </span>
-                          )}
-                        </div>
-                        {checkMemories.length === 0 ? (
-                          <div className="bg-[#F2F2F7]/75 rounded-[18px] p-3.5 border border-black/[0.04] text-xs text-[#8E8E93] flex items-center gap-2">
-                            <Check className="w-4 h-4 text-[#5E5BAE] shrink-0" />
-                            <span>All caught up — no pending observations to check.</span>
-                          </div>
-                        ) : (
-                          checkMemories.map((item) => (
-                            <div
-                              key={item.id}
-                              onClick={() => setSelectedMemory(item)}
-                              role="button"
-                              tabIndex={0}
-                              onKeyDown={(e) => e.key === 'Enter' && setSelectedMemory(item)}
-                              className="bg-[#F4EEFE]/75 hover:bg-[#F4EEFE] rounded-[20px] p-3.5 border border-[#5E5BAE]/20 shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2.5 cursor-pointer transition-all"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <h4 className="text-[13.5px] font-bold text-[#1C1C1E] leading-snug">
-                                  {item.title}
-                                </h4>
-                                <ChevronRight className="w-4 h-4 text-[#5E5BAE] shrink-0 mt-0.5 stroke-[2.2]" />
-                              </div>
-                              <p className="text-[12px] text-[#6C6C70] leading-relaxed">
-                                {item.summary}
-                              </p>
-                              <div className="pt-1 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleConfirmPendingMemory(item.id, e)}
-                                  className="flex-1 py-2 px-3 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-semibold shadow-2xs flex items-center justify-center gap-1 cursor-pointer"
-                                >
-                                  <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                                  <span>Yes, save</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleStartTalkToNovaMemory(item, e)}
-                                  className="py-2 px-3 rounded-[12px] bg-white hover:bg-[#FAFAFC] text-[#5E5BAE] border border-[#5E5BAE]/20 text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer shadow-2xs"
-                                >
-                                  <MessageSquare className="w-3.5 h-3.5 stroke-[2]" />
-                                  <span>Talk</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleDismissPendingMemory(item.id, e)}
-                                  className="py-2 px-2.5 rounded-[12px] bg-black/[0.04] hover:bg-black/[0.08] text-[#8E8E93] text-xs font-medium cursor-pointer"
-                                >
-                                  No
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      {memories.length < INITIAL_MEMORIES.length && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMemories(INITIAL_MEMORIES);
-                            showMemoryFeedback('Sample memories restored');
-                          }}
-                          className="self-center text-[11px] font-semibold text-[#8E8E93] hover:text-[#5E5BAE] flex items-center gap-1 py-1 px-3 rounded-full bg-white border border-black/[0.06] shadow-2xs transition-colors cursor-pointer"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          <span>Restore sample memories</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  {/* ======================================================= */}
-                  {/* SECONDARY PAGE 4: HEALTH DATA (Apple Health Details)    */}
-                  {/* ======================================================= */}
-                  {selectedModule === 'health' && (
-                    <div className="flex flex-col gap-4 text-xs text-[#6C6C70]">
-                      <div className="p-4 rounded-[22px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-full bg-[#FFE4E6] text-[#E11D48] flex items-center justify-center shrink-0">
-                              <Heart className="w-4 h-4 fill-current" />
-                            </div>
-                            <div>
-                              <h4 className="text-[14px] font-bold text-[#1C1C1E]">
-                                Apple Health Connection
-                              </h4>
-                              <span className="text-[11px] text-[#8E8E93]">
-                                {isAppleHealthConnected ? 'Sample sync active (Demo)' : 'Not connected'}
-                              </span>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => setIsAppleHealthConnected(!isAppleHealthConnected)}
-                            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer border ${
-                              isAppleHealthConnected
-                                ? 'bg-[#FFE4E6]/40 text-[#E11D48] border-[#E11D48]/30 hover:bg-[#FFE4E6]/60'
-                                : 'bg-[#5E5BAE] text-white border-transparent shadow-2xs'
-                            }`}
-                          >
-                            {isAppleHealthConnected ? 'Disconnect' : 'Connect Demo'}
-                          </button>
-                        </div>
-
-                        <div className="p-3 rounded-[16px] bg-[#F2F2F7]/75 border border-black/[0.04] text-[11.5px] leading-relaxed text-[#6C6C70]">
-                          {isAppleHealthConnected ? (
-                            <span className="flex items-start gap-1.5">
-                              <Info className="w-3.5 h-3.5 text-[#5E5BAE] shrink-0 mt-0.5" />
-                              <span>Frontend demo mode: Displays sample metrics with explicit attribution. No real HealthKit data is accessed.</span>
-                            </span>
-                          ) : (
-                            <span className="flex items-start gap-1.5">
-                              <AlertCircle className="w-3.5 h-3.5 text-[#8E8E93] shrink-0 mt-0.5" />
-                              <span>Apple Health is not connected. All indicators display “Not connected / No data” rather than false zero counts.</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-2.5">
-                        <span className="font-bold text-[#1C1C1E] text-xs">
-                          Biometric Baseline Indicators
-                        </span>
-
-                        <div className="space-y-2.5">
-                          {HEALTH_METRICS_DEFINITIONS.map((metric) => {
-                            const IconComponent = metric.icon;
-                            const isConnected = isAppleHealthConnected;
-                            const valueText = isConnected
-                              ? metric.sampleValue
-                              : metric.id === 'rhr'
-                              ? 'Not connected'
-                              : 'No data';
-                            const unitText = isConnected ? metric.unit : '';
-                            const lastUpdatedText = isConnected ? metric.lastUpdated : 'Not synced';
-                            const sourceText = isConnected ? metric.source : 'None';
-
-                            return (
-                              <div
-                                key={metric.id}
-                                className="p-3.5 rounded-[20px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2"
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <div
-                                      className={`w-6 h-6 rounded-full ${metric.iconBg} ${metric.iconColor} flex items-center justify-center shrink-0`}
-                                    >
-                                      <IconComponent className="w-3.5 h-3.5 stroke-[2.2]" />
-                                    </div>
-                                    <span className="text-[13px] font-bold text-[#1C1C1E]">
-                                      {metric.name}
-                                    </span>
-                                  </div>
-
-                                  <div className="flex items-baseline gap-1">
-                                    <span
-                                      className={`font-bold text-[#1C1C1E] ${
-                                        isConnected ? 'text-[17px]' : 'text-[12px] text-[#8E8E93]'
-                                      }`}
-                                    >
-                                      {valueText}
-                                    </span>
-                                    {unitText && (
-                                      <span className="text-[11px] text-[#8E8E93]">{unitText}</span>
-                                    )}
-                                  </div>
-                                </div>
-
-                                <div className="pt-1.5 border-t border-black/[0.04] flex items-center justify-between text-[10.5px] text-[#8E8E93]">
-                                  <span>
-                                    Source: <strong className="text-[#1C1C1E] font-medium">{sourceText}</strong>
-                                  </span>
-                                  <span>Updated: {lastUpdatedText}</span>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="p-4 rounded-[22px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                          <ShieldCheck className="w-4 h-4 stroke-[2.2]" />
-                          <span>How Plan B uses health data</span>
-                        </div>
-                        <p className="text-[12px] leading-relaxed text-[#6C6C70]">
-                          Plan B reads resting heart rate and sleep consistency solely to detect physiological fatigue and automatically soften daily recommendations into gentle 5-minute living room stretches.
-                        </p>
-                      </div>
-
-                      <div className="p-4 rounded-[22px] bg-[#F4EEFE]/75 border border-[#5E5BAE]/15 flex flex-col gap-1.5">
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                          <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                          <span>No Apple Health? No problem.</span>
-                        </div>
-                        <p className="text-[12px] leading-relaxed text-[#1C1C1E]">
-                          Plan B is completely functional without Apple Health or wearable sensors. Daily check-ins with Nova and manual progress tracking give you the complete experience.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ======================================================= */}
-                  {/* SECONDARY PAGE 5: ACTIVITY HISTORY                      */}
-                  {/* ======================================================= */}
-                  {selectedModule === 'activity' && (
-                    <div className="flex flex-col gap-4 text-xs text-[#6C6C70]">
-                      <div className="p-4 rounded-[22px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 rounded-full bg-[#5E5BAE]/10 text-[#5E5BAE] flex items-center justify-center font-bold">
-                              <CalendarIcon className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <h4 className="text-[14px] font-bold text-[#1C1C1E]">
-                                {MONTH_NAMES[viewMonth]} {viewYear}
-                              </h4>
-                              <span className="text-[11px] text-[#8E8E93]">
-                                Monthly pacing & log overview
-                              </span>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPickerYear(viewYear);
-                              setIsMonthPickerOpen(true);
-                            }}
-                            className="px-3 py-1.5 rounded-full text-xs font-semibold bg-[#F4EEFE] hover:bg-[#EDE5FB] text-[#5E5BAE] border border-[#5E5BAE]/15 transition-all cursor-pointer"
-                          >
-                            Switch month
-                          </button>
-                        </div>
-
-                        {/* Explicitly distinguishes Active days vs Activities vs Rests vs Duration */}
-                        <div className="grid grid-cols-4 gap-2 pt-1 border-t border-black/[0.04] text-center">
-                          <div className="bg-[#F2F2F7]/80 p-2 rounded-[14px]">
-                            <span className="text-[15px] font-bold text-[#5E5BAE] block leading-none">
-                              {activeDaysCount}
-                            </span>
-                            <span className="text-[9.5px] text-[#8E8E93] mt-0.5 block">active days</span>
-                          </div>
-                          <div className="bg-[#F2F2F7]/80 p-2 rounded-[14px]">
-                            <span className="text-[15px] font-bold text-[#1C1C1E] block leading-none">
-                              {completedSessionsInMonth}
-                            </span>
-                            <span className="text-[9.5px] text-[#8E8E93] mt-0.5 block">activities</span>
-                          </div>
-                          <div className="bg-[#F2F2F7]/80 p-2 rounded-[14px]">
-                            <span className="text-[15px] font-bold text-[#E59980] block leading-none">
-                              {restDaysCount}
-                            </span>
-                            <span className="text-[9.5px] text-[#8E8E93] mt-0.5 block">rest days</span>
-                          </div>
-                          <div className="bg-[#F2F2F7]/80 p-2 rounded-[14px]">
-                            <span className="text-[15px] font-bold text-[#1C1C1E] block leading-none">
-                              {totalMinutes}m
-                            </span>
-                            <span className="text-[9.5px] text-[#8E8E93] mt-0.5 block">duration</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Logged Records List */}
+                      {/* Recorded Days List for Viewed Month */}
                       <div className="flex flex-col gap-2.5">
                         <div className="flex items-center justify-between">
-                          <span className="font-bold text-[#1C1C1E] text-xs">
+                          <span className="font-bold text-[#1C1C1E] text-[13px]">
                             Recorded Days ({currentMonthRecords.length})
                           </span>
-                          <span className="text-[10.5px] text-[#8E8E93]">
+                          <span className="text-[11px] text-[#6E6E78]">
                             Tap edit to modify or clear
                           </span>
                         </div>
 
                         {currentMonthRecords.length === 0 ? (
-                          <div className="p-6 text-center rounded-[20px] bg-white border border-black/[0.04] text-[#8E8E93] shadow-2xs">
-                            No activity or rest recorded yet for this month. Tap any day on the calendar grid to log an action.
+                          <div className="p-5 text-center rounded-[20px] bg-white border border-black/[0.04] text-[#6E6E78] shadow-2xs">
+                            No activity or rest recorded yet for this month. Tap any day on the calendar grid above to log an action.
                           </div>
                         ) : (
                           <div className="space-y-2">
@@ -2937,7 +3026,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                                 return (
                                   <div
                                     key={rec.date}
-                                    className="p-3.5 rounded-[18px] bg-white border border-black/[0.04] shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex items-center justify-between gap-3"
+                                    className="p-3.5 rounded-[18px] bg-white border border-black/[0.04] shadow-[0_2px_10px_-4px_rgba(28,28,45,0.05)] flex items-center justify-between gap-3"
                                   >
                                     <div className="flex items-start gap-2.5 min-w-0">
                                       <div
@@ -2947,21 +3036,16 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                                       />
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-1.5 flex-wrap">
-                                          <span className="font-bold text-[#1C1C1E] text-[13px]">
+                                          <span className="font-semibold text-[#1C1C1E] text-[14px] leading-[20px]">
                                             {dateLabel}
                                           </span>
                                           {isToday && (
-                                            <span className="bg-[#5E5BAE] text-white text-[9.5px] px-1.5 py-0.2 rounded-full font-bold">
+                                            <span className="text-[12px] text-[#5E5BAE] font-semibold">
                                               Today
                                             </span>
                                           )}
-                                          {rec.isSample && (
-                                            <span className="text-[9.5px] text-[#8E8E93] bg-[#F2F2F7] px-1.5 py-0.2 rounded-full">
-                                              Sample
-                                            </span>
-                                          )}
                                         </div>
-                                        <div className="text-[12px] text-[#6C6C70] mt-0.5 truncate">
+                                        <div className="text-[12px] text-[#6E6E78] mt-0.5 truncate">
                                           {rec.type === 'active' ? (
                                             <span>
                                               {rec.title} • {sessCount}{' '}
@@ -2973,7 +3057,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                                           )}
                                         </div>
                                         {rec.note && (
-                                          <div className="text-[11px] text-[#8E8E93] mt-0.5 italic truncate">
+                                          <div className="text-[11px] text-[#6E6E78] mt-0.5 italic truncate">
                                             “{rec.note}”
                                           </div>
                                         )}
@@ -2983,7 +3067,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                                     <button
                                       type="button"
                                       onClick={() => handleOpenDayDetail(rec.date)}
-                                      className="px-2.5 py-1 rounded-[10px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[11px] font-semibold text-[#5E5BAE] shrink-0 transition-colors cursor-pointer"
+                                      className="min-h-[44px] min-w-[52px] px-3 rounded-[12px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[12px] font-semibold text-[#5E5BAE] shrink-0 transition-colors cursor-pointer"
                                     >
                                       Edit
                                     </button>
@@ -2992,6 +3076,255 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                               })}
                           </div>
                         )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsMethodologyOpen(true)}
+                        className="w-full min-h-[44px] py-2.5 px-3 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-[12px] font-medium text-[#6E6E78] hover:text-[#1C1C1E] flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5 stroke-[2]" />
+                        <span>Data source & calculation methodology</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* ======================================================= */}
+                  {/* SECONDARY PAGE 3: PREFERENCES                           */}
+                  {/* ======================================================= */}
+                  {selectedModule === 'preferences' && (
+                    <div id="preferences-secondary-page" className="flex flex-col gap-5 text-[#1C1C1E]">
+                      {/* Section 1: User-provided & confirmed preferences */}
+                      <div id="preferences-confirmed-section" className="flex flex-col gap-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                            Your preferences
+                          </h4>
+                          <button
+                            type="button"
+                            id="preferences-add-btn"
+                            onClick={handleOpenAddPreference}
+                            className="min-h-[44px] px-2 -mr-2 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
+                          >
+                            Add
+                          </button>
+                        </div>
+
+                        {confirmedMemories.length === 0 ? (
+                          <div
+                            id="preferences-confirmed-empty"
+                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[13px] leading-[18px] text-[#6E6E78]"
+                          >
+                            No saved preferences yet.
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-2.5">
+                            {confirmedMemories.map((item) => {
+                              const tagLabel = deriveShortPreferenceTag(item);
+                              return (
+                                <div
+                                  key={item.id}
+                                  data-pref-confirmed-id={item.id}
+                                  className="rounded-[20px] p-4 bg-white border border-black/[0.05] shadow-[0_2px_10px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-1.5"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedMemory(item)}
+                                    className="w-full text-left flex flex-col gap-1 cursor-pointer"
+                                  >
+                                    <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                                      {item.title}
+                                    </span>
+                                    {item.summary && (
+                                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                                        {item.summary}
+                                      </p>
+                                    )}
+                                  </button>
+
+                                  <div className="mt-1 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-2">
+                                    <span className="text-[12px] font-medium leading-[16px] text-[#6E6E78] truncate">
+                                      {tagLabel}
+                                    </span>
+
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        type="button"
+                                        data-pref-edit-id={item.id}
+                                        onClick={(e) => handleOpenEditPreference(item, e)}
+                                        className="min-h-[44px] px-2.5 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent cursor-pointer"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        data-pref-delete-id={item.id}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMemoryToDelete(item);
+                                        }}
+                                        className="min-h-[44px] px-2.5 -mr-2 text-[14px] font-medium text-[#6E6E78] hover:text-[#E11D48] active:opacity-70 bg-transparent cursor-pointer"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Section 2: Nova's pending inferences (presented as questions) */}
+                      <div id="preferences-pending-section" className="flex flex-col gap-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                            Needs confirmation
+                          </h4>
+                          {checkMemories.length > 0 && (
+                            <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                              {checkMemories.length}
+                            </span>
+                          )}
+                        </div>
+
+                        {checkMemories.length === 0 ? (
+                          <div
+                            id="preferences-pending-empty"
+                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[13px] leading-[18px] text-[#6E6E78]"
+                          >
+                            No pending questions.
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-2.5">
+                            {checkMemories.map((item) => (
+                              <div
+                                key={item.id}
+                                data-pref-pending-id={item.id}
+                                className="rounded-[20px] p-4 bg-[#F5F4FB] border border-[#5E5BAE]/15 flex flex-col gap-2"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedMemory(item)}
+                                  className="w-full text-left flex flex-col gap-1 cursor-pointer"
+                                >
+                                  <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                                    {formatAsCheckQuestion(item.title)}
+                                  </span>
+                                  {item.learnedFrom && (
+                                    <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                                      {item.learnedFrom}
+                                    </span>
+                                  )}
+                                </button>
+
+                                <div className="pt-1 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    data-pref-confirm-id={item.id}
+                                    onClick={(e) => handleConfirmPendingMemory(item.id, e)}
+                                    className="flex-1 min-h-[44px] px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold transition-colors cursor-pointer"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    type="button"
+                                    data-pref-ignore-id={item.id}
+                                    onClick={(e) => handleDismissPendingMemory(item.id, e)}
+                                    className="min-h-[44px] px-4 rounded-[14px] bg-white hover:bg-[#F2F2F7] border border-black/[0.06] text-[#1C1C1E] text-[14px] font-medium transition-colors cursor-pointer"
+                                  >
+                                    Ignore
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        id="preferences-talk-nova-btn"
+                        onClick={() => handleStartTalkToNovaMemory(null)}
+                        className="w-full min-h-[44px] px-4 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[14px] font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                      >
+                        <MessageSquare className="w-4 h-4 text-[#5E5BAE] stroke-[2]" />
+                        <span>Update in chat</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* ======================================================= */}
+                  {/* ======================================================= */}
+                  {/* SECONDARY PAGE 4: HEALTH DATA (Honest Unconnected State)*/}
+                  {/* ======================================================= */}
+                  {selectedModule === 'health' && (
+                    <div
+                      id="health-data-secondary-page"
+                      className="flex flex-col gap-4 text-[#1C1C1E]"
+                    >
+                      <div
+                        id="health-data-empty-state"
+                        className="p-4 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                            <Heart className="w-4 h-4 stroke-[2]" />
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]">
+                              Apple Health is not connected
+                            </h4>
+                            <span className="text-[13px] leading-[18px] text-[#6E6E78]">
+                              Not connected
+                            </span>
+                          </div>
+                        </div>
+
+                        <p className="text-[15px] font-normal leading-[21px] text-[#1C1C1E] mt-1">
+                          No biometric or wearable metrics are synced in this version. Genki does not fill in placeholder health numbers.
+                        </p>
+                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                          You can plan your week, log activity on Today, and complete weekly reviews without connecting a wearable.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-2.5">
+                        <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                          Metrics
+                        </span>
+
+                        <div className="rounded-[24px] p-4 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col divide-y divide-black/[0.06]">
+                          {HEALTH_METRICS_DEFINITIONS.map((metric) => {
+                            const IconComponent = metric.icon;
+                            return (
+                              <div
+                                key={metric.id}
+                                data-health-metric={metric.id}
+                                className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3"
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className="w-8 h-8 rounded-[10px] bg-[#F2F2F7] text-[#6E6E78] flex items-center justify-center shrink-0">
+                                    <IconComponent className="w-4 h-4 stroke-[2]" />
+                                  </div>
+                                  <div className="flex flex-col min-w-0">
+                                    <span className="text-[15px] font-medium leading-[21px] text-[#1C1C1E]">
+                                      {metric.name}
+                                    </span>
+                                    <span className="text-[13px] leading-[18px] text-[#6E6E78]">
+                                      Unit: {metric.unit}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0">
+                                  No data
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -3008,7 +3341,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       })()}
 
       {/* ============================================================ */}
-      {/* SINGLE MEMORY ITEM DETAIL SHEET (Portal to Phone Frame)      */}
+      {/* SINGLE PREFERENCE DETAIL SHEET (Portal to Phone Frame)       */}
       {/* ============================================================ */}
       {(() => {
         const memoryDetailPortal = (
@@ -3028,106 +3361,81 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
                   transition={{ type: 'spring', damping: 28, stiffness: 290 }}
-                  className="relative w-full max-h-[86%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-6 shadow-2xl border-t border-black/[0.04] overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
+                  className="relative w-full max-h-[82%] bg-white rounded-t-[32px] p-5 shadow-2xl border-t border-black/[0.05] overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
                   id="memory-detail-sheet"
                 >
-                  <div className="flex items-start justify-between gap-3 pb-2 border-b border-black/[0.05]">
+                  <div className="flex items-start justify-between gap-3 pb-3 border-b border-black/[0.06]">
                     <div>
-                      <span className="text-[10.5px] font-bold uppercase tracking-wider text-[#5E5BAE] bg-[#F4EEFE] border border-[#5E5BAE]/20 px-2.5 py-0.5 rounded-full inline-block mb-1.5">
-                        {selectedMemory.category === 'matters' && 'What matters to you'}
-                        {selectedMemory.category === 'feels_right' && 'What feels right'}
-                        {selectedMemory.category === 'check' && 'Can I check something?'}
+                      <span className="text-[12px] font-medium text-[#5E5BAE] block mb-1">
+                        {selectedMemory.isConfirmed && selectedMemory.source === 'user_explicit'
+                          ? 'Saved preference'
+                          : 'Needs confirmation'}
                       </span>
-                      <h3 className="text-[17px] font-bold text-[#1C1C1E] leading-snug">
-                        {selectedMemory.title}
+                      <h3 className="text-[17px] font-semibold text-[#1C1C1E] leading-snug">
+                        {selectedMemory.isConfirmed && selectedMemory.source === 'user_explicit'
+                          ? selectedMemory.title
+                          : formatAsCheckQuestion(selectedMemory.title)}
                       </h3>
                     </div>
 
                     <button
                       type="button"
                       onClick={() => setSelectedMemory(null)}
-                      className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] shrink-0 cursor-pointer transition-colors"
-                      aria-label="Close memory detail"
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] shrink-0 cursor-pointer transition-colors"
+                      aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
                     </button>
                   </div>
 
-                  <div className="p-4 rounded-[20px] bg-[#F2F2F7]/75 border border-black/[0.04] flex flex-col gap-1.5">
-                    <span className="text-[11px] font-bold text-[#8E8E93] uppercase tracking-wider">
-                      Memory Summary
-                    </span>
-                    <p className="text-[13px] text-[#1C1C1E] leading-relaxed">
+                  {selectedMemory.summary && (
+                    <p className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
                       {selectedMemory.summary}
                     </p>
-                  </div>
-
-                  <div className="p-4 rounded-[20px] bg-[#F2F2F7]/75 border border-black/[0.04] flex flex-col gap-1.5">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                      <Clock className="w-3.5 h-3.5 stroke-[2.2]" />
-                      <span>How Nova learned this</span>
-                    </div>
-                    <p className="text-[12.5px] text-[#6C6C70] leading-relaxed">
-                      {selectedMemory.learnedFrom}
-                    </p>
-                    <span className="text-[10.5px] text-[#8E8E93] mt-0.5">
-                      {selectedMemory.updatedAt}
-                    </span>
-                  </div>
-
-                  <div className="p-4 rounded-[20px] bg-[#F4EEFE]/75 border border-[#5E5BAE]/15 flex flex-col gap-1.5">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
-                      <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                      <span>How this helps your plan</span>
-                    </div>
-                    <p className="text-[12.5px] text-[#1C1C1E] leading-relaxed">
-                      {selectedMemory.howItHelps}
-                    </p>
-                  </div>
-
-                  {!selectedMemory.isConfirmed && (
-                    <div className="p-3.5 rounded-[18px] bg-white border border-[#5E5BAE]/25 shadow-2xs flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-[#1C1C1E]">
-                        Does this feel accurate?
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleConfirmPendingMemory(selectedMemory.id)}
-                          className="px-3 py-1.5 rounded-[12px] bg-[#5E5BAE] text-white text-xs font-semibold cursor-pointer shadow-2xs hover:bg-[#524FA0]"
-                        >
-                          Yes, save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDismissPendingMemory(selectedMemory.id)}
-                          className="px-2.5 py-1.5 rounded-[12px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#8E8E93] text-xs font-medium cursor-pointer"
-                        >
-                          Discard
-                        </button>
-                      </div>
-                    </div>
                   )}
 
-                  <div className="flex flex-col gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => handleStartTalkToNovaMemory(selectedMemory)}
-                      className="w-full py-3 rounded-[18px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-bold shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
-                    >
-                      <MessageSquare className="w-4 h-4 stroke-[2.2]" />
-                      <span>Talk to Nova about this</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setMemoryToDelete(selectedMemory)}
-                      className="w-full py-2.5 rounded-[16px] bg-white hover:bg-[#FFE4E6]/40 text-[#E11D48] border border-[#E11D48]/20 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 stroke-[2]" />
-                      <span>Remove from memory</span>
-                    </button>
+                  <div className="p-3.5 rounded-[16px] bg-[#F2F2F7] flex flex-col gap-1">
+                    <span className="text-[12px] font-medium text-[#6E6E78]">Source</span>
+                    <p className="text-[13px] leading-[18px] text-[#1C1C1E]">
+                      {selectedMemory.learnedFrom}
+                    </p>
                   </div>
+
+                  {!selectedMemory.isConfirmed || selectedMemory.source !== 'user_explicit' ? (
+                    <div className="flex items-center gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleConfirmPendingMemory(selectedMemory.id)}
+                        className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDismissPendingMemory(selectedMemory.id)}
+                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[15px] font-medium cursor-pointer transition-colors"
+                      >
+                        Ignore
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditPreference(selectedMemory)}
+                        className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMemoryToDelete(selectedMemory)}
+                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#FFE4E6]/60 text-[#E11D48] text-[15px] font-medium cursor-pointer transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
                 </motion.div>
               </div>
             )}
@@ -3138,6 +3446,154 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
           return createPortal(memoryDetailPortal, phoneFrameRef.current);
         }
         return memoryDetailPortal;
+      })()}
+
+      {/* ============================================================ */}
+      {/* ADD / EDIT PREFERENCE BOTTOM SHEET FORM                      */}
+      {/* ============================================================ */}
+      {(() => {
+        const isPrefSaveDisabled = !prefDraftTitle.trim();
+
+        const prefFormPortal = (
+          <AnimatePresence>
+            {isPrefFormOpen && (
+              <div
+                style={focusKeyboardInset > 0 ? { paddingBottom: `${focusKeyboardInset}px` } : undefined}
+                className="absolute inset-0 z-65 flex flex-col justify-end pointer-events-auto overflow-hidden"
+              >
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  onClick={() => setIsPrefFormOpen(false)}
+                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
+                />
+
+                <motion.div
+                  initial={{ y: '100%' }}
+                  animate={{ y: 0 }}
+                  exit={{ y: '100%' }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="pref-form-sheet-title"
+                  id="preference-edit-sheet"
+                  className="relative w-full max-h-[88%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                >
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
+                    <h3
+                      id="pref-form-sheet-title"
+                      className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                    >
+                      {prefFormEditingId ? 'Edit preference' : 'Add preference'}
+                    </h3>
+
+                    <button
+                      type="button"
+                      id="pref-form-close-btn"
+                      onClick={() => setIsPrefFormOpen(false)}
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4 stroke-[2.2]" />
+                    </button>
+                  </div>
+
+                  <form
+                    onSubmit={handleSavePreferenceForm}
+                    className="flex-1 min-h-0 flex flex-col overflow-hidden"
+                  >
+                    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-4">
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="pref-input-title"
+                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                        >
+                          Preference
+                        </label>
+                        <input
+                          id="pref-input-title"
+                          type="text"
+                          value={prefDraftTitle}
+                          onChange={(e) => setPrefDraftTitle(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="e.g. Short walks after lunch"
+                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="pref-input-tag"
+                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                        >
+                          Short label (optional)
+                        </label>
+                        <input
+                          id="pref-input-tag"
+                          type="text"
+                          value={prefDraftTag}
+                          onChange={(e) => setPrefDraftTag(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="e.g. After lunch"
+                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="pref-input-summary"
+                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                        >
+                          Note (optional)
+                        </label>
+                        <textarea
+                          id="pref-input-summary"
+                          rows={2}
+                          value={prefDraftSummary}
+                          onChange={(e) => setPrefDraftSummary(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="Short context"
+                          className="w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
+                      <button
+                        type="button"
+                        id="pref-form-cancel-btn"
+                        onClick={() => setIsPrefFormOpen(false)}
+                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        type="submit"
+                        id="pref-form-save-btn"
+                        disabled={isPrefSaveDisabled}
+                        className={`flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                          isPrefSaveDisabled
+                            ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
+                            : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
+                        }`}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        );
+
+        if (phoneFrameRef?.current) {
+          return createPortal(prefFormPortal, phoneFrameRef.current);
+        }
+        return prefFormPortal;
       })()}
 
       {/* ============================================================ */}
@@ -3342,25 +3798,25 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       })()}
 
       {/* ============================================================ */}
-      {/* TALK TO NOVA DIRECTION ADJUSTMENT SHEET                      */}
+      {/* YOUR FOCUS ADJUST BOTTOM SHEET FORM                          */}
       {/* ============================================================ */}
       {(() => {
-        const directionChips = [
-          'Keep it to 3 light days a week',
-          'Focus on unwinding for deeper evening rest',
-          'Ease afternoon neck & desk stiffness'
-        ];
+        const isSaveDisabled = !focusDraftTitle.trim();
 
-        const directionChatPortal = (
+        const focusAdjustPortal = (
           <AnimatePresence>
-            {isDirectionChatOpen && (
-              <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
+            {isFocusAdjustOpen && (
+              <div
+                style={focusKeyboardInset > 0 ? { paddingBottom: `${focusKeyboardInset}px` } : undefined}
+                className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden"
+              >
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  onClick={() => setIsDirectionChatOpen(false)}
-                  className="absolute inset-0 bg-black/35 backdrop-blur-xs"
+                  transition={{ duration: 0.18 }}
+                  onClick={handleCloseFocusAdjust}
+                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
                 />
 
                 <motion.div
@@ -3368,134 +3824,540 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
                   transition={{ type: 'spring', damping: 28, stiffness: 290 }}
-                  className="relative w-full h-[80%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] shadow-2xl border-t border-black/[0.04] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
-                  id="direction-talk-sheet"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="focus-adjust-sheet-title"
+                  id="focus-adjust-sheet"
+                  className="relative w-full max-h-[88%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
                 >
-                  <div className="px-6 pt-5 pb-3 border-b border-black/[0.05] flex items-center justify-between shrink-0">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-full bg-gradient-to-b from-[#E5DDFB] to-[#F3EEFE] border border-white shadow-xs overflow-hidden shrink-0 flex items-center justify-center">
-                        <FurryNovaStaticAvatar size={36} className="w-full h-full" />
-                      </div>
-                      <div>
-                        <h4 className="text-[15px] font-bold text-[#1C1C1E] leading-tight">
-                          Adjust direction with Nova
-                        </h4>
-                        <span className="text-[11px] text-[#8E8E93] block">
-                          References your memory • Confirms before updating
-                        </span>
-                      </div>
-                    </div>
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
+                    <h3
+                      id="focus-adjust-sheet-title"
+                      className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                    >
+                      Your focus
+                    </h3>
 
                     <button
                       type="button"
-                      onClick={() => setIsDirectionChatOpen(false)}
-                      className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
-                      aria-label="Close direction chat"
+                      id="focus-close-btn"
+                      onClick={handleCloseFocusAdjust}
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
                     </button>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3.5 scrollbar-none">
-                    {directionChatMessages.map((msg) => (
-                      <div
-                        key={msg.id}
-                        className={`flex flex-col ${
-                          msg.sender === 'user' ? 'items-end' : 'items-start'
+                  <form
+                    onSubmit={handleSaveFocusAdjust}
+                    className="flex-1 min-h-0 flex flex-col overflow-hidden"
+                  >
+                    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-4">
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="focus-input-title"
+                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                        >
+                          Focus
+                        </label>
+                        <input
+                          id="focus-input-title"
+                          type="text"
+                          value={focusDraftTitle}
+                          onChange={(e) => setFocusDraftTitle(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="What are you focusing on?"
+                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="focus-input-approach"
+                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                        >
+                          Current approach
+                        </label>
+                        <textarea
+                          id="focus-input-approach"
+                          rows={3}
+                          value={focusDraftApproach}
+                          onChange={(e) => setFocusDraftApproach(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="One short note on how you want to keep this doable"
+                          className="w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="focus-input-review"
+                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                        >
+                          Review date
+                        </label>
+                        <input
+                          id="focus-input-review"
+                          type="text"
+                          value={focusDraftReview}
+                          onChange={(e) => setFocusDraftReview(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="e.g. Review on Sunday"
+                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                          A gentle check-in date you can change anytime.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
+                      <button
+                        type="button"
+                        id="focus-cancel-btn"
+                        onClick={handleCloseFocusAdjust}
+                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        type="submit"
+                        id="focus-save-btn"
+                        disabled={isSaveDisabled}
+                        className={`flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                          isSaveDisabled
+                            ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
+                            : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
                         }`}
                       >
-                        <div
-                          className={`max-w-[88%] rounded-[20px] px-4 py-3 text-[13px] leading-relaxed ${
-                            msg.sender === 'user'
-                              ? 'bg-[#5E5BAE] text-white rounded-br-[6px]'
-                              : 'bg-[#F2F2F7]/90 text-[#1C1C1E] border border-black/[0.04] rounded-bl-[6px] shadow-2xs'
-                          }`}
-                        >
-                          {msg.text}
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        );
+
+        if (phoneFrameRef?.current) {
+          return createPortal(focusAdjustPortal, phoneFrameRef.current);
+        }
+        return focusAdjustPortal;
+      })()}
+
+      {/* ============================================================ */}
+      {/* THIS WEEK SETUP / ADJUST BOTTOM SHEET                        */}
+      {/* ============================================================ */}
+      {(() => {
+        const weekCountOptions: (number | null)[] = [null, 1, 2, 3, 4, 5, 6, 7];
+        const walkDurationPresets = ['10 min', '10–15 min', '15 min', '20 min', '30 min'];
+        const stretchDurationPresets = ['5 min', '5–10 min', '10 min', '15 min'];
+
+        const walkDurationOptions = walkDurationPresets.includes(weekDraft.walk.durationLabel)
+          ? walkDurationPresets
+          : [weekDraft.walk.durationLabel, ...walkDurationPresets];
+        const stretchDurationOptions = stretchDurationPresets.includes(weekDraft.stretch.durationLabel)
+          ? stretchDurationPresets
+          : [weekDraft.stretch.durationLabel, ...stretchDurationPresets];
+
+        const weekAdjustPortal = (
+          <AnimatePresence>
+            {isWeekAdjustOpen && (
+              <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  onClick={handleCloseWeekAdjust}
+                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
+                />
+
+                <motion.div
+                  initial={{ y: '100%' }}
+                  animate={{ y: 0 }}
+                  exit={{ y: '100%' }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="this-week-sheet-title"
+                  id="this-week-adjust-sheet"
+                  style={{
+                    paddingBottom:
+                      focusKeyboardInset > 0
+                        ? `${focusKeyboardInset}px`
+                        : 'env(safe-area-inset-bottom, 0px)',
+                  }}
+                  className="relative w-full max-h-[88%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                >
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
+                    <div>
+                      <h3
+                        id="this-week-sheet-title"
+                        className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                      >
+                        This week
+                      </h3>
+                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                        {currentWeekBounds.rangeLabel}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="this-week-close-btn"
+                      onClick={handleCloseWeekAdjust}
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4 stroke-[2.2]" />
+                    </button>
+                  </div>
+
+                  <form
+                    onSubmit={handleSaveWeekAdjust}
+                    className="flex-1 min-h-0 flex flex-col overflow-hidden"
+                  >
+                    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-5">
+                      {/* Walk configuration */}
+                      <div id="week-draft-walk" className="flex flex-col gap-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-[10px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                            <Footprints className="w-4 h-4 stroke-[2]" />
+                          </div>
+                          <span className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]">
+                            Walk
+                          </span>
                         </div>
 
-                        {msg.proposedDirection && (
-                          <div className="mt-2.5 w-full max-w-[92%] bg-white rounded-[20px] p-4 border border-[#5E5BAE]/25 shadow-[0_4px_16px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2">
-                            <span className="text-[10.5px] font-bold uppercase tracking-wider text-[#5E5BAE]">
-                              Proposed Direction Update
-                            </span>
-                            <h5 className="text-[14px] font-bold text-[#1C1C1E] leading-snug">
-                              {msg.proposedDirection.goalTitle}
-                            </h5>
-                            <p className="text-[12px] text-[#6C6C70] leading-relaxed">
-                              {msg.proposedDirection.executionApproach}
-                            </p>
-
-                            {msg.accepted ? (
-                              <div className="py-2 px-3 rounded-[12px] bg-[#F4EEFE] text-[#5E5BAE] text-xs font-bold flex items-center justify-center gap-1.5 border border-[#5E5BAE]/20">
-                                <Check className="w-4 h-4 stroke-[2.5]" />
-                                <span>Direction Updated</span>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-2 pt-1">
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78]">
+                            Sessions this week
+                          </span>
+                          <div className="grid grid-cols-4 gap-2">
+                            {weekCountOptions.map((opt) => {
+                              const isSelected = weekDraft.walk.targetCount === opt;
+                              return (
                                 <button
+                                  key={opt === null ? 'flex' : opt}
                                   type="button"
-                                  onClick={() => handleAcceptDirectionProposal(msg.id)}
-                                  className="flex-1 py-2.5 px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                  data-week-walk-count={opt === null ? 'flexible' : String(opt)}
+                                  onClick={() =>
+                                    setWeekDraft((prev) => ({
+                                      ...prev,
+                                      walk: { ...prev.walk, targetCount: opt },
+                                    }))
+                                  }
+                                  className={`min-h-[44px] px-2 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
+                                      : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
+                                  }`}
                                 >
-                                  <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                                  <span>Confirm Direction</span>
+                                  {opt === null ? 'Flexible' : `${opt}×`}
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setIsDirectionChatOpen(false)}
-                                  className="py-2.5 px-3 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#8E8E93] text-xs font-semibold cursor-pointer"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            )}
+                              );
+                            })}
                           </div>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78]">
+                            Session duration
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {walkDurationOptions.map((dur) => {
+                              const isSelected = weekDraft.walk.durationLabel === dur;
+                              return (
+                                <button
+                                  key={dur}
+                                  type="button"
+                                  data-week-walk-duration={dur}
+                                  onClick={() =>
+                                    setWeekDraft((prev) => ({
+                                      ...prev,
+                                      walk: { ...prev.walk, durationLabel: dur },
+                                    }))
+                                  }
+                                  className={`min-h-[44px] px-3.5 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
+                                      : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
+                                  }`}
+                                >
+                                  {dur}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-black/[0.06]" />
+
+                      {/* Stretch configuration */}
+                      <div id="week-draft-stretch" className="flex flex-col gap-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-[10px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                            <Sparkles className="w-4 h-4 stroke-[2]" />
+                          </div>
+                          <span className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]">
+                            Stretch
+                          </span>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78]">
+                            Sessions this week
+                          </span>
+                          <div className="grid grid-cols-4 gap-2">
+                            {weekCountOptions.map((opt) => {
+                              const isSelected = weekDraft.stretch.targetCount === opt;
+                              return (
+                                <button
+                                  key={opt === null ? 'flex' : opt}
+                                  type="button"
+                                  data-week-stretch-count={opt === null ? 'flexible' : String(opt)}
+                                  onClick={() =>
+                                    setWeekDraft((prev) => ({
+                                      ...prev,
+                                      stretch: { ...prev.stretch, targetCount: opt },
+                                    }))
+                                  }
+                                  className={`min-h-[44px] px-2 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
+                                      : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
+                                  }`}
+                                >
+                                  {opt === null ? 'Flexible' : `${opt}×`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5">
+                          <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78]">
+                            Session duration
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {stretchDurationOptions.map((dur) => {
+                              const isSelected = weekDraft.stretch.durationLabel === dur;
+                              return (
+                                <button
+                                  key={dur}
+                                  type="button"
+                                  data-week-stretch-duration={dur}
+                                  onClick={() =>
+                                    setWeekDraft((prev) => ({
+                                      ...prev,
+                                      stretch: { ...prev.stretch, durationLabel: dur },
+                                    }))
+                                  }
+                                  className={`min-h-[44px] px-3.5 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
+                                      : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
+                                  }`}
+                                >
+                                  {dur}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-black/[0.06]" />
+
+                      {/* Rest remains As needed (no completion quota) */}
+                      <div
+                        id="week-draft-rest"
+                        className="rounded-[16px] p-3.5 bg-[#F2F2F7] border border-black/[0.04] flex items-start gap-3"
+                      >
+                        <div className="w-8 h-8 rounded-[10px] bg-white text-[#5E5BAE] flex items-center justify-center shrink-0">
+                          <Moon className="w-4 h-4 stroke-[2]" />
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                              Rest
+                            </span>
+                            <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]">
+                              As needed
+                            </span>
+                          </div>
+                          <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                            Rest is always welcome whenever you need it—no weekly target required.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
+                      <button
+                        type="button"
+                        id="this-week-cancel-btn"
+                        onClick={handleCloseWeekAdjust}
+                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        type="submit"
+                        id="this-week-save-btn"
+                        className="flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold bg-[#5E5BAE] hover:bg-[#524FA0] text-white transition-colors cursor-pointer"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        );
+
+        if (phoneFrameRef?.current) {
+          return createPortal(weekAdjustPortal, phoneFrameRef.current);
+        }
+        return weekAdjustPortal;
+      })()}
+
+      {/* ============================================================ */}
+      {/* THIS WEEK CATEGORY ACTIVITY LIST SHEET (WALK / STRETCH)      */}
+      {/* ============================================================ */}
+      {(() => {
+        const recordsForModal =
+          activeWeekCategoryList === 'walk'
+            ? thisWeekWalkRecords
+            : activeWeekCategoryList === 'stretch'
+            ? thisWeekStretchRecords
+            : [];
+
+        const categoryTitle = activeWeekCategoryList === 'walk' ? 'Walk' : 'Stretch';
+
+        const formatCompletionDateTime = (iso: string) => {
+          const d = new Date(iso);
+          if (Number.isNaN(d.getTime())) return '';
+          const weekday = SHORT_WEEKDAYS[d.getDay()];
+          const month = SHORT_MONTH_NAMES[d.getMonth()];
+          const day = d.getDate();
+          const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+          return `${weekday}, ${month} ${day} · ${time}`;
+        };
+
+        const activityListPortal = (
+          <AnimatePresence>
+            {activeWeekCategoryList && (
+              <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  onClick={() => setActiveWeekCategoryList(null)}
+                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
+                />
+
+                <motion.div
+                  initial={{ y: '100%' }}
+                  animate={{ y: 0 }}
+                  exit={{ y: '100%' }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="this-week-activity-sheet-title"
+                  id="this-week-activity-sheet"
+                  className="relative w-full max-h-[80%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                >
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-[10px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
+                        {activeWeekCategoryList === 'walk' ? (
+                          <Footprints className="w-4 h-4 stroke-[2]" />
+                        ) : (
+                          <Sparkles className="w-4 h-4 stroke-[2]" />
                         )}
                       </div>
-                    ))}
+                      <div>
+                        <h3
+                          id="this-week-activity-sheet-title"
+                          className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                        >
+                          {categoryTitle}
+                        </h3>
+                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                          {currentWeekBounds.rangeLabel}
+                        </p>
+                      </div>
+                    </div>
 
-                    {directionChatMessages.length === 1 && (
-                      <div className="pt-1 flex flex-col items-start gap-1.5">
-                        <span className="text-[11px] text-[#8E8E93] pl-1">
-                          Quick ways to adjust your direction:
-                        </span>
-                        {directionChips.map((chip) => (
-                          <button
-                            key={chip}
-                            type="button"
-                            onClick={() => handleSendDirectionChat(chip)}
-                            className="text-left text-xs font-semibold text-[#5E5BAE] bg-white hover:bg-[#FAFAFC] px-3.5 py-2 rounded-[16px] border border-[#5E5BAE]/20 shadow-2xs transition-all active:scale-98 cursor-pointer"
+                    <button
+                      type="button"
+                      id="this-week-activity-close-btn"
+                      onClick={() => setActiveWeekCategoryList(null)}
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4 stroke-[2.2]" />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col">
+                    {recordsForModal.length === 0 ? (
+                      <div className="py-4 flex flex-col gap-1">
+                        <p
+                          id="this-week-activity-empty"
+                          className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+                        >
+                          Nothing recorded yet.
+                        </p>
+                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                          Completed {categoryTitle.toLowerCase()} sessions from Today will show here.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col divide-y divide-black/[0.06] -my-1">
+                        {recordsForModal.map((rec) => (
+                          <div
+                            key={rec.id}
+                            data-week-activity-item={rec.id}
+                            className="min-h-[60px] py-3 flex items-center justify-between gap-3"
                           >
-                            “{chip}”
-                          </button>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-[15px] font-medium leading-[21px] text-[#1C1C1E] truncate">
+                                {rec.title}
+                              </span>
+                              <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                                {formatCompletionDateTime(rec.completedAt)}
+                              </span>
+                            </div>
+                            <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
+                              {rec.durationMinutes} min
+                            </span>
+                          </div>
                         ))}
                       </div>
                     )}
-                    <div ref={directionChatEndRef} />
                   </div>
 
-                  <div className="p-4 bg-white/90 backdrop-blur-md border-t border-black/[0.06] flex items-center gap-2 shrink-0">
-                    <input
-                      type="text"
-                      value={directionChatInput}
-                      onChange={(e) => setDirectionChatInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSendDirectionChat()}
-                      placeholder="Describe how you’d like to pace your plan..."
-                      className="flex-1 bg-[#F2F2F7] px-4 py-2.5 rounded-full text-xs text-[#1C1C1E] placeholder-[#8E8E93] border border-black/[0.06] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
-                    />
+                  <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white">
                     <button
                       type="button"
-                      onClick={() => handleSendDirectionChat()}
-                      disabled={!directionChatInput.trim()}
-                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-all ${
-                        directionChatInput.trim()
-                          ? 'bg-[#5E5BAE] text-white cursor-pointer shadow-xs'
-                          : 'bg-black/10 text-black/30 cursor-not-allowed'
-                      }`}
-                      aria-label="Send direction adjustment"
+                      id="this-week-view-today-btn"
+                      onClick={() => {
+                        setActiveWeekCategoryList(null);
+                        onNavigateToToday?.();
+                      }}
+                      className="w-full min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
                     >
-                      <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                      View Today
                     </button>
                   </div>
                 </motion.div>
@@ -3505,9 +4367,362 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
         );
 
         if (phoneFrameRef?.current) {
-          return createPortal(directionChatPortal, phoneFrameRef.current);
+          return createPortal(activityListPortal, phoneFrameRef.current);
         }
-        return directionChatPortal;
+        return activityListPortal;
+      })()}
+
+      {/* ============================================================ */}
+      {/* UP NEXT PHASE DETAIL & CONFIRMATION SHEET                    */}
+      {/* ============================================================ */}
+      {(() => {
+        const selectedPhaseIdx = selectedPhaseId
+          ? visiblePhases.findIndex((p) => p.id === selectedPhaseId)
+          : -1;
+        const selectedPhase = selectedPhaseIdx >= 0 ? visiblePhases[selectedPhaseIdx] : null;
+        const isSelectedCurrent = selectedPhase ? selectedPhase.id === currentPhase.id : false;
+
+        const phaseContextLabel = !selectedPhase
+          ? ''
+          : isSelectedCurrent
+          ? 'Current phase'
+          : selectedPhaseIdx === currentPhaseIndex + 1
+          ? 'Next phase'
+          : selectedPhaseIdx < currentPhaseIndex
+          ? 'Earlier phase'
+          : 'Later phase';
+
+        const phaseDetailPortal = (
+          <AnimatePresence>
+            {selectedPhase && (
+              <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  onClick={handleClosePhaseDetail}
+                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
+                />
+
+                <motion.div
+                  initial={{ y: '100%' }}
+                  animate={{ y: 0 }}
+                  exit={{ y: '100%' }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="up-next-detail-title"
+                  id="up-next-phase-detail-sheet"
+                  className="relative w-full max-h-[82%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                >
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
+                    <div>
+                      <h3
+                        id="up-next-detail-title"
+                        className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                      >
+                        {selectedPhase.name}
+                      </h3>
+                      <p
+                        id="up-next-detail-context"
+                        className={`text-[13px] font-medium leading-[18px] ${
+                          isSelectedCurrent ? 'text-[#5E5BAE]' : 'text-[#6E6E78]'
+                        }`}
+                      >
+                        {phaseContextLabel}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="up-next-detail-close-btn"
+                      onClick={handleClosePhaseDetail}
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4 stroke-[2.2]" />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-3.5">
+                    <p
+                      id="up-next-detail-description"
+                      className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+                    >
+                      {selectedPhase.description}
+                    </p>
+
+                    <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                      {isSelectedCurrent
+                        ? 'Stay at this pace as long as it feels helpful. Keeping your rhythm, easing back, or resting are all valid choices.'
+                        : 'Phases only shift when you confirm. Switching won’t change your Today tasks or activity history.'}
+                    </p>
+
+                    {!isSelectedCurrent && isConfirmingPhaseSwitch && (
+                      <div
+                        id="up-next-switch-confirm-box"
+                        className="mt-1 rounded-[18px] p-4 bg-[#F5F4FB] border border-[#5E5BAE]/20 flex flex-col gap-2"
+                      >
+                        <p className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                          Switch current phase to “{selectedPhase.name}”?
+                        </p>
+                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                          Your focus will update to this phase. Today tasks and past logs remain unchanged.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
+                    {isSelectedCurrent ? (
+                      <>
+                        {selectedModule !== 'path' && (
+                          <button
+                            type="button"
+                            id="up-next-detail-view-path-btn"
+                            onClick={() => {
+                              handleClosePhaseDetail();
+                              setSelectedModule('path');
+                            }}
+                            className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                          >
+                            View path
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          id="up-next-keep-pace-btn"
+                          onClick={handleClosePhaseDetail}
+                          className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                        >
+                          Keep current pace
+                        </button>
+                      </>
+                    ) : !isConfirmingPhaseSwitch ? (
+                      <>
+                        <button
+                          type="button"
+                          id="up-next-detail-cancel-btn"
+                          onClick={handleClosePhaseDetail}
+                          className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          id="up-next-request-switch-btn"
+                          onClick={() => setIsConfirmingPhaseSwitch(true)}
+                          className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                        >
+                          {selectedPhaseIdx < currentPhaseIndex
+                            ? 'Step back to this phase'
+                            : 'Switch to this phase'}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          id="up-next-confirm-cancel-btn"
+                          onClick={() => setIsConfirmingPhaseSwitch(false)}
+                          className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          id="up-next-confirm-switch-btn"
+                          onClick={() => handleConfirmPhaseSwitch(selectedPhase)}
+                          className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                        >
+                          Confirm switch
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        );
+
+        if (phoneFrameRef?.current) {
+          return createPortal(phaseDetailPortal, phoneFrameRef.current);
+        }
+        return phaseDetailPortal;
+      })()}
+
+      {/* ============================================================ */}
+      {/* EDIT PATH BOTTOM SHEET FORM (Opened from View path -> Edit)  */}
+      {/* ============================================================ */}
+      {(() => {
+        const isPathSaveDisabled = pathDraftPhases.some((p) => !p.name.trim());
+
+        const editPathPortal = (
+          <AnimatePresence>
+            {isPathEditOpen && (
+              <div
+                style={focusKeyboardInset > 0 ? { paddingBottom: `${focusKeyboardInset}px` } : undefined}
+                className="absolute inset-0 z-65 flex flex-col justify-end pointer-events-auto overflow-hidden"
+              >
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  onClick={handleClosePathEdit}
+                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
+                />
+
+                <motion.div
+                  initial={{ y: '100%' }}
+                  animate={{ y: 0 }}
+                  exit={{ y: '100%' }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="edit-path-sheet-title"
+                  id="edit-path-sheet"
+                  className="relative w-full max-h-[88%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                >
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
+                    <div>
+                      <h3
+                        id="edit-path-sheet-title"
+                        className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                      >
+                        Edit path
+                      </h3>
+                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                        Update phase names and short pacing notes
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="edit-path-close-btn"
+                      onClick={handleClosePathEdit}
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4 stroke-[2.2]" />
+                    </button>
+                  </div>
+
+                  <form
+                    onSubmit={handleSavePathEdit}
+                    className="flex-1 min-h-0 flex flex-col overflow-hidden"
+                  >
+                    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-5">
+                      {pathDraftPhases.map((draft, idx) => {
+                        const isDraftCurrent = draft.id === currentPhase.id;
+                        return (
+                          <div
+                            key={draft.id}
+                            className={`flex flex-col gap-2.5 ${
+                              idx > 0 ? 'pt-4 border-t border-black/[0.06]' : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[13px] font-semibold leading-[18px] text-[#1C1C1E]">
+                                Phase {idx + 1}
+                              </span>
+                              {isDraftCurrent && (
+                                <span className="text-[12px] font-medium leading-[18px] text-[#5E5BAE]">
+                                  Current
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label
+                                htmlFor={`edit-path-name-${idx}`}
+                                className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                              >
+                                Phase name
+                              </label>
+                              <input
+                                id={`edit-path-name-${idx}`}
+                                type="text"
+                                value={draft.name}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPathDraftPhases((prev) =>
+                                    prev.map((item, i) =>
+                                      i === idx ? { ...item, name: val } : item
+                                    )
+                                  );
+                                }}
+                                onFocus={handleFieldFocusScroll}
+                                placeholder="Phase name"
+                                className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1.5">
+                              <label
+                                htmlFor={`edit-path-desc-${idx}`}
+                                className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                              >
+                                Short description
+                              </label>
+                              <input
+                                id={`edit-path-desc-${idx}`}
+                                type="text"
+                                value={draft.description}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPathDraftPhases((prev) =>
+                                    prev.map((item, i) =>
+                                      i === idx ? { ...item, description: val } : item
+                                    )
+                                  );
+                                }}
+                                onFocus={handleFieldFocusScroll}
+                                placeholder="One-line pacing direction"
+                                className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
+                      <button
+                        type="button"
+                        id="edit-path-cancel-btn"
+                        onClick={handleClosePathEdit}
+                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        type="submit"
+                        id="edit-path-save-btn"
+                        disabled={isPathSaveDisabled}
+                        className={`flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                          isPathSaveDisabled
+                            ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
+                            : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
+                        }`}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+        );
+
+        if (phoneFrameRef?.current) {
+          return createPortal(editPathPortal, phoneFrameRef.current);
+        }
+        return editPathPortal;
       })()}
 
       {/* ============================================================ */}
@@ -3534,27 +4749,29 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                 >
                   <div className="flex items-center gap-2 text-[#E11D48]">
                     <Trash2 className="w-4 h-4 stroke-[2.2]" />
-                    <h4 className="text-[15px] font-bold text-[#1C1C1E]">Remove this memory?</h4>
+                    <h4 className="text-[15px] font-bold text-[#1C1C1E]">Delete preference?</h4>
                   </div>
 
-                  <p className="text-xs text-[#6C6C70] leading-relaxed">
-                    Nova will stop using <strong>“{memoryToDelete.title}”</strong> when personalizing your suggestions.
+                  <p className="text-[13px] text-[#6E6E78] leading-[18px]">
+                    Remove <strong className="text-[#1C1C1E]">“{memoryToDelete.title}”</strong> from your saved preferences?
                   </p>
 
                   <div className="flex items-center gap-2 pt-1">
                     <button
                       type="button"
+                      id="pref-delete-cancel-btn"
                       onClick={() => setMemoryToDelete(null)}
-                      className="flex-1 py-2.5 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-xs font-semibold text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="flex-1 min-h-[44px] rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[14px] font-medium text-[#1C1C1E] cursor-pointer transition-colors"
                     >
                       Cancel
                     </button>
                     <button
                       type="button"
+                      id="pref-delete-confirm-btn"
                       onClick={handleDeleteMemoryConfirmed}
-                      className="flex-1 py-2.5 rounded-[14px] bg-[#E11D48] hover:bg-[#BE123C] text-white text-xs font-bold shadow-xs cursor-pointer transition-colors"
+                      className="flex-1 min-h-[44px] rounded-[14px] bg-[#E11D48] hover:bg-[#BE123C] text-white text-[14px] font-semibold shadow-xs cursor-pointer transition-colors"
                     >
-                      Remove
+                      Delete
                     </button>
                   </div>
                 </motion.div>
@@ -3570,7 +4787,7 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
       })()}
 
       {/* ============================================================ */}
-      {/* HOW MEMORY WORKS INFO MODAL                                  */}
+      {/* HOW PREFERENCES WORK INFO MODAL                              */}
       {/* ============================================================ */}
       {(() => {
         const memoryInfoPortal = (
@@ -3594,39 +4811,30 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                   <div className="flex items-center justify-between pb-2 border-b border-black/[0.05]">
                     <div className="flex items-center gap-1.5">
                       <ShieldCheck className="w-4 h-4 text-[#5E5BAE]" />
-                      <h4 className="text-[15px] font-bold text-[#1C1C1E]">How Memory works</h4>
+                      <h4 className="text-[15px] font-bold text-[#1C1C1E]">Preferences</h4>
                     </div>
                     <button
                       type="button"
                       onClick={() => setIsMemoryInfoModalOpen(false)}
-                      className="w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-3.5 h-3.5 stroke-[2.2]" />
                     </button>
                   </div>
 
-                  <div className="space-y-2.5 text-xs text-[#6C6C70] leading-relaxed">
-                    <p>
-                      <strong className="text-[#1C1C1E] font-semibold block mb-0.5">
-                        • Transparent & under your control
-                      </strong>
-                      Nova only remembers practical rhythm preferences and goals that help tailor your daily suggestions.
-                    </p>
-                    <p>
-                      <strong className="text-[#1C1C1E] font-semibold block mb-0.5">
-                        • Nothing changes without your confirmation
-                      </strong>
-                      New observations wait in “Can I check something?” until you approve them, and conversational edits always show a confirmation preview first.
-                    </p>
+                  <div className="space-y-2.5 text-[13px] text-[#6E6E78] leading-[18px]">
+                    <p>Only preferences you add or confirm are saved.</p>
+                    <p>Pending questions stay unconfirmed until you choose Confirm or Ignore.</p>
+                    <p>Editing preferences does not overwrite accepted Today tasks.</p>
                   </div>
 
                   <button
                     type="button"
                     onClick={() => setIsMemoryInfoModalOpen(false)}
-                    className="w-full py-2.5 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
+                    className="w-full min-h-[44px] rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
                   >
-                    Got it
+                    Done
                   </button>
                 </motion.div>
               </div>
@@ -3904,10 +5112,10 @@ export function MyPlanView({ phoneFrameRef }: MyPlanViewProps) {
                     <button
                       type="button"
                       onClick={() => setActiveDayModalDate(null)}
-                      className="w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer shrink-0 transition-colors"
+                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer shrink-0 transition-colors"
                       aria-label="Close"
                     >
-                      <X className="w-3.5 h-3.5 stroke-[2.2]" />
+                      <X className="w-4 h-4 stroke-[2.2]" />
                     </button>
                   </div>
 
