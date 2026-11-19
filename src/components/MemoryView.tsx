@@ -313,12 +313,11 @@ export const MemoryView: React.FC<MemoryViewProps> = ({ phoneFrameRef }) => {
     showToast('Memory deleted');
   };
 
-  // Reset sample memories helper
-  const handleResetSampleData = () => {
+  const handleResetMemories = () => {
     setMemories(INITIAL_MEMORIES);
     setSelectedMemory(null);
     setEditingMemory(null);
-    showToast('Reset to original sample memories');
+    showToast('Reset to default items');
   };
 
   // Main UI
@@ -356,10 +355,10 @@ export const MemoryView: React.FC<MemoryViewProps> = ({ phoneFrameRef }) => {
 
           <button
             type="button"
-            onClick={handleResetSampleData}
+            onClick={handleResetMemories}
             className="w-7 h-7 rounded-full bg-white/70 hover:bg-white/90 backdrop-blur-md border border-white/80 shadow-2xs flex items-center justify-center text-[#7A7895] hover:text-[#5E5BAE] transition-all cursor-pointer"
-            aria-label="Reset sample memories"
-            title="Reset sample memories"
+            aria-label="Reset memories"
+            title="Reset memories"
           >
             <RotateCcw className="w-3 h-3 stroke-[2]" />
           </button>
@@ -595,14 +594,6 @@ export const MemoryView: React.FC<MemoryViewProps> = ({ phoneFrameRef }) => {
         )}
       </section>
 
-      {/* Bottom Prototype Transparency Note */}
-      <div className="pt-2 border-t border-[#26263F]/[0.06] flex items-center justify-between text-[11px] text-[#7A7895]">
-        <span className="flex items-center gap-1">
-          <Info className="w-3.5 h-3.5 stroke-[2]" />
-          Sample memory store (Local session)
-        </span>
-        <span>Real AI not connected</span>
-      </div>
     </div>
   );
 
@@ -840,12 +831,6 @@ export const MemoryView: React.FC<MemoryViewProps> = ({ phoneFrameRef }) => {
                 >
                   <X className="w-4 h-4 stroke-[2]" />
                 </button>
-              </div>
-
-              {/* Prototype Disclaimer Banner */}
-              <div className="px-5 py-2 bg-amber-50/70 border-b border-amber-200/50 flex items-center gap-2 text-[11px] text-amber-800">
-                <Info className="w-3.5 h-3.5 shrink-0 stroke-[2]" />
-                <span>Prototype: Simulated Nova dialogue. Real AI is not connected.</span>
               </div>
 
               {/* Scrollable Chat History */}

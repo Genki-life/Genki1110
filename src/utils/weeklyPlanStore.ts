@@ -1,17 +1,38 @@
 export type ActivityCategory = 'walk' | 'stretch' | 'rest' | 'other';
+export type ActivitySource = 'today' | 'manual' | 'demo';
 
 export interface ActivityCompletionRecord {
   id: string;
-  sourceKey: string;
-  cardId: string;
-  planId: string;
+  /** Stable deduplication key for Today task instances (undefined for manual records so same-day same-title activities are preserved separately) */
+  sourceKey?: string;
+  source: ActivitySource;
+  cardId?: string;
+  planId?: string;
   title: string;
   category: ActivityCategory;
   durationMinutes: number;
   completedAt: string;
   dateKey: string;
-  hasExactTimestamp?: boolean;
+  hasExactTimestamp: boolean;
+  note?: string;
   isSample?: boolean;
+}
+
+export type ActivityRecord = ActivityCompletionRecord;
+
+export interface RestRecord {
+  id: string;
+  dateKey: string;
+  source: ActivitySource;
+  title: string;
+  note?: string;
+  createdAt: string;
+  isSample?: boolean;
+}
+
+export interface UnifiedActivityStoreData {
+  activities: ActivityCompletionRecord[];
+  restRecords: RestRecord[];
 }
 
 export interface WeeklyItemSchedule {
@@ -25,6 +46,7 @@ export interface WeeklySchedule {
   stretch: WeeklyItemSchedule;
   restNote: 'As needed';
   updatedAt: string;
+  source?: 'user' | 'demo';
 }
 
 export interface LocalWeekBounds {
@@ -44,6 +66,15 @@ export interface WeeklyReviewFeedback {
 }
 
 export const WEEKLY_SCHEDULE_STORAGE_KEY = 'genki.plan.weeklySchedule.v1';
+export const WEEKLY_SCHEDULES_BY_WEEK_STORAGE_KEY = 'genki.plan.weeklySchedulesByWeek.v1';
+export const WEEKLY_SCHEDULE_MIGRATED_STORAGE_KEY = 'genki.plan.weeklyScheduleMigrated.v1';
+export const ACTIVITIES_STORAGE_KEY = 'genki.plan.activities.v1';
+export const REST_RECORDS_STORAGE_KEY = 'genki.plan.restRecords.v1';
+export const ACTIVITIES_MIGRATED_STORAGE_KEY = 'genki.plan.activitiesMigrated.v1';
+export const LEGACY_ACTIVITY_LOGS_STORAGE_KEYS = [
+  'genki.plan.activityLogs.v1',
+  'genki.plan.historyLogs.v1',
+] as const;
 export const COMPLETIONS_STORAGE_KEY = 'genki.plan.completions.v1';
 export const REST_DAYS_STORAGE_KEY = 'genki.plan.restDays.v1';
 export const WEEKLY_REVIEWS_STORAGE_KEY = 'genki.plan.weeklyReviews.v1';
@@ -86,6 +117,19 @@ export function parseLocalDateKey(dateKey: string): Date | null {
     return null;
   }
   return dt;
+}
+
+export function addLocalDays(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+export function formatShortMonthDay(date: Date): string {
+  return `${SHORT_MONTHS[date.getMonth()]} ${date.getDate()}`;
+}
+
+export function formatReviewOnSundayLabel(referenceDate: Date = new Date()): string {
+  const bounds = getLocalWeekBounds(referenceDate);
+  return `Review on ${formatShortMonthDay(bounds.weekEnd)}`;
 }
 
 export function getLocalWeekBounds(referenceDate: Date = new Date()): LocalWeekBounds {
@@ -133,6 +177,18 @@ export function getLastCompletedWeekBounds(
     currentBounds.weekStart.getDate() - 7
   );
   return getLocalWeekBounds(lastWeekRef);
+}
+
+export function getNextWeekBounds(
+  referenceDate: Date = new Date()
+): LocalWeekBounds {
+  const currentBounds = getLocalWeekBounds(referenceDate);
+  const nextWeekRef = new Date(
+    currentBounds.weekStart.getFullYear(),
+    currentBounds.weekStart.getMonth(),
+    currentBounds.weekStart.getDate() + 7
+  );
+  return getLocalWeekBounds(nextWeekRef);
 }
 
 export function isDateKeyInWeek(
@@ -198,6 +254,9 @@ export function normalizeWeeklySchedule(raw: unknown): WeeklySchedule | null {
     return { targetCount, durationLabel };
   };
 
+  const source: 'user' | 'demo' | undefined =
+    obj.source === 'demo' || obj.source === 'user' ? obj.source : undefined;
+
   return {
     walk: normalizeItem(obj.walk as Record<string, unknown>, DEFAULT_WEEKLY_DRAFT.walk.durationLabel),
     stretch: normalizeItem(
@@ -206,43 +265,219 @@ export function normalizeWeeklySchedule(raw: unknown): WeeklySchedule | null {
     ),
     restNote: 'As needed',
     updatedAt: typeof obj.updatedAt === 'string' ? obj.updatedAt : new Date().toISOString(),
+    ...(source ? { source } : {}),
   };
 }
 
-export function loadWeeklySchedule(): WeeklySchedule | null {
-  if (typeof window === 'undefined' || !window.localStorage) return null;
-  try {
-    const raw = window.localStorage.getItem(WEEKLY_SCHEDULE_STORAGE_KEY);
-    if (!raw) return null;
-    return normalizeWeeklySchedule(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
+export type WeeklySchedulesByWeek = Record<string, WeeklySchedule>;
 
-export function saveWeeklySchedule(schedule: WeeklySchedule): void {
+export function saveWeeklySchedulesByWeek(schedules: WeeklySchedulesByWeek): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    window.localStorage.setItem(WEEKLY_SCHEDULE_STORAGE_KEY, JSON.stringify(schedule));
+    window.localStorage.setItem(
+      WEEKLY_SCHEDULES_BY_WEEK_STORAGE_KEY,
+      JSON.stringify(schedules)
+    );
+    // Once per-week schedules have been persisted, legacy single-schedule migration must not re-run.
+    window.localStorage.setItem(WEEKLY_SCHEDULE_MIGRATED_STORAGE_KEY, '1');
   } catch {
     // Ignore storage quota or private mode errors
   }
 }
 
-export function normalizeCompletionRecord(raw: unknown): ActivityCompletionRecord | null {
+export function loadWeeklySchedulesByWeek(
+  referenceDate: Date = new Date()
+): WeeklySchedulesByWeek {
+  if (typeof window === 'undefined' || !window.localStorage) return {};
+
+  const result: WeeklySchedulesByWeek = {};
+  let hasByWeekKey = false;
+
+  try {
+    const rawByWeek = window.localStorage.getItem(WEEKLY_SCHEDULES_BY_WEEK_STORAGE_KEY);
+    if (rawByWeek !== null) {
+      hasByWeekKey = true;
+      const parsed = JSON.parse(rawByWeek);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!parseLocalDateKey(key)) continue;
+          const normalized = normalizeWeeklySchedule(val);
+          if (normalized) {
+            result[key] = normalized;
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed JSON in per-week storage
+  }
+
+  // One-time migration from legacy single weeklySchedule -> current local weekStartKey.
+  // Preserves existing per-week data and never overwrites an existing entry.
+  try {
+    const alreadyMigrated =
+      window.localStorage.getItem(WEEKLY_SCHEDULE_MIGRATED_STORAGE_KEY) === '1';
+    if (!alreadyMigrated) {
+      const legacyRaw = window.localStorage.getItem(WEEKLY_SCHEDULE_STORAGE_KEY);
+      if (legacyRaw) {
+        const legacySchedule = normalizeWeeklySchedule(JSON.parse(legacyRaw));
+        if (legacySchedule) {
+          const currentWeekKey = getLocalWeekBounds(referenceDate).weekStartKey;
+          if (!result[currentWeekKey]) {
+            result[currentWeekKey] = legacySchedule;
+            saveWeeklySchedulesByWeek(result);
+          } else {
+            window.localStorage.setItem(WEEKLY_SCHEDULE_MIGRATED_STORAGE_KEY, '1');
+          }
+        } else {
+          window.localStorage.setItem(WEEKLY_SCHEDULE_MIGRATED_STORAGE_KEY, '1');
+        }
+      } else if (hasByWeekKey) {
+        window.localStorage.setItem(WEEKLY_SCHEDULE_MIGRATED_STORAGE_KEY, '1');
+      }
+    }
+  } catch {
+    // Ignore malformed legacy JSON or storage quota errors
+  }
+
+  return result;
+}
+
+export function loadWeeklySchedule(
+  weekStartKey?: string,
+  referenceDate: Date = new Date()
+): WeeklySchedule | null {
+  const byWeek = loadWeeklySchedulesByWeek(referenceDate);
+  const key = weekStartKey ?? getLocalWeekBounds(referenceDate).weekStartKey;
+  return byWeek[key] ?? null;
+}
+
+export function saveWeeklySchedule(
+  schedule: WeeklySchedule,
+  weekStartKey?: string,
+  referenceDate: Date = new Date()
+): void {
+  const key = weekStartKey ?? getLocalWeekBounds(referenceDate).weekStartKey;
+  const byWeek = loadWeeklySchedulesByWeek(referenceDate);
+  saveWeeklySchedulesByWeek({
+    ...byWeek,
+    [key]: schedule,
+  });
+}
+
+export function getWeeklyScheduleFieldValue(
+  schedule: WeeklySchedule,
+  targetActivity: 'walk' | 'stretch',
+  targetField: 'durationLabel' | 'targetCount'
+): string | number | null {
+  return targetField === 'durationLabel'
+    ? schedule[targetActivity].durationLabel
+    : schedule[targetActivity].targetCount;
+}
+
+export function setWeeklyScheduleFieldValue(
+  schedule: WeeklySchedule,
+  targetActivity: 'walk' | 'stretch',
+  targetField: 'durationLabel' | 'targetCount',
+  value: string | number | null
+): WeeklySchedule {
+  const updatedAt = new Date().toISOString();
+  if (targetActivity === 'walk') {
+    return {
+      ...schedule,
+      walk:
+        targetField === 'durationLabel'
+          ? { ...schedule.walk, durationLabel: String(value ?? DEFAULT_WEEKLY_DRAFT.walk.durationLabel) }
+          : { ...schedule.walk, targetCount: value === null ? null : Number(value) },
+      updatedAt,
+    };
+  }
+  return {
+    ...schedule,
+    stretch:
+      targetField === 'durationLabel'
+        ? { ...schedule.stretch, durationLabel: String(value ?? DEFAULT_WEEKLY_DRAFT.stretch.durationLabel) }
+        : { ...schedule.stretch, targetCount: value === null ? null : Number(value) },
+    updatedAt,
+  };
+}
+
+const DEMO_HISTORY_NOTE_MARKERS = new Set([
+  'Sample historical activity',
+  'Sample restorative day',
+  'Light gentle pacing',
+  'Intentional recovery pause',
+]);
+
+let manualRecordCounter = 0;
+
+export function createManualActivityId(dateKey: string): string {
+  manualRecordCounter += 1;
+  const rand = Math.random().toString(36).slice(2, 7);
+  return `manual::${dateKey}::${Date.now()}-${manualRecordCounter}-${rand}`;
+}
+
+export function createManualRestId(dateKey: string): string {
+  manualRecordCounter += 1;
+  const rand = Math.random().toString(36).slice(2, 7);
+  return `rest::manual::${dateKey}::${Date.now()}-${manualRecordCounter}-${rand}`;
+}
+
+export function buildDateOnlyIso(dateKey: string): string {
+  const localDt = parseLocalDateKey(dateKey);
+  if (!localDt) return new Date().toISOString();
+  return new Date(
+    localDt.getFullYear(),
+    localDt.getMonth(),
+    localDt.getDate(),
+    12,
+    0,
+    0
+  ).toISOString();
+}
+
+export function normalizeCompletionRecord(
+  raw: unknown,
+  options: { allowDemo?: boolean; fallbackSource?: ActivitySource } = {}
+): ActivityCompletionRecord | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
-  if (obj.isSample === true) return null;
+  const allowDemo = options.allowDemo === true;
+
+  const explicitSource: ActivitySource | null =
+    obj.source === 'today' || obj.source === 'manual' || obj.source === 'demo'
+      ? obj.source
+      : null;
+  const isDemo = explicitSource === 'demo' || obj.isSample === true;
+  if (isDemo && !allowDemo) return null;
 
   const title = typeof obj.title === 'string' ? obj.title.trim() : '';
   const planId = typeof obj.planId === 'string' ? obj.planId.trim() : '';
   const cardId = typeof obj.cardId === 'string' ? obj.cardId.trim() : '';
   if (!title && !planId) return null;
 
+  const rawSourceKey =
+    typeof obj.sourceKey === 'string' && obj.sourceKey.trim()
+      ? obj.sourceKey.trim()
+      : typeof obj.taskInstanceId === 'string' && obj.taskInstanceId.trim()
+      ? obj.taskInstanceId.trim()
+      : undefined;
+
+  const source: ActivitySource = isDemo
+    ? 'demo'
+    : explicitSource ??
+      options.fallbackSource ??
+      (cardId && cardId !== 'legacy' && cardId !== 'manual' ? 'today' : rawSourceKey ? 'today' : 'manual');
+
   // Compatibility: derive local dateKey from completedAt or vice versa, without inventing historical dates
   let completedAt = typeof obj.completedAt === 'string' ? obj.completedAt.trim() : '';
   let dateKey = typeof obj.dateKey === 'string' ? obj.dateKey.trim() : '';
-  let hasExactTimestamp = obj.hasExactTimestamp !== false;
+  let hasExactTimestamp =
+    source === 'demo'
+      ? false
+      : typeof obj.hasExactTimestamp === 'boolean'
+      ? obj.hasExactTimestamp
+      : source === 'today';
 
   if (completedAt) {
     const parsedTime = new Date(completedAt);
@@ -257,15 +492,7 @@ export function normalizeCompletionRecord(raw: unknown): ActivityCompletionRecor
   }
 
   if (!completedAt && parseLocalDateKey(dateKey)) {
-    const localDt = parseLocalDateKey(dateKey)!;
-    completedAt = new Date(
-      localDt.getFullYear(),
-      localDt.getMonth(),
-      localDt.getDate(),
-      12,
-      0,
-      0
-    ).toISOString();
+    completedAt = buildDateOnlyIso(dateKey);
     hasExactTimestamp = false;
   }
 
@@ -276,110 +503,622 @@ export function normalizeCompletionRecord(raw: unknown): ActivityCompletionRecor
 
   const rawCat = obj.category;
   const category: ActivityCategory =
-    rawCat === 'walk' || rawCat === 'stretch' || rawCat === 'rest' || rawCat === 'other'
+    rawCat === 'walk' || rawCat === 'stretch' || rawCat === 'other'
       ? rawCat
+      : rawCat === 'rest'
+      ? 'rest'
       : inferActivityCategory(planId, title);
+
+  if (category === 'rest') return null;
 
   const durationMinutes =
     typeof obj.durationMinutes === 'number' && Number.isFinite(obj.durationMinutes) && obj.durationMinutes > 0
       ? Math.round(obj.durationMinutes)
       : inferDurationMinutes(title);
 
-  const sourceKey =
-    typeof obj.sourceKey === 'string' && obj.sourceKey.trim()
-      ? obj.sourceKey.trim()
-      : `${dateKey}::${cardId || planId || title}`;
-
+  // Never synthesize a colliding sourceKey from dateKey + title; only preserve real stable sourceKey values
   const id =
     typeof obj.id === 'string' && obj.id.trim()
       ? obj.id.trim()
-      : sourceKey;
+      : rawSourceKey ?? createManualActivityId(dateKey);
+
+  const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined;
 
   return {
     id,
-    sourceKey,
-    cardId: cardId || 'legacy',
-    planId: planId || category,
+    ...(rawSourceKey ? { sourceKey: rawSourceKey } : {}),
+    source,
+    ...(cardId ? { cardId } : {}),
+    ...(planId ? { planId } : {}),
     title: title || (category === 'walk' ? 'Walk' : category === 'stretch' ? 'Stretch' : 'Activity'),
     category,
     durationMinutes,
     completedAt,
     dateKey,
-    hasExactTimestamp,
-    isSample: false,
+    hasExactTimestamp: source === 'demo' ? false : hasExactTimestamp,
+    ...(note ? { note } : {}),
+    isSample: source === 'demo',
   };
 }
 
-export function loadCompletionRecords(): ActivityCompletionRecord[] {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
-  try {
-    const raw = window.localStorage.getItem(COMPLETIONS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set<string>();
-    const normalized: ActivityCompletionRecord[] = [];
-    for (const item of parsed) {
-      const record = normalizeCompletionRecord(item);
-      if (!record) continue;
-      if (seen.has(record.sourceKey)) continue;
-      seen.add(record.sourceKey);
-      normalized.push(record);
-    }
-    return normalized;
-  } catch {
-    return [];
-  }
+export function normalizeRestRecord(
+  raw: unknown,
+  options: { allowDemo?: boolean; fallbackSource?: ActivitySource } = {}
+): RestRecord | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const allowDemo = options.allowDemo === true;
+
+  const explicitSource: ActivitySource | null =
+    obj.source === 'today' || obj.source === 'manual' || obj.source === 'demo'
+      ? obj.source
+      : null;
+  const isDemo = explicitSource === 'demo' || obj.isSample === true;
+  if (isDemo && !allowDemo) return null;
+
+  const dateKey =
+    typeof obj.dateKey === 'string' && parseLocalDateKey(obj.dateKey.trim())
+      ? obj.dateKey.trim()
+      : typeof obj.date === 'string' && parseLocalDateKey(obj.date.trim())
+      ? obj.date.trim()
+      : '';
+  if (!dateKey) return null;
+
+  const source: ActivitySource = isDemo ? 'demo' : explicitSource ?? options.fallbackSource ?? 'manual';
+  const id =
+    typeof obj.id === 'string' && obj.id.trim()
+      ? obj.id.trim()
+      : source === 'demo'
+      ? `demo-rest::${dateKey}`
+      : source === 'today'
+      ? `rest::today::${dateKey}`
+      : createManualRestId(dateKey);
+  const title =
+    typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : 'Mindful rest day';
+  const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined;
+  const createdAt =
+    typeof obj.createdAt === 'string' && obj.createdAt.trim()
+      ? obj.createdAt.trim()
+      : buildDateOnlyIso(dateKey);
+
+  return {
+    id,
+    dateKey,
+    source,
+    title,
+    ...(note ? { note } : {}),
+    createdAt,
+    isSample: source === 'demo',
+  };
 }
 
-export function saveCompletionRecords(records: ActivityCompletionRecord[]): void {
+/**
+ * Generates coherent historical prototype demo activity & rest records strictly BEFORE
+ * the last completed week (with stable IDs, source: 'demo', hasExactTimestamp: false,
+ * and no sample-data note text).
+ */
+export function createDemoHistoryRecords(
+  referenceDate: Date = new Date()
+): UnifiedActivityStoreData {
+  const baseYear = referenceDate.getFullYear();
+  const baseMonth = referenceDate.getMonth();
+  const lastCompletedWeekStartKey = getLastCompletedWeekBounds(referenceDate).weekStartKey;
+
+  const activities: ActivityCompletionRecord[] = [];
+  const restRecords: RestRecord[] = [];
+
+  const historicalMonthPatterns: {
+    offset: number;
+    walkDays: number[];
+    stretchDays: number[];
+    restDays: number[];
+  }[] = [
+    { offset: -6, walkDays: [3, 10, 17, 24], stretchDays: [6, 20], restDays: [14, 28] },
+    { offset: -5, walkDays: [2, 8, 15, 22, 29], stretchDays: [5, 19, 26], restDays: [12, 25] },
+    { offset: -4, walkDays: [2, 9, 13, 18, 25], stretchDays: [5, 16, 23], restDays: [11, 27] },
+    { offset: -3, walkDays: [3, 7, 12, 17, 21, 26], stretchDays: [5, 15, 24], restDays: [10, 20, 29] },
+    { offset: -2, walkDays: [2, 6, 10, 14, 19, 24, 28], stretchDays: [4, 12, 21, 26], restDays: [8, 17, 25] },
+    { offset: -1, walkDays: [2, 6, 10, 14, 18, 22, 27, 30], stretchDays: [4, 12, 20, 25], restDays: [8, 16, 24, 31] },
+  ];
+
+  const pushDemoActivity = (
+    dateKey: string,
+    category: 'walk' | 'stretch'
+  ) => {
+    if (dateKey >= lastCompletedWeekStartKey) return;
+    activities.push({
+      id: `demo::${dateKey}::${category}`,
+      source: 'demo',
+      title: category === 'walk' ? 'Walk' : 'Stretch',
+      category,
+      durationMinutes: category === 'walk' ? 15 : 5,
+      completedAt: buildDateOnlyIso(dateKey),
+      dateKey,
+      hasExactTimestamp: false,
+      isSample: true,
+    });
+  };
+
+  const pushDemoRestDay = (dateKey: string) => {
+    if (dateKey >= lastCompletedWeekStartKey) return;
+    restRecords.push({
+      id: `demo-rest::${dateKey}`,
+      dateKey,
+      source: 'demo',
+      title: 'Rest day',
+      createdAt: buildDateOnlyIso(dateKey),
+      isSample: true,
+    });
+  };
+
+  for (const pattern of historicalMonthPatterns) {
+    const mDate = new Date(baseYear, baseMonth + pattern.offset, 1);
+    const y = mDate.getFullYear();
+    const m = mDate.getMonth();
+    const maxDays = new Date(y, m + 1, 0).getDate();
+
+    for (const d of pattern.walkDays) {
+      if (d <= maxDays) {
+        pushDemoActivity(
+          `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+          'walk'
+        );
+      }
+    }
+    for (const d of pattern.stretchDays) {
+      if (d <= maxDays) {
+        pushDemoActivity(
+          `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+          'stretch'
+        );
+      }
+    }
+    for (const d of pattern.restDays) {
+      if (d <= maxDays) {
+        pushDemoRestDay(
+          `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+        );
+      }
+    }
+  }
+
+  // Earlier dates of current month strictly before last completed week (consistent gentle rhythm)
+  const currentWalkDays = [2, 6, 10, 14, 18, 22, 26];
+  const currentStretchDays = [4, 12, 20, 28];
+  const currentRestDays = [8, 16, 24];
+  const maxCurrentMonthDays = new Date(baseYear, baseMonth + 1, 0).getDate();
+
+  for (const d of currentWalkDays) {
+    if (d <= maxCurrentMonthDays) {
+      pushDemoActivity(
+        `${baseYear}-${String(baseMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        'walk'
+      );
+    }
+  }
+  for (const d of currentStretchDays) {
+    if (d <= maxCurrentMonthDays) {
+      pushDemoActivity(
+        `${baseYear}-${String(baseMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        'stretch'
+      );
+    }
+  }
+  for (const d of currentRestDays) {
+    if (d <= maxCurrentMonthDays) {
+      pushDemoRestDay(
+        `${baseYear}-${String(baseMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+      );
+    }
+  }
+
+  return { activities, restRecords };
+}
+
+export function saveUnifiedActivities(records: ActivityCompletionRecord[]): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    window.localStorage.setItem(COMPLETIONS_STORAGE_KEY, JSON.stringify(records));
+    window.localStorage.setItem(ACTIVITIES_STORAGE_KEY, JSON.stringify(records));
+    window.localStorage.setItem(ACTIVITIES_MIGRATED_STORAGE_KEY, '1');
   } catch {
     // Ignore storage quota or private mode errors
   }
+}
+
+export function saveUnifiedRestRecords(restRecords: RestRecord[]): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(REST_RECORDS_STORAGE_KEY, JSON.stringify(restRecords));
+    window.localStorage.setItem(ACTIVITIES_MIGRATED_STORAGE_KEY, '1');
+  } catch {
+    // Ignore storage quota or private mode errors
+  }
+}
+
+/**
+ * Loads the single unified activity + rest store.
+ * On first run (when not yet migrated), migrates legacy Today completions, legacy restDayKeys,
+ * and any non-demo legacy History logs once without overwriting existing unified records,
+ * deduplicating ONLY by stable sourceKey (never dropping two real activities just because date/title match)
+ * and never mistaking old demo day summaries for user-added activities.
+ */
+export function loadUnifiedActivityStore(
+  _referenceDate: Date = new Date()
+): UnifiedActivityStoreData {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return { activities: [], restRecords: [] };
+  }
+
+  const activities: ActivityCompletionRecord[] = [];
+  const restRecords: RestRecord[] = [];
+  const seenActivityIds = new Set<string>();
+  const seenSourceKeys = new Set<string>();
+  const seenRestIds = new Set<string>();
+
+  const pushActivity = (rec: ActivityCompletionRecord) => {
+    if (rec.sourceKey) {
+      if (seenSourceKeys.has(rec.sourceKey)) return;
+      seenSourceKeys.add(rec.sourceKey);
+    }
+    let nextRec = rec;
+    if (seenActivityIds.has(nextRec.id)) {
+      // Only treat same id as duplicate if it had a stable sourceKey or is demo;
+      // for two distinct manual items without sourceKey that somehow lacked unique ids, assign a unique id.
+      if (nextRec.source === 'demo' || nextRec.sourceKey) return;
+      nextRec = { ...nextRec, id: createManualActivityId(nextRec.dateKey) };
+    }
+    seenActivityIds.add(nextRec.id);
+    activities.push(nextRec);
+  };
+
+  const pushRest = (rec: RestRecord) => {
+    if (seenRestIds.has(rec.id)) return;
+    seenRestIds.add(rec.id);
+    restRecords.push(rec);
+  };
+
+  let hasUnifiedActivitiesKey = false;
+  let hasUnifiedRestKey = false;
+
+  // 1. Load existing unified store if present
+  try {
+    const rawActivities = window.localStorage.getItem(ACTIVITIES_STORAGE_KEY);
+    if (rawActivities !== null) {
+      hasUnifiedActivitiesKey = true;
+      const parsed = JSON.parse(rawActivities);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const rec = normalizeCompletionRecord(item, { allowDemo: true });
+          if (rec) pushActivity(rec);
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed JSON
+  }
+
+  try {
+    const rawRest = window.localStorage.getItem(REST_RECORDS_STORAGE_KEY);
+    if (rawRest !== null) {
+      hasUnifiedRestKey = true;
+      const parsed = JSON.parse(rawRest);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const rec = normalizeRestRecord(item, { allowDemo: true });
+          if (rec) pushRest(rec);
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed JSON
+  }
+
+  const alreadyMigrated =
+    window.localStorage.getItem(ACTIVITIES_MIGRATED_STORAGE_KEY) === '1';
+
+  if (!alreadyMigrated) {
+    // 2a. Migrate legacy Today completion records (`genki.plan.completions.v1`)
+    try {
+      const legacyCompRaw = window.localStorage.getItem(COMPLETIONS_STORAGE_KEY);
+      if (legacyCompRaw) {
+        const parsed = JSON.parse(legacyCompRaw);
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            const rec = normalizeCompletionRecord(item, {
+              allowDemo: false,
+              fallbackSource: 'today',
+            });
+            if (rec) pushActivity(rec);
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed legacy completions
+    }
+
+    // 2b. Migrate legacy rest day keys (`genki.plan.restDays.v1`)
+    try {
+      const legacyRestRaw = window.localStorage.getItem(REST_DAYS_STORAGE_KEY);
+      if (legacyRestRaw) {
+        const parsed = JSON.parse(legacyRestRaw);
+        if (Array.isArray(parsed)) {
+          const existingRestDates = new Set(restRecords.map((r) => r.dateKey));
+          for (const item of parsed) {
+            if (typeof item !== 'string') continue;
+            const dateKey = item.trim();
+            if (!parseLocalDateKey(dateKey) || existingRestDates.has(dateKey)) continue;
+            existingRestDates.add(dateKey);
+            pushRest({
+              id: `rest::today::${dateKey}`,
+              dateKey,
+              source: 'today',
+              title: 'Rest day',
+              note: 'Chosen on Today',
+              createdAt: buildDateOnlyIso(dateKey),
+              isSample: false,
+            });
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed legacy rest days
+    }
+
+    // 2c. Migrate any legacy History day-summary storage (strictly skipping demo day summaries!)
+    const todayDatesWithCompletions = new Set(
+      activities.filter((a) => a.source === 'today').map((a) => a.dateKey)
+    );
+    const realRestDates = new Set(
+      restRecords.filter((r) => r.source !== 'demo').map((r) => r.dateKey)
+    );
+
+    for (const legacyLogKey of LEGACY_ACTIVITY_LOGS_STORAGE_KEYS) {
+      try {
+        const rawLogs = window.localStorage.getItem(legacyLogKey);
+        if (!rawLogs) continue;
+        const parsed = JSON.parse(rawLogs);
+        const entries: unknown[] = Array.isArray(parsed)
+          ? parsed
+          : parsed && typeof parsed === 'object'
+          ? Object.values(parsed as Record<string, unknown>)
+          : [];
+
+        for (const entry of entries) {
+          if (!entry || typeof entry !== 'object') continue;
+          const obj = entry as Record<string, unknown>;
+          const noteStr = typeof obj.note === 'string' ? obj.note.trim() : '';
+
+          // Never mistake old demo day summaries for user-added activities
+          if (obj.isSample === true) continue;
+          if (obj.isSample !== false && DEMO_HISTORY_NOTE_MARKERS.has(noteStr)) continue;
+          // Require explicit isSample === false for legacy day summaries so unknown demo dumps aren't promoted
+          if (obj.isSample !== false) continue;
+
+          const dateKey =
+            typeof obj.date === 'string' && parseLocalDateKey(obj.date.trim())
+              ? obj.date.trim()
+              : typeof obj.dateKey === 'string' && parseLocalDateKey(obj.dateKey.trim())
+              ? obj.dateKey.trim()
+              : '';
+          if (!dateKey) continue;
+
+          if (obj.type === 'rest') {
+            if (!realRestDates.has(dateKey)) {
+              realRestDates.add(dateKey);
+              pushRest({
+                id: createManualRestId(dateKey),
+                dateKey,
+                source: 'manual',
+                title:
+                  typeof obj.title === 'string' && obj.title.trim()
+                    ? obj.title.trim()
+                    : 'Mindful rest day',
+                ...(noteStr ? { note: noteStr } : {}),
+                createdAt: buildDateOnlyIso(dateKey),
+                isSample: false,
+              });
+            }
+          } else if (obj.type === 'active') {
+            // Skip overlaid Today-generated day summary if real Today completion already migrated for that date
+            if (noteStr === 'Completed on Today' && todayDatesWithCompletions.has(dateKey)) {
+              continue;
+            }
+            const title =
+              typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : 'Activity';
+            const durationMinutes =
+              typeof obj.durationMinutes === 'number' &&
+              Number.isFinite(obj.durationMinutes) &&
+              obj.durationMinutes > 0
+                ? Math.round(obj.durationMinutes)
+                : inferDurationMinutes(title);
+            const category = inferActivityCategory('', title);
+            if (category === 'rest') continue;
+
+            pushActivity({
+              id: createManualActivityId(dateKey),
+              source: 'manual',
+              title,
+              category,
+              durationMinutes,
+              completedAt: buildDateOnlyIso(dateKey),
+              dateKey,
+              hasExactTimestamp: false,
+              ...(noteStr ? { note: noteStr } : {}),
+              isSample: false,
+            });
+          }
+        }
+      } catch {
+        // Ignore malformed legacy history logs
+      }
+    }
+
+    saveUnifiedActivities(activities);
+    saveUnifiedRestRecords(restRecords);
+  }
+
+  return { activities, restRecords };
+}
+
+export function upsertTodayActivityRecord(
+  records: ActivityCompletionRecord[],
+  next: ActivityCompletionRecord
+): ActivityCompletionRecord[] {
+  const filtered = records.filter((r) => {
+    if (next.sourceKey && r.sourceKey === next.sourceKey) return false;
+    if (r.id === next.id) return false;
+    return true;
+  });
+  return [...filtered, next];
+}
+
+export function removeActivityRecordById(
+  records: ActivityCompletionRecord[],
+  recordId: string
+): ActivityCompletionRecord[] {
+  return records.filter((r) => r.id !== recordId);
+}
+
+export function removeActivitiesForDate(
+  records: ActivityCompletionRecord[],
+  dateKey: string
+): ActivityCompletionRecord[] {
+  return records.filter((r) => r.dateKey !== dateKey);
+}
+
+export interface ManualActivityInput {
+  dateKey: string;
+  title: string;
+  category: Exclude<ActivityCategory, 'rest'>;
+  durationMinutes: number;
+  note?: string;
+}
+
+export function addManualActivityRecord(
+  records: ActivityCompletionRecord[],
+  input: ManualActivityInput
+): { records: ActivityCompletionRecord[]; created: ActivityCompletionRecord } {
+  const cleanTitle = input.title.trim() || (input.category === 'walk' ? 'Walk' : input.category === 'stretch' ? 'Stretch' : 'Activity');
+  const cleanDuration = Math.max(1, Math.round(input.durationMinutes || inferDurationMinutes(cleanTitle)));
+  const cleanNote = input.note?.trim() || undefined;
+
+  const created: ActivityCompletionRecord = {
+    id: createManualActivityId(input.dateKey),
+    source: 'manual',
+    title: cleanTitle,
+    category: input.category,
+    durationMinutes: cleanDuration,
+    completedAt: buildDateOnlyIso(input.dateKey),
+    dateKey: input.dateKey,
+    hasExactTimestamp: false,
+    ...(cleanNote ? { note: cleanNote } : {}),
+    isSample: false,
+  };
+  return { records: [...records, created], created };
+}
+
+export interface ActivityUpdatePatch {
+  title: string;
+  category: Exclude<ActivityCategory, 'rest'>;
+  durationMinutes: number;
+  note?: string;
+}
+
+export function updateActivityRecordById(
+  records: ActivityCompletionRecord[],
+  recordId: string,
+  patch: ActivityUpdatePatch
+): ActivityCompletionRecord[] {
+  return records.map((rec) => {
+    if (rec.id !== recordId) return rec;
+    const cleanTitle = patch.title.trim() || rec.title;
+    const cleanDuration = Math.max(1, Math.round(patch.durationMinutes || rec.durationMinutes));
+    const cleanNote = patch.note?.trim() || undefined;
+    // Editing a demo record promotes it to a real manual user record
+    const nextSource: ActivitySource = rec.source === 'demo' ? 'manual' : rec.source;
+
+    const updated: ActivityCompletionRecord = {
+      ...rec,
+      source: nextSource,
+      title: cleanTitle,
+      category: patch.category,
+      durationMinutes: cleanDuration,
+      isSample: false,
+    };
+    if (cleanNote) {
+      updated.note = cleanNote;
+    } else {
+      delete updated.note;
+    }
+    return updated;
+  });
+}
+
+export function upsertRestRecordForDate(
+  restRecords: RestRecord[],
+  input: {
+    dateKey: string;
+    source: Exclude<ActivitySource, 'demo'>;
+    title?: string;
+    note?: string;
+    id?: string;
+  }
+): { restRecords: RestRecord[]; record: RestRecord } {
+  const existing = restRecords.find((r) => r.dateKey === input.dateKey && r.source === input.source);
+  const record: RestRecord = {
+    id:
+      input.id ??
+      existing?.id ??
+      (input.source === 'today'
+        ? `rest::today::${input.dateKey}`
+        : createManualRestId(input.dateKey)),
+    dateKey: input.dateKey,
+    source: input.source,
+    title: input.title?.trim() || 'Mindful rest day',
+    ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    isSample: false,
+  };
+  // Replace any existing rest record for that same date so one date has at most one rest marker
+  const filtered = restRecords.filter((r) => r.dateKey !== input.dateKey);
+  return { restRecords: [...filtered, record], record };
+}
+
+export function removeRestRecordById(restRecords: RestRecord[], restId: string): RestRecord[] {
+  return restRecords.filter((r) => r.id !== restId);
+}
+
+export function removeRestRecordsForDate(restRecords: RestRecord[], dateKey: string): RestRecord[] {
+  return restRecords.filter((r) => r.dateKey !== dateKey);
+}
+
+// Legacy compatibility helpers (delegate cleanly to unified store)
+export function loadCompletionRecords(): ActivityCompletionRecord[] {
+  return loadUnifiedActivityStore().activities.filter((r) => r.source !== 'demo' && r.isSample !== true);
+}
+
+export function saveCompletionRecords(records: ActivityCompletionRecord[]): void {
+  saveUnifiedActivities(records);
 }
 
 export function upsertCompletionRecordList(
   records: ActivityCompletionRecord[],
   next: ActivityCompletionRecord
 ): ActivityCompletionRecord[] {
-  const filtered = records.filter((r) => r.sourceKey !== next.sourceKey);
-  return [...filtered, next];
+  return upsertTodayActivityRecord(records, next);
 }
 
 export function removeCompletionRecordBySourceKey(
   records: ActivityCompletionRecord[],
   sourceKey: string
 ): ActivityCompletionRecord[] {
-  return records.filter((r) => r.sourceKey !== sourceKey);
+  return records.filter((r) => r.sourceKey !== sourceKey && r.id !== sourceKey);
 }
 
-// ============================================================================
-// INTENTIONAL USER REST DAYS (Separate from exercise completions & skips)
-// ============================================================================
-
 export function loadRestDayKeys(): string[] {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
-  try {
-    const raw = window.localStorage.getItem(REST_DAYS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const valid: string[] = [];
-    const seen = new Set<string>();
-    for (const item of parsed) {
-      if (typeof item !== 'string') continue;
-      const key = item.trim();
-      if (!parseLocalDateKey(key) || seen.has(key)) continue;
-      seen.add(key);
-      valid.push(key);
-    }
-    return valid;
-  } catch {
-    return [];
-  }
+  return loadUnifiedActivityStore()
+    .restRecords.filter((r) => r.source !== 'demo' && r.isSample !== true)
+    .map((r) => r.dateKey);
 }
 
 export function saveRestDayKeys(keys: string[]): void {
@@ -450,10 +1189,8 @@ export function saveWeeklyReviewFeedbacks(
 export function buildWeeklyReviewSummary(
   records: ActivityCompletionRecord[]
 ): string {
-  const realRecords = records.filter(
-    (r) => r.isSample !== true && r.category !== 'rest'
-  );
-  if (realRecords.length === 0) {
+  const activeRecords = records.filter((r) => r.category !== 'rest');
+  if (activeRecords.length === 0) {
     return 'No activity recorded last week.';
   }
 
@@ -461,7 +1198,7 @@ export function buildWeeklyReviewSummary(
   let stretches = 0;
   let others = 0;
 
-  for (const r of realRecords) {
+  for (const r of activeRecords) {
     if (r.category === 'walk') walks += 1;
     else if (r.category === 'stretch') stretches += 1;
     else others += 1;
@@ -497,7 +1234,8 @@ function getTimeWindowFromCompletedAt(iso: string): DayTimeWindow | null {
 function getUniformWindow(
   items: ActivityCompletionRecord[]
 ): DayTimeWindow | null {
-  const timed = items.filter((r) => r.hasExactTimestamp !== false);
+  // Date-only manual records have hasExactTimestamp === false and must NEVER be used for time-of-day observations
+  const timed = items.filter((r) => r.hasExactTimestamp === true);
   if (timed.length < 2 || timed.length !== items.length) return null;
 
   const firstWindow = getTimeWindowFromCompletedAt(timed[0].completedAt);
@@ -515,12 +1253,10 @@ export function buildWeeklyReviewObservation(
   records: ActivityCompletionRecord[],
   restDayCount: number
 ): string | null {
-  const realRecords = records.filter(
-    (r) => r.isSample !== true && r.category !== 'rest'
-  );
+  const activeRecords = records.filter((r) => r.category !== 'rest');
 
-  const walks = realRecords.filter((r) => r.category === 'walk');
-  const stretches = realRecords.filter((r) => r.category === 'stretch');
+  const walks = activeRecords.filter((r) => r.category === 'walk');
+  const stretches = activeRecords.filter((r) => r.category === 'stretch');
 
   const walkWindow = getUniformWindow(walks);
   if (walkWindow) {
@@ -535,19 +1271,19 @@ export function buildWeeklyReviewObservation(
     return `${prefix} ${stretchWindow}.`;
   }
 
-  if (realRecords.length >= 2) {
-    const allWindow = getUniformWindow(realRecords);
+  if (activeRecords.length >= 2) {
+    const allWindow = getUniformWindow(activeRecords);
     if (allWindow) {
       const prefix =
-        realRecords.length === 2
+        activeRecords.length === 2
           ? 'Both sessions were'
-          : `All ${realRecords.length} sessions were`;
+          : `All ${activeRecords.length} sessions were`;
       return `${prefix} ${allWindow}.`;
     }
   }
 
   if (restDayCount > 0) {
-    if (realRecords.length === 0) {
+    if (activeRecords.length === 0) {
       return `You chose ${restDayCount} intentional rest ${
         restDayCount === 1 ? 'day' : 'days'
       }.`;
@@ -567,13 +1303,16 @@ export function buildWeeklyReviewObservation(
 export interface WeeklyAdjustmentProposal {
   id: string;
   resolutionKey: string;
-  weekStartKey: string;
+  feedbackWeekStartKey: string;
+  targetWeekStartKey: string;
+  targetWeekRangeLabel: string;
   trigger: 'weekly_review_too_much';
   headline: string;
   reason: string;
   changeLabel: string;
   targetActivity: 'walk' | 'stretch';
   targetField: 'durationLabel' | 'targetCount';
+  previousValue: string | number;
   nextValue: string | number;
 }
 
@@ -616,95 +1355,122 @@ const STRETCH_DURATION_STEP_DOWN: Record<string, { next: string; fromShort: stri
 };
 
 /**
- * Generates at most ONE verifiable adjustment proposal.
- * Priority trigger: user explicitly chose "Too much" in Weekly review AND has an adjustable weekly schedule.
- * Never triggers on skipped tasks, rest days, or missing records alone.
+ * Generates at most ONE verifiable adjustment proposal targeting NEXT WEEK.
+ * Trigger: user explicitly chose "Too much" for the last completed week AND has an adjustable schedule.
+ * Dismissal/resolution is bound to BOTH feedbackWeekStartKey and targetWeekStartKey.
  */
 export function buildWeeklyAdjustmentProposal(
-  weeklySchedule: WeeklySchedule | null,
+  targetWeekBaseSchedule: WeeklySchedule | null,
   feedback: WeeklyReviewFeedback | null,
+  targetWeekBounds: LocalWeekBounds,
   resolvedKeys: string[]
 ): WeeklyAdjustmentProposal | null {
-  if (!weeklySchedule || !feedback || feedback.feeling !== 'too_much') {
+  if (!targetWeekBaseSchedule || !feedback || feedback.feeling !== 'too_much') {
     return null;
   }
 
-  const weekStartKey = feedback.weekStartKey;
-  const resolutionKey = `weekly_review_too_much::${weekStartKey}`;
+  const feedbackWeekStartKey = feedback.weekStartKey;
+  const targetWeekStartKey = targetWeekBounds.weekStartKey;
+  const targetWeekRangeLabel = targetWeekBounds.rangeLabel;
+  const resolutionKey = `weekly_review_too_much::${feedbackWeekStartKey}::target::${targetWeekStartKey}`;
+
   if (resolvedKeys.includes(resolutionKey)) {
     return null;
   }
 
   const reason = 'You said last week felt like too much.';
 
-  const walkDurStep = WALK_DURATION_STEP_DOWN[weeklySchedule.walk.durationLabel.trim()];
+  const walkDurStep = WALK_DURATION_STEP_DOWN[targetWeekBaseSchedule.walk.durationLabel.trim()];
   if (walkDurStep) {
-    const id = `${resolutionKey}::walk.durationLabel::${weeklySchedule.walk.durationLabel}->${walkDurStep.next}`;
+    const previousValue = targetWeekBaseSchedule.walk.durationLabel;
+    const id = `${resolutionKey}::walk.durationLabel::${previousValue}->${walkDurStep.next}`;
     if (resolvedKeys.includes(id)) return null;
     return {
       id,
       resolutionKey,
-      weekStartKey,
+      feedbackWeekStartKey,
+      targetWeekStartKey,
+      targetWeekRangeLabel,
       trigger: 'weekly_review_too_much',
-      headline: 'Try shorter walks?',
+      headline: 'Try shorter walks next week?',
       reason,
       changeLabel: `Walks: ${walkDurStep.fromShort} → ${walkDurStep.toShort}`,
       targetActivity: 'walk',
       targetField: 'durationLabel',
+      previousValue,
       nextValue: walkDurStep.next,
     };
   }
 
-  if (weeklySchedule.walk.targetCount !== null && weeklySchedule.walk.targetCount > 1) {
-    const nextCount = weeklySchedule.walk.targetCount - 1;
-    const id = `${resolutionKey}::walk.targetCount::${weeklySchedule.walk.targetCount}->${nextCount}`;
+  if (
+    targetWeekBaseSchedule.walk.targetCount !== null &&
+    targetWeekBaseSchedule.walk.targetCount > 1
+  ) {
+    const previousValue = targetWeekBaseSchedule.walk.targetCount;
+    const nextCount = previousValue - 1;
+    const id = `${resolutionKey}::walk.targetCount::${previousValue}->${nextCount}`;
     if (resolvedKeys.includes(id)) return null;
     return {
       id,
       resolutionKey,
-      weekStartKey,
+      feedbackWeekStartKey,
+      targetWeekStartKey,
+      targetWeekRangeLabel,
       trigger: 'weekly_review_too_much',
       headline: 'Try fewer walks next week?',
       reason,
-      changeLabel: `Walks: ${weeklySchedule.walk.targetCount} → ${nextCount} / week`,
+      changeLabel: `Walks: ${previousValue} → ${nextCount} / week`,
       targetActivity: 'walk',
       targetField: 'targetCount',
+      previousValue,
       nextValue: nextCount,
     };
   }
 
-  const stretchDurStep = STRETCH_DURATION_STEP_DOWN[weeklySchedule.stretch.durationLabel.trim()];
+  const stretchDurStep =
+    STRETCH_DURATION_STEP_DOWN[targetWeekBaseSchedule.stretch.durationLabel.trim()];
   if (stretchDurStep) {
-    const id = `${resolutionKey}::stretch.durationLabel::${weeklySchedule.stretch.durationLabel}->${stretchDurStep.next}`;
+    const previousValue = targetWeekBaseSchedule.stretch.durationLabel;
+    const id = `${resolutionKey}::stretch.durationLabel::${previousValue}->${stretchDurStep.next}`;
     if (resolvedKeys.includes(id)) return null;
     return {
       id,
       resolutionKey,
-      weekStartKey,
+      feedbackWeekStartKey,
+      targetWeekStartKey,
+      targetWeekRangeLabel,
       trigger: 'weekly_review_too_much',
-      headline: 'Try shorter stretches?',
+      headline: 'Try shorter stretches next week?',
       reason,
       changeLabel: `Stretches: ${stretchDurStep.fromShort} → ${stretchDurStep.toShort}`,
       targetActivity: 'stretch',
       targetField: 'durationLabel',
+      previousValue,
       nextValue: stretchDurStep.next,
     };
   }
 
-  if (weeklySchedule.stretch.targetCount !== null && weeklySchedule.stretch.targetCount > 1) {
-    const nextCount = weeklySchedule.stretch.targetCount - 1;
-    const id = `${resolutionKey}::stretch.targetCount::${weeklySchedule.stretch.targetCount}->${nextCount}`;
+  if (
+    targetWeekBaseSchedule.stretch.targetCount !== null &&
+    targetWeekBaseSchedule.stretch.targetCount > 1
+  ) {
+    const previousValue = targetWeekBaseSchedule.stretch.targetCount;
+    const nextCount = previousValue - 1;
+    const id = `${resolutionKey}::stretch.targetCount::${previousValue}->${nextCount}`;
     if (resolvedKeys.includes(id)) return null;
     return {
       id,
       resolutionKey,
-      weekStartKey,
+      feedbackWeekStartKey,
+      targetWeekStartKey,
+      targetWeekRangeLabel,
       trigger: 'weekly_review_too_much',
       headline: 'Try fewer stretches next week?',
       reason,
-      changeLabel: `Stretches: ${weeklySchedule.stretch.targetCount} → ${nextCount} / week`,
+      changeLabel: `Stretches: ${previousValue} → ${nextCount} / week`,
       targetActivity: 'stretch',
       targetField: 'targetCount',
+      previousValue,
       nextValue: nextCount,
     };
   }
@@ -714,49 +1480,43 @@ export function buildWeeklyAdjustmentProposal(
 
 /**
  * Applies ONLY the single explicitly displayed field from a WeeklyAdjustmentProposal.
- * Leaves all other schedule fields and active Today tasks untouched.
+ * Leaves all other schedule fields, other weeks, and active Today tasks untouched.
  */
 export function applyWeeklyAdjustmentProposal(
   schedule: WeeklySchedule,
   proposal: WeeklyAdjustmentProposal
 ): WeeklySchedule {
-  const updatedAt = new Date().toISOString();
-  if (proposal.targetActivity === 'walk') {
-    return {
-      ...schedule,
-      walk:
-        proposal.targetField === 'durationLabel'
-          ? { ...schedule.walk, durationLabel: String(proposal.nextValue) }
-          : { ...schedule.walk, targetCount: Number(proposal.nextValue) },
-      updatedAt,
-    };
-  }
-  return {
-    ...schedule,
-    stretch:
-      proposal.targetField === 'durationLabel'
-        ? { ...schedule.stretch, durationLabel: String(proposal.nextValue) }
-        : { ...schedule.stretch, targetCount: Number(proposal.nextValue) },
-    updatedAt,
-  };
+  return setWeeklyScheduleFieldValue(
+    schedule,
+    proposal.targetActivity,
+    proposal.targetField,
+    proposal.nextValue
+  );
 }
 
 /**
  * Explicit data contract for a future Today suggestion engine to read the latest
- * weekly schedule and user-confirmed preferences.
+ * current-week schedule and user-confirmed preferences.
  * Note: `linkedToTodaySuggestions` is explicitly false until the suggestion engine is wired.
  */
 export interface SuggestionEnginePlanConfig {
+  weekStartKey: string;
   weeklySchedule: WeeklySchedule | null;
+  weeklySchedulesByWeek: WeeklySchedulesByWeek;
   confirmedPreferenceTags: string[];
   linkedToTodaySuggestions: false;
 }
 
 export function getPlanConfigForSuggestions(
-  confirmedPreferenceTags: string[] = []
+  confirmedPreferenceTags: string[] = [],
+  referenceDate: Date = new Date()
 ): SuggestionEnginePlanConfig {
+  const weekStartKey = getLocalWeekBounds(referenceDate).weekStartKey;
+  const weeklySchedulesByWeek = loadWeeklySchedulesByWeek(referenceDate);
   return {
-    weeklySchedule: loadWeeklySchedule(),
+    weekStartKey,
+    weeklySchedule: weeklySchedulesByWeek[weekStartKey] ?? null,
+    weeklySchedulesByWeek,
     confirmedPreferenceTags,
     linkedToTodaySuggestions: false,
   };

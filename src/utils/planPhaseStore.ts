@@ -7,6 +7,7 @@ export interface PlanPhase {
 export interface PlanPathState {
   phases: PlanPhase[];
   currentPhaseId: string;
+  source?: 'user' | 'demo';
   isSample?: boolean;
 }
 
@@ -71,11 +72,14 @@ export function normalizePlanPathState(raw: unknown): PlanPathState | null {
   const requestedId =
     typeof obj.currentPhaseId === 'string' ? obj.currentPhaseId.trim() : '';
   const hasMatch = phases.some((p) => p.id === requestedId);
+  const source: 'user' | 'demo' =
+    obj.source === 'demo' || (obj.source !== 'user' && obj.isSample === true) ? 'demo' : 'user';
 
   return {
     phases,
     currentPhaseId: hasMatch ? requestedId : phases[0].id,
-    isSample: obj.isSample === true,
+    source,
+    isSample: source === 'demo',
   };
 }
 
@@ -103,6 +107,7 @@ export function loadInitialPlanPath(initialFocusPhaseName?: string): PlanPathSta
       return {
         phases,
         currentPhaseId: matched.id,
+        source: 'demo',
         isSample: true,
       };
     }
@@ -116,6 +121,7 @@ export function loadInitialPlanPath(initialFocusPhaseName?: string): PlanPathSta
   return {
     phases,
     currentPhaseId: phases[0].id,
+    source: 'demo',
     isSample: true,
   };
 }
@@ -123,6 +129,7 @@ export function loadInitialPlanPath(initialFocusPhaseName?: string): PlanPathSta
 export function savePlanPathState(state: PlanPathState): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
+    const source: 'user' | 'demo' = state.source === 'demo' ? 'demo' : 'user';
     const payload: PlanPathState = {
       phases: state.phases.slice(0, MAX_PLAN_PHASES).map((p) => ({
         id: p.id,
@@ -130,7 +137,8 @@ export function savePlanPathState(state: PlanPathState): void {
         description: p.description.trim(),
       })),
       currentPhaseId: state.currentPhaseId,
-      isSample: false,
+      source,
+      isSample: source === 'demo',
     };
     window.localStorage.setItem(PLAN_PATH_STORAGE_KEY, JSON.stringify(payload));
   } catch {

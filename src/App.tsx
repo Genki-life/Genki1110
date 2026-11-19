@@ -27,18 +27,25 @@ import { FurryNovaStaticAvatar } from './components/Avatar3D/FurryNovaStaticAvat
 import {
   ActivityCategory,
   ActivityCompletionRecord,
-  addRestDayKey,
+  ActivityUpdatePatch,
+  ManualActivityInput,
+  RestRecord,
+  addManualActivityRecord,
   inferActivityCategory,
   inferDurationMinutes,
-  loadCompletionRecords,
-  loadRestDayKeys,
-  removeCompletionRecordBySourceKey,
-  removeRestDayKey,
-  saveCompletionRecords,
-  saveRestDayKeys,
+  loadUnifiedActivityStore,
+  removeActivitiesForDate,
+  removeActivityRecordById,
+  removeRestRecordById,
+  removeRestRecordsForDate,
+  saveUnifiedActivities,
+  saveUnifiedRestRecords,
   toLocalDateKey,
-  upsertCompletionRecordList,
+  updateActivityRecordById,
+  upsertRestRecordForDate,
+  upsertTodayActivityRecord,
 } from './utils/weeklyPlanStore';
+import { initializePrototypeDemoData } from './utils/prototypeDemoSeed';
 
 const LazyMyPlanView = React.lazy(() =>
   import('./components/MyPlanView').then((module) => ({ default: module.MyPlanView }))
@@ -476,6 +483,10 @@ function SuggestionMediaThumbnail({
 
 interface SuggestionCardItemState {
   id: string;
+  /** Stable per-task-instance identifier for deduplicating Today completions & Undo without guessing by date+slot */
+  taskInstanceId: string;
+  /** Exact unified ActivityCompletionRecord.id written when this card was completed */
+  completedRecordId?: string | null;
   plan: PlanItem;
   planState: 'suggested' | 'accepted' | 'completed';
   showPlanBHint: boolean;
@@ -921,12 +932,55 @@ export default function App() {
   const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(false);
   const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(false);
   
+  // Single unified persistent activity & rest store shared by Today, History, This week, Weekly review, and Charts
+  const initialUnifiedStoreRef = useRef<ReturnType<typeof loadUnifiedActivityStore> | null>(null);
+  if (initialUnifiedStoreRef.current === null) {
+    const bootNow = new Date();
+    initializePrototypeDemoData(bootNow);
+    initialUnifiedStoreRef.current = loadUnifiedActivityStore(bootNow);
+  }
+  const initialTodayDateKeyRef = useRef<string>(toLocalDateKey(new Date()));
+
+  const [activityRecords, setActivityRecords] = useState<ActivityCompletionRecord[]>(
+    () => initialUnifiedStoreRef.current!.activities
+  );
+  const [restRecords, setRestRecords] = useState<RestRecord[]>(
+    () => initialUnifiedStoreRef.current!.restRecords
+  );
+  const activityRecordsRef = useRef<ActivityCompletionRecord[]>(activityRecords);
+  activityRecordsRef.current = activityRecords;
+  const restRecordsRef = useRef<RestRecord[]>(restRecords);
+  restRecordsRef.current = restRecords;
+
   // 3 independent suggestion cards state (starts at index 0 -> 1 / 3: "How about a 5-minute stretch?")
-  const [cardsState, setCardsState] = useState<SuggestionCardItemState[]>([
-    { id: 'card-0', plan: STRETCH_PLAN, planState: 'suggested', showPlanBHint: true, isSkipped: false },
-    { id: 'card-1', plan: DEFAULT_WALK_PLAN, planState: 'suggested', showPlanBHint: true, isSkipped: false },
-    { id: 'card-2', plan: MOBILITY_PLAN, planState: 'suggested', showPlanBHint: true, isSkipped: false },
-  ]);
+  const [cardsState, setCardsState] = useState<SuggestionCardItemState[]>(() => {
+    const todayKey = initialTodayDateKeyRef.current;
+    const existingActivities = initialUnifiedStoreRef.current!.activities;
+    const baseCards: { id: string; plan: PlanItem }[] = [
+      { id: 'card-0', plan: STRETCH_PLAN },
+      { id: 'card-1', plan: DEFAULT_WALK_PLAN },
+      { id: 'card-2', plan: MOBILITY_PLAN },
+    ];
+    return baseCards.map(({ id, plan }) => {
+      const taskInstanceId = `today-task::${todayKey}::${id}`;
+      // Match existing Today completion by stable taskInstanceId (or legacy `${todayKey}::${id}` sourceKey)
+      const matched = existingActivities.find(
+        (rec) =>
+          rec.source === 'today' &&
+          (rec.sourceKey === taskInstanceId || rec.sourceKey === `${todayKey}::${id}`)
+      );
+      return {
+        id,
+        taskInstanceId: matched?.sourceKey ?? taskInstanceId,
+        completedRecordId: matched ? matched.id : null,
+        plan,
+        planState: matched ? 'completed' : 'suggested',
+        showPlanBHint: true,
+        isSkipped: false,
+      };
+    });
+  });
+
   const [activeVirtualIndex, setActiveVirtualIndex] = useState<number>(0);
   const activeCardIndex = ((activeVirtualIndex % 3) + 3) % 3;
   const activeCardIndexRef = useRef<number>(activeCardIndex);
@@ -935,10 +989,10 @@ export default function App() {
   cardsStateRef.current = cardsState;
   const chatTargetCardIdxRef = useRef<number>(activeCardIndex);
 
-  // Real Today completion records & user-chosen rest days linked to Plan -> This week / Weekly review
-  const [completionRecords, setCompletionRecords] = useState<ActivityCompletionRecord[]>(loadCompletionRecords);
-  const [restDayKeys, setRestDayKeys] = useState<string[]>(loadRestDayKeys);
-  const cardCompletionSourceKeyRef = useRef<Record<string, string>>({});
+  const initialTodayRestRecord = initialUnifiedStoreRef.current!.restRecords.find(
+    (r) => r.source === 'today' && r.dateKey === initialTodayDateKeyRef.current
+  );
+  const todayRestRecordIdRef = useRef<string | null>(initialTodayRestRecord?.id ?? null);
 
   const currentCard = cardsState[activeCardIndex];
   const currentPlan = currentCard.plan;
@@ -964,20 +1018,22 @@ export default function App() {
     const card = cardsStateRef.current[idx];
     if (!card || card.planState === 'completed') return;
 
-    setPlanState('completed', idx);
-
     const category =
       card.plan.activityCategory ?? inferActivityCategory(card.plan.id, card.plan.title);
-    if (category === 'rest') return;
+    if (category === 'rest') {
+      setPlanState('completed', idx);
+      return;
+    }
 
     const now = new Date();
     const dateKey = toLocalDateKey(now);
-    const sourceKey = `${dateKey}::${card.id}`;
-    cardCompletionSourceKeyRef.current[card.id] = sourceKey;
+    const stableSourceKey = card.taskInstanceId;
+    const stableRecordId = card.completedRecordId || stableSourceKey;
 
     const nextRecord: ActivityCompletionRecord = {
-      id: sourceKey,
-      sourceKey,
+      id: stableRecordId,
+      sourceKey: stableSourceKey,
+      source: 'today',
       cardId: card.id,
       planId: card.plan.id,
       title: card.plan.title,
@@ -989,12 +1045,21 @@ export default function App() {
       completedAt: now.toISOString(),
       dateKey,
       hasExactTimestamp: true,
+      note: 'Completed on Today',
       isSample: false,
     };
 
-    setCompletionRecords((prev) => {
-      const updated = upsertCompletionRecordList(prev, nextRecord);
-      saveCompletionRecords(updated);
+    setCardsState((prev) =>
+      prev.map((item, i) =>
+        i === idx
+          ? { ...item, planState: 'completed', completedRecordId: nextRecord.id }
+          : item
+      )
+    );
+
+    setActivityRecords((prev) => {
+      const updated = upsertTodayActivityRecord(prev, nextRecord);
+      saveUnifiedActivities(updated);
       return updated;
     });
   }, [setPlanState]);
@@ -1007,20 +1072,124 @@ export default function App() {
     isHoldingRef.current = false;
     holdProgressRef.current = 0;
     setIsCompletedPop(false);
-    setPlanState('accepted', targetIdx);
     setHoldProgress(0);
 
-    const sourceKey =
-      cardCompletionSourceKeyRef.current[card.id] ||
-      `${toLocalDateKey(new Date())}::${card.id}`;
-    delete cardCompletionSourceKeyRef.current[card.id];
+    // Strictly remove ONLY the exact record created by this card instance — never guess by current date + slot index
+    const recordIdToRemove = card.completedRecordId;
 
-    setCompletionRecords((prev) => {
-      const updated = removeCompletionRecordBySourceKey(prev, sourceKey);
-      saveCompletionRecords(updated);
+    setCardsState((prev) =>
+      prev.map((item, i) =>
+        i === targetIdx
+          ? { ...item, planState: 'accepted', completedRecordId: null }
+          : item
+      )
+    );
+
+    if (recordIdToRemove) {
+      setActivityRecords((prev) => {
+        const updated = removeActivityRecordById(prev, recordIdToRemove);
+        saveUnifiedActivities(updated);
+        return updated;
+      });
+    }
+  }, []);
+
+  // Unified History / Plan mutations (single source of truth synchronized with Today)
+  const handleAddManualActivity = useCallback((input: ManualActivityInput) => {
+    setActivityRecords((prev) => {
+      const { records } = addManualActivityRecord(prev, input);
+      saveUnifiedActivities(records);
+      return records;
+    });
+  }, []);
+
+  const handleUpdateActivity = useCallback((recordId: string, patch: ActivityUpdatePatch) => {
+    setActivityRecords((prev) => {
+      const updated = updateActivityRecordById(prev, recordId, patch);
+      saveUnifiedActivities(updated);
       return updated;
     });
-  }, [setPlanState]);
+  }, []);
+
+  const handleDeleteActivity = useCallback((recordId: string) => {
+    setActivityRecords((prev) => {
+      const updated = removeActivityRecordById(prev, recordId);
+      saveUnifiedActivities(updated);
+      return updated;
+    });
+    // If a Today card was linked to this deleted record, clear its completed binding so Today stays consistent
+    setCardsState((prev) =>
+      prev.map((item) =>
+        item.completedRecordId === recordId
+          ? { ...item, planState: item.planState === 'completed' ? 'accepted' : item.planState, completedRecordId: null }
+          : item
+      )
+    );
+  }, []);
+
+  const handleUpsertRestDay = useCallback((dateKey: string, note?: string) => {
+    setRestRecords((prev) => {
+      const { restRecords: updated } = upsertRestRecordForDate(prev, {
+        dateKey,
+        source: 'manual',
+        title: 'Mindful rest day',
+        note: note?.trim() || 'Restorative recovery day',
+      });
+      saveUnifiedRestRecords(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleDeleteRestRecord = useCallback((restId: string) => {
+    setRestRecords((prev) => {
+      const updated = removeRestRecordById(prev, restId);
+      saveUnifiedRestRecords(updated);
+      return updated;
+    });
+    if (todayRestRecordIdRef.current === restId) {
+      todayRestRecordIdRef.current = null;
+      setIsRestDay(false);
+    }
+  }, []);
+
+  const handleClearDayRecords = useCallback((dateKey: string) => {
+    const removedActivityIds = new Set(
+      activityRecordsRef.current.filter((r) => r.dateKey === dateKey).map((r) => r.id)
+    );
+    const hadTodayRest = restRecordsRef.current.some(
+      (r) => r.dateKey === dateKey && r.id === todayRestRecordIdRef.current
+    );
+
+    setActivityRecords((prev) => {
+      const updated = removeActivitiesForDate(prev, dateKey);
+      saveUnifiedActivities(updated);
+      return updated;
+    });
+    setRestRecords((prev) => {
+      const updated = removeRestRecordsForDate(prev, dateKey);
+      saveUnifiedRestRecords(updated);
+      return updated;
+    });
+
+    if (hadTodayRest) {
+      todayRestRecordIdRef.current = null;
+      setIsRestDay(false);
+    }
+
+    if (removedActivityIds.size > 0) {
+      setCardsState((prev) =>
+        prev.map((item) =>
+          item.completedRecordId && removedActivityIds.has(item.completedRecordId)
+            ? {
+                ...item,
+                planState: item.planState === 'completed' ? 'accepted' : item.planState,
+                completedRecordId: null,
+              }
+            : item
+        )
+      );
+    }
+  }, []);
 
   const setShowPlanBHint = useCallback((show: boolean, targetIdx?: number) => {
     const idx = targetIdx ?? activeCardIndexRef.current;
@@ -1109,7 +1278,7 @@ export default function App() {
 
   // Today home defaults to ambient normal state (card collapsed into bubble below Nova)
   const [isPlanCardOpen, setIsPlanCardOpen] = useState<boolean>(false);
-  const [isRestDay, setIsRestDay] = useState<boolean>(false);
+  const [isRestDay, setIsRestDay] = useState<boolean>(() => Boolean(initialTodayRestRecord));
   const bubbleDisplayMode: 'rest' | 'all-skipped' | 'suggestion' = isRestDay
     ? 'rest'
     : allCardsSkipped
@@ -1126,7 +1295,7 @@ export default function App() {
   useEffect(() => {
     prevBubbleDisplayModeRef.current = bubbleDisplayMode;
   }, [bubbleDisplayMode]);
-  const [showSampleDataNote, setShowSampleDataNote] = useState<boolean>(false);
+
   
   // Avatar mode: '3d' procedural fur character (default for test) or '2d' legacy image
   const [avatarMode, setAvatarMode] = useState<'3d' | '2d'>('3d');
@@ -1741,12 +1910,15 @@ export default function App() {
 
   const handleExitRestDay = useCallback(() => {
     setIsRestDay(false);
-    const todayKey = toLocalDateKey(new Date());
-    setRestDayKeys((prev) => {
-      const updated = removeRestDayKey(prev, todayKey);
-      saveRestDayKeys(updated);
-      return updated;
-    });
+    const restIdToRemove = todayRestRecordIdRef.current;
+    todayRestRecordIdRef.current = null;
+    if (restIdToRemove) {
+      setRestRecords((prev) => {
+        const updated = removeRestRecordById(prev, restIdToRemove);
+        saveUnifiedRestRecords(updated);
+        return updated;
+      });
+    }
   }, []);
 
   const handleResumeSkippedCard = useCallback((cardId: string) => {
@@ -2063,9 +2235,15 @@ export default function App() {
         cancelPendingAndActiveCardUpdate();
         setIsRestDay(true);
         const todayKey = toLocalDateKey(new Date());
-        setRestDayKeys((prev) => {
-          const updated = addRestDayKey(prev, todayKey);
-          saveRestDayKeys(updated);
+        setRestRecords((prev) => {
+          const { restRecords: updated, record } = upsertRestRecordForDate(prev, {
+            dateKey: todayKey,
+            source: 'today',
+            title: 'Rest day',
+            note: 'Chosen on Today',
+          });
+          todayRestRecordIdRef.current = record.id;
+          saveUnifiedRestRecords(updated);
           return updated;
         });
 
@@ -4723,8 +4901,14 @@ export default function App() {
             >
               <LazyMyPlanView
                 phoneFrameRef={phoneFrameRef}
-                completionRecords={completionRecords}
-                restDayKeys={restDayKeys}
+                activityRecords={activityRecords}
+                restRecords={restRecords}
+                onAddManualActivity={handleAddManualActivity}
+                onUpdateActivity={handleUpdateActivity}
+                onDeleteActivity={handleDeleteActivity}
+                onUpsertRestDay={handleUpsertRestDay}
+                onDeleteRestRecord={handleDeleteRestRecord}
+                onClearDayRecords={handleClearDayRecords}
                 onNavigateToToday={() => setActiveTab('Today')}
               />
             </React.Suspense>

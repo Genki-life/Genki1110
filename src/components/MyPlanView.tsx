@@ -28,26 +28,41 @@ import {
 } from 'lucide-react';
 import { FurryNovaStaticAvatar } from './Avatar3D/FurryNovaStaticAvatar';
 import {
+  ActivityCategory,
   ActivityCompletionRecord,
+  ActivityUpdatePatch,
   DEFAULT_WEEKLY_DRAFT,
+  ManualActivityInput,
+  RestRecord,
   WeeklyAdjustmentProposal,
   WeeklyReviewFeedback,
   WeeklyReviewFeeling,
   WeeklySchedule,
+  WeeklySchedulesByWeek,
   applyWeeklyAdjustmentProposal,
   buildWeeklyAdjustmentProposal,
   buildWeeklyReviewObservation,
   buildWeeklyReviewSummary,
+  formatReviewOnSundayLabel,
   getLastCompletedWeekBounds,
   getLocalWeekBounds,
+  getNextWeekBounds,
+  getWeeklyScheduleFieldValue,
+  inferActivityCategory,
   isDateKeyInWeek,
   loadResolvedAdjustmentKeys,
   loadWeeklyReviewFeedbacks,
-  loadWeeklySchedule,
+  loadWeeklySchedulesByWeek,
   saveResolvedAdjustmentKeys,
   saveWeeklyReviewFeedbacks,
-  saveWeeklySchedule,
+  saveWeeklySchedulesByWeek,
+  setWeeklyScheduleFieldValue,
 } from '../utils/weeklyPlanStore';
+import {
+  FOCUS_STORAGE_KEY,
+  LEGACY_DIRECTION_STORAGE_KEYS,
+  initializePrototypeDemoData,
+} from '../utils/prototypeDemoSeed';
 import {
   PlanPhase,
   PlanPathState,
@@ -85,6 +100,7 @@ interface DayActivityRecord {
   title?: string;
   durationMinutes?: number;
   sessionsCount?: number; // Number of completed activities/sessions on this active day (>= 1)
+  hasRest?: boolean; // Independent intentional rest marker on this date
   note?: string;
   isSample?: boolean;
 }
@@ -118,150 +134,7 @@ function getDeviceTodayState() {
   };
 }
 
-// Build unified 6-month sample dataset centered around real device date
-// Used by BOTH Activity Monthly Grid AND Your Rhythm (6-month trend curve + 7d/Month stats)
-function createInitialActivityLogs(baseYear: number, baseMonth: number, baseDay: number): Record<string, DayActivityRecord> {
-  const logs: Record<string, DayActivityRecord> = {};
-
-  // Historical 5 months prior to current month (offsets -5 to -1)
-  const historicalMonthPatterns: {
-    offset: number;
-    activeDays: number[];
-    doubleSessionDays: number[];
-    restDays: number[];
-  }[] = [
-    {
-      offset: -8,
-      activeDays: [3, 8, 13, 18, 23, 27],
-      doubleSessionDays: [13],
-      restDays: [10, 21]
-    },
-    {
-      offset: -7,
-      activeDays: [2, 6, 11, 15, 19, 24, 28],
-      doubleSessionDays: [15],
-      restDays: [8, 22]
-    },
-    {
-      offset: -6,
-      activeDays: [1, 5, 9, 12, 16, 20, 24, 27, 30],
-      doubleSessionDays: [12, 24],
-      restDays: [7, 18, 26]
-    },
-    {
-      offset: -5,
-      activeDays: [2, 5, 9, 13, 17, 21, 25, 28],
-      doubleSessionDays: [13, 25],
-      restDays: [7, 19]
-    },
-    {
-      offset: -4,
-      activeDays: [1, 4, 7, 10, 12, 15, 18, 21, 24, 27, 30],
-      doubleSessionDays: [7, 21],
-      restDays: [6, 16, 25]
-    },
-    {
-      offset: -3,
-      activeDays: [2, 5, 8, 11, 14, 17, 20, 23, 26, 29],
-      doubleSessionDays: [11, 23],
-      restDays: [4, 15, 24]
-    },
-    {
-      offset: -2,
-      activeDays: [1, 3, 5, 7, 10, 12, 14, 16, 19, 21, 23, 25, 28, 30],
-      doubleSessionDays: [5, 16, 25],
-      restDays: [6, 13, 20, 27]
-    },
-    {
-      offset: -1,
-      activeDays: [2, 3, 5, 7, 9, 12, 14, 15, 18, 20, 21, 24, 26, 28, 30],
-      doubleSessionDays: [7, 15, 26],
-      restDays: [6, 13, 19, 27, 31]
-    }
-  ];
-
-  for (const pattern of historicalMonthPatterns) {
-    const mDate = new Date(baseYear, baseMonth + pattern.offset, 1);
-    const y = mDate.getFullYear();
-    const m = mDate.getMonth();
-    const maxDays = new Date(y, m + 1, 0).getDate();
-
-    for (const d of pattern.activeDays) {
-      if (d <= maxDays) {
-        const isDouble = pattern.doubleSessionDays.includes(d);
-        const isStretch = d % 3 === 0;
-        logs[formatDateKey(y, m, d)] = {
-          date: formatDateKey(y, m, d),
-          type: 'active',
-          title: isDouble
-            ? '15-min walk + 5-min evening stretch'
-            : isStretch
-            ? '5-min living room stretch'
-            : '15-min mindful walk',
-          durationMinutes: isDouble ? 20 : isStretch ? 5 : 15,
-          sessionsCount: isDouble ? 2 : 1,
-          note: 'Sample historical activity',
-          isSample: true
-        };
-      }
-    }
-
-    for (const d of pattern.restDays) {
-      if (d <= maxDays) {
-        logs[formatDateKey(y, m, d)] = {
-          date: formatDateKey(y, m, d),
-          type: 'rest',
-          title: 'Mindful rest day',
-          durationMinutes: 0,
-          sessionsCount: 0,
-          note: 'Sample restorative day',
-          isSample: true
-        };
-      }
-    }
-  }
-
-  // Populate past days of current month strictly before Today (never fabricate a record for Today)
-  const currentActiveDays = [1, 2, 4, 6, 8, 9, 11, 13, 15, 16, 18, 20, 22, 24, 26, 28];
-  const currentDoubleDays = [2, 11, 20];
-  const currentRestDays = [3, 10, 17, 23];
-
-  for (const d of currentActiveDays) {
-    if (d < baseDay) {
-      const isDouble = currentDoubleDays.includes(d);
-      const isWalk = d % 2 === 0 || d === 1;
-      logs[formatDateKey(baseYear, baseMonth, d)] = {
-        date: formatDateKey(baseYear, baseMonth, d),
-        type: 'active',
-        title: isDouble
-          ? '15-min walk + 5-min desk stretch'
-          : isWalk
-          ? '15-min mindful walk'
-          : '5-min living room stretch',
-        durationMinutes: isDouble ? 20 : isWalk ? 15 : 5,
-        sessionsCount: isDouble ? 2 : 1,
-        note: 'Light gentle pacing',
-        isSample: true
-      };
-    }
-  }
-
-  for (const d of currentRestDays) {
-    if (d < baseDay) {
-      logs[formatDateKey(baseYear, baseMonth, d)] = {
-        date: formatDateKey(baseYear, baseMonth, d),
-        type: 'rest',
-        title: 'Mindful rest day',
-        durationMinutes: 0,
-        sessionsCount: 0,
-        note: 'Intentional recovery pause',
-        isSample: true
-      };
-    }
-  }
-
-  return logs;
-}
+// Demo historical data is seeded once inside weeklyPlanStore.loadUnifiedActivityStore().
 
 // --- B. Dynamic Rhythm Computation Types ---
 interface MonthlyTrendPoint {
@@ -290,14 +163,6 @@ interface RecentSummaryData {
 }
 
 // --- C. Your Focus Dataset & Persistence ---
-const FOCUS_STORAGE_KEY = 'genki.plan.focus.v1';
-const LEGACY_DIRECTION_STORAGE_KEYS = [
-  'genki.plan.direction.v1',
-  'genki.plan.direction',
-  'genki_direction',
-  'your_direction'
-];
-
 interface DirectionState {
   status: 'active' | 'paused';
   goalId: string;
@@ -308,23 +173,30 @@ interface DirectionState {
   tailoredReason: string;
   nextReviewDate: string;
   reviewDaysLeft: number;
+  source?: 'user' | 'demo';
   isSample?: boolean;
 }
 
-const DEFAULT_SAMPLE_FOCUS: DirectionState = {
-  status: 'active',
-  goalId: 'energy',
-  goalTitle: 'Feel more energetic',
-  phase: 'Start small',
-  description: 'Short walks and gentle stretches.',
-  executionApproach: 'Short walks and gentle stretches.',
-  tailoredReason: '',
-  nextReviewDate: 'Review on Sunday',
-  reviewDaysLeft: 0,
-  isSample: true,
-};
+function createDefaultDemoFocus(referenceDate: Date = new Date()): DirectionState {
+  return {
+    status: 'active',
+    goalId: 'energy',
+    goalTitle: 'Feel more energetic',
+    phase: 'Start small',
+    description: 'Short walks and gentle stretches.',
+    executionApproach: 'Short walks and gentle stretches.',
+    tailoredReason: '',
+    nextReviewDate: formatReviewOnSundayLabel(referenceDate),
+    reviewDaysLeft: 0,
+    source: 'demo',
+    isSample: true,
+  };
+}
 
-function normalizeFocusRecord(raw: unknown): DirectionState | null {
+function normalizeFocusRecord(
+  raw: unknown,
+  referenceDate: Date = new Date()
+): DirectionState | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
 
@@ -356,7 +228,9 @@ function normalizeFocusRecord(raw: unknown): DirectionState | null {
       : typeof obj.nextReviewDate === 'string'
       ? obj.nextReviewDate
       : '';
-  const nextReviewDate = reviewRaw.trim() || 'Review on Sunday';
+  const nextReviewDate = reviewRaw.trim() || formatReviewOnSundayLabel(referenceDate);
+  const source: 'user' | 'demo' =
+    obj.source === 'demo' || (obj.source !== 'user' && obj.isSample === true) ? 'demo' : 'user';
 
   return {
     status: obj.status === 'paused' ? 'paused' : 'active',
@@ -368,13 +242,15 @@ function normalizeFocusRecord(raw: unknown): DirectionState | null {
     tailoredReason: typeof obj.tailoredReason === 'string' ? obj.tailoredReason : '',
     nextReviewDate,
     reviewDaysLeft: typeof obj.reviewDaysLeft === 'number' ? obj.reviewDaysLeft : 0,
-    isSample: obj.isSample === true,
+    source,
+    isSample: source === 'demo',
   };
 }
 
 function persistFocusToStorage(next: DirectionState): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
+    const source: 'user' | 'demo' = next.source === 'demo' ? 'demo' : 'user';
     const payload = {
       focus: next.goalTitle,
       phase: next.phase,
@@ -382,7 +258,8 @@ function persistFocusToStorage(next: DirectionState): void {
       reviewDate: next.nextReviewDate,
       status: next.status,
       goalId: next.goalId,
-      isSample: false,
+      source,
+      isSample: source === 'demo',
     };
     window.localStorage.setItem(FOCUS_STORAGE_KEY, JSON.stringify(payload));
   } catch {
@@ -390,32 +267,32 @@ function persistFocusToStorage(next: DirectionState): void {
   }
 }
 
-function loadInitialFocus(): DirectionState {
+function loadInitialFocus(referenceDate: Date = new Date()): DirectionState {
   if (typeof window !== 'undefined' && window.localStorage) {
     try {
       const savedRaw = window.localStorage.getItem(FOCUS_STORAGE_KEY);
       if (savedRaw) {
-        const parsed = normalizeFocusRecord(JSON.parse(savedRaw));
+        const parsed = normalizeFocusRecord(JSON.parse(savedRaw), referenceDate);
         if (parsed) return parsed;
       }
 
       for (const legacyKey of LEGACY_DIRECTION_STORAGE_KEYS) {
         const legacyRaw = window.localStorage.getItem(legacyKey);
         if (!legacyRaw) continue;
-        const migrated = normalizeFocusRecord(JSON.parse(legacyRaw));
+        const migrated = normalizeFocusRecord(JSON.parse(legacyRaw), referenceDate);
         if (migrated) {
-          if (!migrated.isSample) {
+          if (migrated.source !== 'demo') {
             persistFocusToStorage(migrated);
           }
           return migrated;
         }
       }
     } catch {
-      // Ignore malformed JSON in localStorage and fall back to sample data
+      // Ignore malformed JSON in localStorage
     }
   }
 
-  return DEFAULT_SAMPLE_FOCUS;
+  return createDefaultDemoFocus(referenceDate);
 }
 
 // --- D. Preferences (Migrated from What Nova Knows via preferencesStore.ts) ---
@@ -641,15 +518,27 @@ function ActiveMinutesBarChart({
 
 interface MyPlanViewProps {
   phoneFrameRef?: React.RefObject<HTMLDivElement | null>;
-  completionRecords?: ActivityCompletionRecord[];
-  restDayKeys?: string[];
+  activityRecords?: ActivityCompletionRecord[];
+  restRecords?: RestRecord[];
+  onAddManualActivity?: (input: ManualActivityInput) => void;
+  onUpdateActivity?: (recordId: string, patch: ActivityUpdatePatch) => void;
+  onDeleteActivity?: (recordId: string) => void;
+  onUpsertRestDay?: (dateKey: string, note?: string) => void;
+  onDeleteRestRecord?: (restId: string) => void;
+  onClearDayRecords?: (dateKey: string) => void;
   onNavigateToToday?: () => void;
 }
 
 export function MyPlanView({
   phoneFrameRef,
-  completionRecords = [],
-  restDayKeys = [],
+  activityRecords = [],
+  restRecords = [],
+  onAddManualActivity,
+  onUpdateActivity,
+  onDeleteActivity,
+  onUpsertRestDay,
+  onDeleteRestRecord,
+  onClearDayRecords,
   onNavigateToToday,
 }: MyPlanViewProps) {
   // Real device date state with automatic local midnight & background-resume sync
@@ -716,19 +605,37 @@ export function MyPlanView({
     };
   }, [deviceToday.dateStr]);
 
-  const [activityLogs, setActivityLogs] = useState<Record<string, DayActivityRecord>>(() =>
-    createInitialActivityLogs(deviceToday.year, deviceToday.month, deviceToday.day)
-  );
-
-  // Month Picker Modal & Day Detail Modal States
+  // Month Picker Modal & Day Detail Modal States (reads & writes unified activityRecords + restRecords)
   const [isMonthPickerOpen, setIsMonthPickerOpen] = useState<boolean>(false);
   const [activeDayModalDate, setActiveDayModalDate] = useState<string | null>(null);
+  const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
   const [dayDraftType, setDayDraftType] = useState<DayRecordType>('active');
-  const [dayDraftTitle, setDayDraftTitle] = useState<string>('');
+  const [dayDraftCategory, setDayDraftCategory] = useState<Exclude<ActivityCategory, 'rest'>>('walk');
+  const [dayDraftTitle, setDayDraftTitle] = useState<string>('15-min mindful walk');
   const [dayDraftDuration, setDayDraftDuration] = useState<number>(15);
-  const [dayDraftSessions, setDayDraftSessions] = useState<number>(1);
   const [dayDraftNote, setDayDraftNote] = useState<string>('');
   const [dayUpdateToast, setDayUpdateToast] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+
+  const showPlanToast = (message: string) => {
+    if (toastTimeoutRef.current !== null) {
+      window.clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+    setDayUpdateToast(message);
+    toastTimeoutRef.current = window.setTimeout(() => {
+      setDayUpdateToast(null);
+      toastTimeoutRef.current = null;
+    }, 2600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current !== null) {
+        window.clearTimeout(toastTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // 2. Your Rhythm Filter State
   const [rhythmFilter, setRhythmFilter] = useState<RhythmTimeframe>('7d');
@@ -739,8 +646,17 @@ export function MyPlanView({
   // 4. Methodology Info Popup State (Inside Your Rhythm Secondary Sheet)
   const [isMethodologyOpen, setIsMethodologyOpen] = useState<boolean>(false);
 
+  // Ensure one-time versioned prototype demo initialization ran before reading Plan stores
+  const hasCheckedDemoInitRef = useRef<boolean>(false);
+  if (!hasCheckedDemoInitRef.current) {
+    initializePrototypeDemoData(new Date(deviceToday.year, deviceToday.month, deviceToday.day));
+    hasCheckedDemoInitRef.current = true;
+  }
+
   // 5. Your Focus & Up Next Shared Phase State
-  const [direction, setDirection] = useState<DirectionState>(loadInitialFocus);
+  const [direction, setDirection] = useState<DirectionState>(() =>
+    loadInitialFocus(new Date(deviceToday.year, deviceToday.month, deviceToday.day))
+  );
   const [planPath, setPlanPath] = useState<PlanPathState>(() =>
     loadInitialPlanPath(direction.phase)
   );
@@ -759,13 +675,16 @@ export function MyPlanView({
     planPath.phases.slice(0, 3)
   );
 
-  // 5b. This Week Schedule, Progress & Sheets State
-  const [weeklySchedule, setWeeklySchedule] = useState<WeeklySchedule | null>(loadWeeklySchedule);
-  const [isWeekAdjustOpen, setIsWeekAdjustOpen] = useState<boolean>(false);
-  const [weekDraft, setWeekDraft] = useState<WeeklySchedule>(() => weeklySchedule ?? DEFAULT_WEEKLY_DRAFT);
+  // 5b. Per-Week Schedules (Indexed by local Monday YYYY-MM-DD weekStartKey) & Sheet State
+  const [weeklySchedulesByWeek, setWeeklySchedulesByWeek] = useState<WeeklySchedulesByWeek>(() =>
+    loadWeeklySchedulesByWeek(new Date(deviceToday.year, deviceToday.month, deviceToday.day))
+  );
+  const [editingWeekTarget, setEditingWeekTarget] = useState<'this_week' | 'next_week' | null>(null);
+  const isWeekAdjustOpen = editingWeekTarget !== null;
+  const [weekDraft, setWeekDraft] = useState<WeeklySchedule>(() => DEFAULT_WEEKLY_DRAFT);
   const [activeWeekCategoryList, setActiveWeekCategoryList] = useState<'walk' | 'stretch' | null>(null);
 
-  // 5c. Weekly Review Feedback & On-Demand Adjustment State
+  // 5c. Weekly Review Feedback & On-Demand Adjustment State (Strictly targets Next week)
   const [weeklyReviewFeedbacks, setWeeklyReviewFeedbacks] = useState<
     Record<string, WeeklyReviewFeedback>
   >(loadWeeklyReviewFeedbacks);
@@ -774,7 +693,11 @@ export function MyPlanView({
   );
   const [lastAppliedAdjustment, setLastAppliedAdjustment] = useState<{
     proposal: WeeklyAdjustmentProposal;
-    previousSchedule: WeeklySchedule;
+    targetWeekStartKey: string;
+    targetActivity: 'walk' | 'stretch';
+    targetField: 'durationLabel' | 'targetCount';
+    previousValue: string | number;
+    appliedValue: string | number;
   } | null>(null);
 
   // 6. Preferences (Migrated from What Nova Knows)
@@ -852,20 +775,31 @@ export function MyPlanView({
   // 4. UNIFIED DATA DERIVATIONS (ACTIVITY + TODAY SYNC + HISTORY)
   // ============================================================================
 
-  // Overlay real Today completions and rest days onto local History records
+  // Single unified derivation for History calendar, month list, 6-month trend, and 7d/Month charts
   const effectiveActivityLogs = useMemo(() => {
-    const merged: Record<string, DayActivityRecord> = { ...activityLogs };
+    const merged: Record<string, DayActivityRecord> = {};
 
-    const realByDate: Record<string, ActivityCompletionRecord[]> = {};
-    for (const rec of completionRecords) {
-      if (rec.isSample === true || rec.category === 'rest') continue;
-      if (!realByDate[rec.dateKey]) realByDate[rec.dateKey] = [];
-      realByDate[rec.dateKey].push(rec);
+    const activitiesByDate: Record<string, ActivityCompletionRecord[]> = {};
+    for (const rec of activityRecords) {
+      if (rec.category === 'rest') continue;
+      if (!activitiesByDate[rec.dateKey]) activitiesByDate[rec.dateKey] = [];
+      activitiesByDate[rec.dateKey].push(rec);
     }
 
-    for (const [dateKey, recs] of Object.entries(realByDate)) {
+    const restByDate: Record<string, RestRecord> = {};
+    for (const restRec of restRecords) {
+      const existing = restByDate[restRec.dateKey];
+      // Prefer real rest record over demo if both ever existed
+      if (!existing || (existing.source === 'demo' && restRec.source !== 'demo')) {
+        restByDate[restRec.dateKey] = restRec;
+      }
+    }
+
+    for (const [dateKey, recs] of Object.entries(activitiesByDate)) {
       const totalMins = recs.reduce((sum, r) => sum + (r.durationMinutes || 0), 0);
       const titles = recs.map((r) => r.title).filter(Boolean);
+      const allDemo = recs.every((r) => r.source === 'demo' || r.isSample === true);
+      const firstNote = recs.find((r) => r.note)?.note;
       merged[dateKey] = {
         date: dateKey,
         type: 'active',
@@ -875,35 +809,29 @@ export function MyPlanView({
             : `${titles[0]} + ${titles.length - 1} more`,
         durationMinutes: totalMins,
         sessionsCount: recs.length,
-        note: 'Completed on Today',
-        isSample: false,
+        hasRest: Boolean(restByDate[dateKey]),
+        note: firstNote,
+        isSample: allDemo,
       };
     }
 
-    for (const restKey of restDayKeys) {
-      if (!realByDate[restKey]) {
-        const existing = merged[restKey];
-        if (!existing || existing.isSample) {
-          merged[restKey] = {
-            date: restKey,
-            type: 'rest',
-            title: 'Rest day',
-            durationMinutes: 0,
-            sessionsCount: 0,
-            note: 'Chosen on Today',
-            isSample: false,
-          };
-        }
+    for (const [dateKey, restRec] of Object.entries(restByDate)) {
+      if (!merged[dateKey]) {
+        merged[dateKey] = {
+          date: dateKey,
+          type: 'rest',
+          title: restRec.title || 'Mindful rest day',
+          durationMinutes: 0,
+          sessionsCount: 0,
+          hasRest: true,
+          note: restRec.note,
+          isSample: restRec.source === 'demo' || restRec.isSample === true,
+        };
       }
     }
 
     return merged;
-  }, [activityLogs, completionRecords, restDayKeys]);
-
-  const hasAnySampleHistory = useMemo(
-    () => Object.values(effectiveActivityLogs).some((r) => r.isSample),
-    [effectiveActivityLogs]
-  );
+  }, [activityRecords, restRecords]);
 
   const daysInCurrentMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
@@ -915,7 +843,7 @@ export function MyPlanView({
     [effectiveActivityLogs, monthPrefix]
   );
 
-  // Distinguish Active Days (活动天数) vs Completed Activities / Sessions (活动次数)
+  // Distinguish Active Days vs Completed Activities / Sessions vs Independent Rest Days
   const activeDaysCount = useMemo(
     () => currentMonthRecords.filter((r) => r.type === 'active').length,
     [currentMonthRecords]
@@ -928,7 +856,7 @@ export function MyPlanView({
     [currentMonthRecords]
   );
   const restDaysCount = useMemo(
-    () => currentMonthRecords.filter((r) => r.type === 'rest').length,
+    () => currentMonthRecords.filter((r) => r.type === 'rest' || r.hasRest === true).length,
     [currentMonthRecords]
   );
   const totalMinutes = useMemo(
@@ -939,17 +867,27 @@ export function MyPlanView({
     [currentMonthRecords]
   );
 
-  // Current local week bounds (Monday start -> Sunday end) & real Today completions in this week
+  // Current & Next local week bounds (Monday start -> Sunday end) & per-week schedules
   const currentWeekBounds = useMemo(
     () => getLocalWeekBounds(new Date(deviceToday.year, deviceToday.month, deviceToday.day)),
     [deviceToday.year, deviceToday.month, deviceToday.day]
   );
 
+  const nextWeekBounds = useMemo(
+    () => getNextWeekBounds(new Date(deviceToday.year, deviceToday.month, deviceToday.day)),
+    [deviceToday.year, deviceToday.month, deviceToday.day]
+  );
+
+  // This week reads ONLY this week's schedule; Next week reads ONLY next week's schedule
+  const weeklySchedule = weeklySchedulesByWeek[currentWeekBounds.weekStartKey] ?? null;
+  const nextWeekSchedule = weeklySchedulesByWeek[nextWeekBounds.weekStartKey] ?? null;
+
+  // This week reads from the SAME unified activityRecords store as History and Weekly review
   const thisWeekCompletions = useMemo(() => {
-    return completionRecords
+    return activityRecords
       .filter(
         (record) =>
-          record.isSample !== true &&
+          record.category !== 'rest' &&
           isDateKeyInWeek(
             record.dateKey,
             currentWeekBounds.weekStartKey,
@@ -957,7 +895,7 @@ export function MyPlanView({
           )
       )
       .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
-  }, [completionRecords, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey]);
+  }, [activityRecords, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey]);
 
   const thisWeekWalkRecords = useMemo(
     () => thisWeekCompletions.filter((r) => r.category === 'walk'),
@@ -975,10 +913,10 @@ export function MyPlanView({
     [deviceToday.year, deviceToday.month, deviceToday.day]
   );
 
+  // Weekly review reads from the SAME unified activityRecords & restRecords store as History
   const lastWeekCompletions = useMemo(() => {
-    return completionRecords.filter(
+    return activityRecords.filter(
       (record) =>
-        record.isSample !== true &&
         record.category !== 'rest' &&
         isDateKeyInWeek(
           record.dateKey,
@@ -987,21 +925,26 @@ export function MyPlanView({
         )
     );
   }, [
-    completionRecords,
+    activityRecords,
     lastCompletedWeekBounds.weekStartKey,
     lastCompletedWeekBounds.weekEndKey,
   ]);
 
   const lastWeekRestDayCount = useMemo(() => {
-    return restDayKeys.filter((key) =>
-      isDateKeyInWeek(
-        key,
-        lastCompletedWeekBounds.weekStartKey,
-        lastCompletedWeekBounds.weekEndKey
-      )
-    ).length;
+    const uniqueRestDates = new Set(
+      restRecords
+        .filter((r) =>
+          isDateKeyInWeek(
+            r.dateKey,
+            lastCompletedWeekBounds.weekStartKey,
+            lastCompletedWeekBounds.weekEndKey
+          )
+        )
+        .map((r) => r.dateKey)
+    );
+    return uniqueRestDates.size;
   }, [
-    restDayKeys,
+    restRecords,
     lastCompletedWeekBounds.weekStartKey,
     lastCompletedWeekBounds.weekEndKey,
   ]);
@@ -1021,14 +964,18 @@ export function MyPlanView({
 
   const selectedWeeklyReviewFeeling = lastWeekFeedback?.feeling ?? null;
 
+  // Base schedule for Next week adjustment: prefer Next week's own schedule, else current week's cadence (never mutating This week)
+  const adjustmentTargetBaseSchedule = nextWeekSchedule ?? weeklySchedule;
+
   const activeAdjustmentProposal = useMemo(
     () =>
       buildWeeklyAdjustmentProposal(
-        weeklySchedule,
+        adjustmentTargetBaseSchedule,
         lastWeekFeedback,
+        nextWeekBounds,
         resolvedAdjustmentKeys
       ),
-    [weeklySchedule, lastWeekFeedback, resolvedAdjustmentKeys]
+    [adjustmentTargetBaseSchedule, lastWeekFeedback, nextWeekBounds, resolvedAdjustmentKeys]
   );
 
   const handleSelectWeeklyReviewFeeling = (feeling: WeeklyReviewFeeling) => {
@@ -1046,14 +993,21 @@ export function MyPlanView({
   };
 
   const handleAcceptAdjustment = () => {
-    if (!activeAdjustmentProposal || !weeklySchedule) return;
-    const previousSchedule = weeklySchedule;
-    const nextSchedule = applyWeeklyAdjustmentProposal(
-      weeklySchedule,
+    if (!activeAdjustmentProposal || !adjustmentTargetBaseSchedule) return;
+    const targetWeekKey = activeAdjustmentProposal.targetWeekStartKey;
+    const baseForTargetWeek =
+      weeklySchedulesByWeek[targetWeekKey] ?? adjustmentTargetBaseSchedule;
+    const updatedTargetSchedule = applyWeeklyAdjustmentProposal(
+      baseForTargetWeek,
       activeAdjustmentProposal
     );
-    setWeeklySchedule(nextSchedule);
-    saveWeeklySchedule(nextSchedule);
+
+    const nextByWeek: WeeklySchedulesByWeek = {
+      ...weeklySchedulesByWeek,
+      [targetWeekKey]: updatedTargetSchedule,
+    };
+    setWeeklySchedulesByWeek(nextByWeek);
+    saveWeeklySchedulesByWeek(nextByWeek);
 
     const nextResolved = Array.from(
       new Set([
@@ -1066,15 +1020,56 @@ export function MyPlanView({
     saveResolvedAdjustmentKeys(nextResolved);
     setLastAppliedAdjustment({
       proposal: activeAdjustmentProposal,
-      previousSchedule,
+      targetWeekStartKey: targetWeekKey,
+      targetActivity: activeAdjustmentProposal.targetActivity,
+      targetField: activeAdjustmentProposal.targetField,
+      previousValue: activeAdjustmentProposal.previousValue,
+      appliedValue: activeAdjustmentProposal.nextValue,
     });
   };
 
   const handleUndoAdjustment = () => {
     if (!lastAppliedAdjustment) return;
-    const { proposal, previousSchedule } = lastAppliedAdjustment;
-    setWeeklySchedule(previousSchedule);
-    saveWeeklySchedule(previousSchedule);
+    const {
+      proposal,
+      targetWeekStartKey,
+      targetActivity,
+      targetField,
+      previousValue,
+      appliedValue,
+    } = lastAppliedAdjustment;
+
+    const latestTargetSchedule = weeklySchedulesByWeek[targetWeekStartKey];
+    if (!latestTargetSchedule) {
+      setLastAppliedAdjustment(null);
+      return;
+    }
+
+    // Safety guard: if the user already manually modified this exact field after accepting,
+    // never overwrite the user's newer value — simply clear the Undo entry.
+    const currentFieldVal = getWeeklyScheduleFieldValue(
+      latestTargetSchedule,
+      targetActivity,
+      targetField
+    );
+    if (currentFieldVal !== appliedValue) {
+      setLastAppliedAdjustment(null);
+      return;
+    }
+
+    // Restore ONLY that single field on that target week, preserving all other edits
+    const restoredTargetSchedule = setWeeklyScheduleFieldValue(
+      latestTargetSchedule,
+      targetActivity,
+      targetField,
+      previousValue
+    );
+    const nextByWeek: WeeklySchedulesByWeek = {
+      ...weeklySchedulesByWeek,
+      [targetWeekStartKey]: restoredTargetSchedule,
+    };
+    setWeeklySchedulesByWeek(nextByWeek);
+    saveWeeklySchedulesByWeek(nextByWeek);
 
     const nextResolved = resolvedAdjustmentKeys.filter(
       (k) => k !== proposal.resolutionKey && k !== proposal.id
@@ -1172,6 +1167,9 @@ export function MyPlanView({
         sevenDayActiveDays += 1;
         sevenDaySessions += sess;
         sevenDayMinutes += mins;
+        if (rec.hasRest) {
+          sevenDayRestDays += 1;
+        }
         sevenDayBars.push({
           label: dayLabel,
           minutes: mins,
@@ -1295,11 +1293,6 @@ export function MyPlanView({
     [memories]
   );
 
-  const hasSampleInCurrentMonth = useMemo(
-    () => currentMonthRecords.some((r) => r.isSample),
-    [currentMonthRecords]
-  );
-
   // --- Handlers for Month Switching ---
   const handlePrevMonth = () => {
     setSlideDirection(-1);
@@ -1340,59 +1333,84 @@ export function MyPlanView({
     setViewMonth(latestToday.month);
   };
 
-  // --- Handlers for Day Detail & Record Correction ---
+  // --- Handlers for Day Detail & Unified Record Management ---
+  const resetDayActivityDraft = () => {
+    setEditingActivityId(null);
+    setDayDraftType('active');
+    setDayDraftCategory('walk');
+    setDayDraftTitle('15-min mindful walk');
+    setDayDraftDuration(15);
+    setDayDraftNote('');
+  };
+
   const handleOpenDayDetail = (dateStr: string) => {
-    const existing = effectiveActivityLogs[dateStr];
     setActiveDayModalDate(dateStr);
-    if (existing) {
-      setDayDraftType(existing.type);
-      setDayDraftTitle(
-        existing.title || (existing.type === 'rest' ? 'Mindful rest day' : '15-min mindful walk')
-      );
-      setDayDraftDuration(existing.durationMinutes ?? (existing.type === 'active' ? 15 : 0));
-      setDayDraftSessions(existing.sessionsCount ?? (existing.type === 'active' ? 1 : 0));
-      setDayDraftNote(existing.note || '');
-    } else {
-      setDayDraftType('active');
-      setDayDraftTitle('15-min mindful walk');
-      setDayDraftDuration(15);
-      setDayDraftSessions(1);
-      setDayDraftNote('');
+    resetDayActivityDraft();
+  };
+
+  const handleStartEditDayActivity = (rec: ActivityCompletionRecord) => {
+    setEditingActivityId(rec.id);
+    setDayDraftType('active');
+    const normalizedCat: Exclude<ActivityCategory, 'rest'> =
+      rec.category === 'walk' || rec.category === 'stretch' ? rec.category : 'other';
+    setDayDraftCategory(normalizedCat);
+    setDayDraftTitle(rec.title);
+    setDayDraftDuration(rec.durationMinutes || 15);
+    setDayDraftNote(rec.note || '');
+  };
+
+  const handleDeleteSingleDayActivity = (recordId: string) => {
+    onDeleteActivity?.(recordId);
+    if (editingActivityId === recordId) {
+      resetDayActivityDraft();
     }
+    showPlanToast('Activity removed — rhythm updated');
+  };
+
+  const handleDeleteSingleDayRest = (restId: string) => {
+    onDeleteRestRecord?.(restId);
+    showPlanToast('Rest day removed — rhythm updated');
   };
 
   const handleSaveDayRecord = () => {
     if (!activeDayModalDate) return;
     if (dayDraftType === 'active' && !dayDraftTitle.trim()) return;
 
-    setActivityLogs((prev) => {
-      const next = { ...prev };
-      if (dayDraftType === 'none') {
-        delete next[activeDayModalDate];
-      } else {
-        next[activeDayModalDate] = {
-          date: activeDayModalDate,
-          type: dayDraftType,
-          title: dayDraftType === 'rest' ? 'Mindful rest day' : dayDraftTitle.trim(),
-          durationMinutes: dayDraftType === 'rest' ? 0 : dayDraftDuration,
-          sessionsCount: dayDraftType === 'rest' ? 0 : dayDraftSessions,
-          note:
-            dayDraftNote.trim() ||
-            (dayDraftType === 'rest' ? 'Restorative recovery day' : 'Logged manually'),
-          isSample: false
-        };
-      }
-      return next;
-    });
+    if (dayDraftType === 'none') {
+      onClearDayRecords?.(activeDayModalDate);
+      showPlanToast('Record cleared — rhythm updated');
+      setEditingActivityId(null);
+      setActiveDayModalDate(null);
+      return;
+    }
 
-    const label =
-      dayDraftType === 'none'
-        ? 'Record cleared — rhythm updated'
-        : dayDraftType === 'rest'
-        ? 'Rest day saved — rhythm updated'
-        : 'Activity saved — rhythm updated';
-    setDayUpdateToast(label);
-    setTimeout(() => setDayUpdateToast(null), 2600);
+    if (dayDraftType === 'rest') {
+      onUpsertRestDay?.(activeDayModalDate, dayDraftNote);
+      showPlanToast('Rest day saved — rhythm updated');
+      setEditingActivityId(null);
+      setActiveDayModalDate(null);
+      return;
+    }
+
+    if (editingActivityId) {
+      onUpdateActivity?.(editingActivityId, {
+        title: dayDraftTitle.trim(),
+        category: dayDraftCategory,
+        durationMinutes: dayDraftDuration,
+        note: dayDraftNote.trim(),
+      });
+      showPlanToast('Activity updated — rhythm updated');
+    } else {
+      onAddManualActivity?.({
+        dateKey: activeDayModalDate,
+        title: dayDraftTitle.trim(),
+        category: dayDraftCategory,
+        durationMinutes: dayDraftDuration,
+        note: dayDraftNote.trim(),
+      });
+      showPlanToast('Activity saved — rhythm updated');
+    }
+    setEditingActivityId(null);
     setActiveDayModalDate(null);
   };
 
@@ -1414,7 +1432,9 @@ export function MyPlanView({
     if (!trimmedFocus) return;
 
     const trimmedApproach = focusDraftApproach.trim();
-    const trimmedReview = focusDraftReview.trim() || 'Review on Sunday';
+    const trimmedReview =
+      focusDraftReview.trim() ||
+      formatReviewOnSundayLabel(new Date(deviceToday.year, deviceToday.month, deviceToday.day));
 
     const updated: DirectionState = {
       ...direction,
@@ -1423,6 +1443,7 @@ export function MyPlanView({
       description: trimmedApproach,
       executionApproach: trimmedApproach,
       nextReviewDate: trimmedReview,
+      source: 'user',
       isSample: false,
     };
 
@@ -1446,9 +1467,7 @@ export function MyPlanView({
   const syncFocusPhaseName = (nextPhaseName: string) => {
     setDirection((prev) => {
       const updated = { ...prev, phase: nextPhaseName };
-      if (!prev.isSample) {
-        persistFocusToStorage({ ...updated, isSample: false });
-      }
+      persistFocusToStorage(updated);
       return updated;
     });
   };
@@ -1467,6 +1486,7 @@ export function MyPlanView({
     const nextState: PlanPathState = {
       phases: visiblePhases,
       currentPhaseId: targetPhase.id,
+      source: 'user',
       isSample: false,
     };
     setPlanPath(nextState);
@@ -1474,8 +1494,7 @@ export function MyPlanView({
     syncFocusPhaseName(targetPhase.name);
     setSelectedPhaseId(null);
     setIsConfirmingPhaseSwitch(false);
-    setDayUpdateToast(`Current phase: ${targetPhase.name}`);
-    setTimeout(() => setDayUpdateToast(null), 2600);
+    showPlanToast(`Current phase: ${targetPhase.name}`);
   };
 
   const handleOpenPathEdit = () => {
@@ -1503,6 +1522,7 @@ export function MyPlanView({
     const nextState: PlanPathState = {
       phases: cleanedPhases,
       currentPhaseId: currentPhase.id,
+      source: 'user',
       isSample: false,
     };
     setPlanPath(nextState);
@@ -1514,26 +1534,46 @@ export function MyPlanView({
     }
 
     setIsPathEditOpen(false);
-    setDayUpdateToast('Path updated');
-    setTimeout(() => setDayUpdateToast(null), 2600);
+    showPlanToast('Path updated');
   };
 
-  // --- Handlers for This Week ---
-  const handleOpenWeekAdjust = () => {
-    setWeekDraft(weeklySchedule ?? DEFAULT_WEEKLY_DRAFT);
-    setIsWeekAdjustOpen(true);
+  // --- Handlers for This Week / Next Week Schedule Editing ---
+  const handleOpenWeekAdjust = (target: 'this_week' | 'next_week') => {
+    if (target === 'next_week') {
+      const seed = nextWeekSchedule ?? weeklySchedule ?? DEFAULT_WEEKLY_DRAFT;
+      setWeekDraft({
+        walk: { ...seed.walk },
+        stretch: { ...seed.stretch },
+        restNote: 'As needed',
+        updatedAt: seed.updatedAt,
+      });
+    } else {
+      const seed = weeklySchedule ?? DEFAULT_WEEKLY_DRAFT;
+      setWeekDraft({
+        walk: { ...seed.walk },
+        stretch: { ...seed.stretch },
+        restNote: 'As needed',
+        updatedAt: seed.updatedAt,
+      });
+    }
+    setEditingWeekTarget(target);
   };
 
   const handleCloseWeekAdjust = () => {
-    setIsWeekAdjustOpen(false);
+    setEditingWeekTarget(null);
   };
 
   const handleSaveWeekAdjust = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    const target = editingWeekTarget ?? 'this_week';
+    const targetWeekKey =
+      target === 'next_week' ? nextWeekBounds.weekStartKey : currentWeekBounds.weekStartKey;
+
     const nextSchedule: WeeklySchedule = {
       walk: {
         targetCount: weekDraft.walk.targetCount,
-        durationLabel: weekDraft.walk.durationLabel.trim() || DEFAULT_WEEKLY_DRAFT.walk.durationLabel,
+        durationLabel:
+          weekDraft.walk.durationLabel.trim() || DEFAULT_WEEKLY_DRAFT.walk.durationLabel,
       },
       stretch: {
         targetCount: weekDraft.stretch.targetCount,
@@ -1542,19 +1582,39 @@ export function MyPlanView({
       },
       restNote: 'As needed',
       updatedAt: new Date().toISOString(),
+      source: 'user',
     };
-    setWeeklySchedule(nextSchedule);
-    saveWeeklySchedule(nextSchedule);
-    setLastAppliedAdjustment(null);
-    setIsWeekAdjustOpen(false);
-    setDayUpdateToast('This week updated');
-    setTimeout(() => setDayUpdateToast(null), 2600);
+
+    const nextByWeek: WeeklySchedulesByWeek = {
+      ...weeklySchedulesByWeek,
+      [targetWeekKey]: nextSchedule,
+    };
+    setWeeklySchedulesByWeek(nextByWeek);
+    saveWeeklySchedulesByWeek(nextByWeek);
+
+    // If the user manually changed the exact field previously adjusted by "Try this",
+    // invalidate that Undo entry so old Undo can never overwrite the user's newer value.
+    if (
+      lastAppliedAdjustment &&
+      lastAppliedAdjustment.targetWeekStartKey === targetWeekKey
+    ) {
+      const newFieldVal = getWeeklyScheduleFieldValue(
+        nextSchedule,
+        lastAppliedAdjustment.targetActivity,
+        lastAppliedAdjustment.targetField
+      );
+      if (newFieldVal !== lastAppliedAdjustment.appliedValue) {
+        setLastAppliedAdjustment(null);
+      }
+    }
+
+    setEditingWeekTarget(null);
+    showPlanToast(target === 'next_week' ? 'Next week updated' : 'This week updated');
   };
 
   // --- Handlers for Preferences ---
   const showMemoryFeedback = (text: string) => {
-    setDayUpdateToast(text);
-    setTimeout(() => setDayUpdateToast(null), 2600);
+    showPlanToast(text);
   };
 
   const updatePreferencesState = (
@@ -2020,7 +2080,7 @@ export function MyPlanView({
                 <button
                   type="button"
                   id="plan-week-action-btn"
-                  onClick={handleOpenWeekAdjust}
+                  onClick={() => handleOpenWeekAdjust('this_week')}
                   className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
                 >
                   Set up
@@ -2153,7 +2213,7 @@ export function MyPlanView({
                 <button
                   type="button"
                   id="plan-week-action-btn"
-                  onClick={handleOpenWeekAdjust}
+                  onClick={() => handleOpenWeekAdjust('this_week')}
                   className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
                 >
                   Adjust week
@@ -2173,12 +2233,23 @@ export function MyPlanView({
           aria-labelledby="plan-heading-adjustment"
           className="flex flex-col gap-2.5"
         >
-          <h2
-            id="plan-heading-adjustment"
-            className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-          >
-            A small adjustment
-          </h2>
+          <div className="flex items-baseline justify-between gap-3">
+            <h2
+              id="plan-heading-adjustment"
+              className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+            >
+              A small adjustment
+            </h2>
+            <span
+              id="plan-adjustment-target-week"
+              className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0"
+            >
+              Next week ·{' '}
+              {lastAppliedAdjustment
+                ? lastAppliedAdjustment.proposal.targetWeekRangeLabel
+                : activeAdjustmentProposal?.targetWeekRangeLabel}
+            </span>
+          </div>
 
           <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
             {lastAppliedAdjustment ? (
@@ -2197,6 +2268,7 @@ export function MyPlanView({
                     id="plan-adjustment-updated-change"
                     className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
                   >
+                    Next week ({lastAppliedAdjustment.proposal.targetWeekRangeLabel}) ·{' '}
                     {lastAppliedAdjustment.proposal.changeLabel}
                   </span>
                 </div>
@@ -2458,7 +2530,7 @@ export function MyPlanView({
               <button
                 type="button"
                 id="weekly-review-adjust-next-week-btn"
-                onClick={handleOpenWeekAdjust}
+                onClick={() => handleOpenWeekAdjust('next_week')}
                 className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
               >
                 Adjust next week
@@ -2551,20 +2623,6 @@ export function MyPlanView({
           </div>
         </button>
       </section>
-
-      {/* Unified low-emphasis local demo data attribution (shown once at page level, never repeated per card) */}
-      {(direction.isSample || hasAnySampleHistory) && (
-        <p
-          id="plan-demo-source-note"
-          className="px-1 -mt-2 text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-        >
-          {direction.isSample && hasAnySampleHistory
-            ? 'Default focus and past calendar history include local demo examples until you update them.'
-            : direction.isSample
-            ? 'Default focus uses a local demo example until you adjust it.'
-            : 'Past calendar history includes local demo entries.'}
-        </p>
-      )}
 
       {/* ============================================================ */}
       {/* SECONDARY DETAIL SHEETS (Rendered via React Portal)           */}
@@ -2728,8 +2786,11 @@ export function MyPlanView({
                   {selectedModule === 'history' && (
                     <div className="flex flex-col gap-4 text-xs text-[#3C3C43]">
                       {/* Activity Monthly Calendar */}
-                      <div className="p-4 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3">
-                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div
+                        id="history-calendar-card"
+                        className="py-4 px-3 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap px-1">
                           <button
                             type="button"
                             onClick={() => {
@@ -2761,7 +2822,7 @@ export function MyPlanView({
                         </div>
 
                         {/* Weekday indicators */}
-                        <div className="grid grid-cols-7 gap-1.5 text-center select-none pt-0.5">
+                        <div className="grid grid-cols-7 gap-x-0 text-center select-none pt-0.5">
                           {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayInitial, idx) => (
                             <span key={idx} className="text-[11px] font-semibold text-[#6E6E78] uppercase tracking-wider">
                               {dayInitial}
@@ -2769,7 +2830,7 @@ export function MyPlanView({
                           ))}
                         </div>
 
-                        {/* Monthly Illuminated Dot Grid */}
+                        {/* Monthly Calendar Grid (7 equal columns, >= 44x44px touch targets) */}
                         <div className="relative select-none overflow-hidden touch-pan-y">
                           <motion.div
                             key={`${viewYear}-${viewMonth}`}
@@ -2783,10 +2844,10 @@ export function MyPlanView({
                               if (info.offset.x > 40) handlePrevMonth();
                               else if (info.offset.x < -40) handleNextMonth();
                             }}
-                            className="grid grid-cols-7 gap-1.5 cursor-grab active:cursor-grabbing py-1"
+                            className="grid grid-cols-7 gap-x-0 gap-y-0.5 cursor-grab active:cursor-grabbing py-1"
                           >
                             {Array.from({ length: firstDayOfWeek }).map((_, idx) => (
-                              <div key={`empty-prefix-${idx}`} className="aspect-square w-full" />
+                              <div key={`empty-prefix-${idx}`} className="w-full min-h-[44px]" />
                             ))}
 
                             {Array.from({ length: daysInCurrentMonth }, (_, i) => i + 1).map((dayNum) => {
@@ -2803,27 +2864,32 @@ export function MyPlanView({
                                   viewMonth === deviceToday.month &&
                                   dayNum > deviceToday.day);
 
+                              const tileClasses =
+                                record?.type === 'active'
+                                  ? 'bg-[#5E5BAE] text-[#FFFFFF] shadow-[0_2px_6px_rgba(94,91,174,0.22)] group-hover:brightness-105'
+                                  : record?.type === 'rest'
+                                  ? 'bg-[#E59980] text-[#3A2D29] shadow-[0_2px_6px_rgba(229,153,128,0.22)] group-hover:brightness-105'
+                                  : isFuture
+                                  ? 'bg-[#F2F2F7]/70 text-[#8E8E93] border border-dashed border-[#D1D1D6] group-hover:bg-[#E5E5EA]'
+                                  : 'bg-[#F2F2F7] text-[#6E6E78] group-hover:bg-[#E5E5EA]';
+
                               return (
                                 <button
                                   type="button"
                                   key={dStr}
+                                  data-calendar-date={dStr}
                                   onClick={() => handleOpenDayDetail(dStr)}
                                   aria-label={`${dStr}: ${record?.type || 'no record'}`}
-                                  className={`aspect-square w-full max-w-[36px] mx-auto rounded-[8px] flex items-center justify-center transition-all duration-150 relative cursor-pointer active:scale-88 ${
-                                    isToday ? 'ring-2 ring-[#5E5BAE] ring-offset-2 ring-offset-white' : ''
-                                  } ${
-                                    record?.type === 'active'
-                                      ? 'bg-[#5E5BAE] shadow-[0_2px_6px_rgba(94,91,174,0.25)] hover:brightness-105'
-                                      : record?.type === 'rest'
-                                      ? 'bg-[#E59980] shadow-[0_2px_6px_rgba(229,153,128,0.25)] hover:brightness-105'
-                                      : isFuture
-                                      ? 'bg-[#F2F2F7]/70 border border-dashed border-[#D1D1D6] hover:bg-[#E5E5EA]'
-                                      : 'bg-[#F2F2F7] hover:bg-[#E5E5EA]'
-                                  }`}
+                                  aria-current={isToday ? 'date' : undefined}
+                                  className="w-full min-h-[44px] flex items-center justify-center rounded-[10px] cursor-pointer group active:scale-92 transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5E5BAE]/50"
                                 >
-                                  {isToday && (
-                                    <span className="w-1.5 h-1.5 rounded-full bg-white absolute top-1 right-1 shadow-xs pointer-events-none" />
-                                  )}
+                                  <span
+                                    className={`w-9 h-9 rounded-[10px] flex items-center justify-center text-[13px] font-medium leading-[18px] tabular-nums transition-colors duration-150 ${
+                                      isToday ? 'ring-2 ring-[#5E5BAE] ring-offset-2 ring-offset-white' : ''
+                                    } ${tileClasses}`}
+                                  >
+                                    {dayNum}
+                                  </span>
                                 </button>
                               );
                             })}
@@ -2846,14 +2912,6 @@ export function MyPlanView({
                               <span>No record</span>
                             </div>
                           </div>
-                          {hasSampleInCurrentMonth && (
-                            <p
-                              id="history-sample-source-note"
-                              className="text-[12px] leading-[16px] text-[#6E6E78]"
-                            >
-                              Past dates include local demo entries. Completions from Today appear automatically.
-                            </p>
-                          )}
                         </div>
                       </div>
 
@@ -3283,7 +3341,7 @@ export function MyPlanView({
                         </div>
 
                         <p className="text-[15px] font-normal leading-[21px] text-[#1C1C1E] mt-1">
-                          No biometric or wearable metrics are synced in this version. Genki does not fill in placeholder health numbers.
+                          No biometric or wearable metrics are connected. Metrics stay empty until a source is connected.
                         </p>
                         <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
                           You can plan your week, log activity on Today, and complete weekly reviews without connecting a wearable.
@@ -3394,12 +3452,14 @@ export function MyPlanView({
                     </p>
                   )}
 
-                  <div className="p-3.5 rounded-[16px] bg-[#F2F2F7] flex flex-col gap-1">
-                    <span className="text-[12px] font-medium text-[#6E6E78]">Source</span>
-                    <p className="text-[13px] leading-[18px] text-[#1C1C1E]">
-                      {selectedMemory.learnedFrom}
-                    </p>
-                  </div>
+                  {selectedMemory.learnedFrom && (
+                    <div className="p-3.5 rounded-[16px] bg-[#F2F2F7] flex flex-col gap-1">
+                      <span className="text-[12px] font-medium text-[#6E6E78]">Source</span>
+                      <p className="text-[13px] leading-[18px] text-[#1C1C1E]">
+                        {selectedMemory.learnedFrom}
+                      </p>
+                    </div>
+                  )}
 
                   {!selectedMemory.isConfirmed || selectedMemory.source !== 'user_explicit' ? (
                     <div className="flex items-center gap-2.5 pt-1">
@@ -3903,7 +3963,9 @@ export function MyPlanView({
                           value={focusDraftReview}
                           onChange={(e) => setFocusDraftReview(e.target.value)}
                           onFocus={handleFieldFocusScroll}
-                          placeholder="e.g. Review on Sunday"
+                          placeholder={`e.g. ${formatReviewOnSundayLabel(
+                            new Date(deviceToday.year, deviceToday.month, deviceToday.day)
+                          )}`}
                           className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                         <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
@@ -3999,10 +4061,15 @@ export function MyPlanView({
                         id="this-week-sheet-title"
                         className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                       >
-                        This week
+                        {editingWeekTarget === 'next_week' ? 'Next week' : 'This week'}
                       </h3>
-                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                        {currentWeekBounds.rangeLabel}
+                      <p
+                        id="this-week-sheet-date-range"
+                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
+                      >
+                        {editingWeekTarget === 'next_week'
+                          ? nextWeekBounds.rangeLabel
+                          : currentWeekBounds.rangeLabel}
                       </p>
                     </div>
 
@@ -4034,8 +4101,13 @@ export function MyPlanView({
                         </div>
 
                         <div className="flex flex-col gap-1.5">
-                          <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78]">
-                            Sessions this week
+                          <span
+                            id="week-draft-walk-sessions-label"
+                            className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          >
+                            {editingWeekTarget === 'next_week'
+                              ? 'Sessions next week'
+                              : 'Sessions this week'}
                           </span>
                           <div className="grid grid-cols-4 gap-2">
                             {weekCountOptions.map((opt) => {
@@ -4110,8 +4182,13 @@ export function MyPlanView({
                         </div>
 
                         <div className="flex flex-col gap-1.5">
-                          <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78]">
-                            Sessions this week
+                          <span
+                            id="week-draft-stretch-sessions-label"
+                            className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          >
+                            {editingWeekTarget === 'next_week'
+                              ? 'Sessions next week'
+                              : 'Sessions this week'}
                           </span>
                           <div className="grid grid-cols-4 gap-2">
                             {weekCountOptions.map((opt) => {
@@ -4994,11 +5071,11 @@ export function MyPlanView({
                       const isCurrent =
                         pickerYear === deviceToday.year && idx === deviceToday.month;
                       const mPrefix = `${pickerYear}-${String(idx + 1).padStart(2, '0')}`;
-                      const mRecords = Object.values(activityLogs).filter((r) =>
+                      const mRecords = Object.values(effectiveActivityLogs).filter((r) =>
                         r.date.startsWith(mPrefix)
                       );
                       const mActive = mRecords.filter((r) => r.type === 'active').length;
-                      const mRest = mRecords.filter((r) => r.type === 'rest').length;
+                      const mRest = mRecords.filter((r) => r.type === 'rest' || r.hasRest === true).length;
 
                       return (
                         <button
@@ -5049,10 +5126,23 @@ export function MyPlanView({
       })()}
 
       {/* ============================================================ */}
-      {/* Day Detail & Correction Modal (Log, Correct, or Clear Record) */}
+      {/* Day Detail & Correction Modal (Unified Multi-Activity List)  */}
       {/* ============================================================ */}
       {(() => {
-        const currentRecord = activeDayModalDate ? activityLogs[activeDayModalDate] : null;
+        const dayActivities = activeDayModalDate
+          ? activityRecords.filter(
+              (r) => r.dateKey === activeDayModalDate && r.category !== 'rest'
+            )
+          : [];
+        const dayRestRecords = activeDayModalDate
+          ? restRecords.filter((r) => r.dateKey === activeDayModalDate)
+          : [];
+        const hasAnyRecords = dayActivities.length > 0 || dayRestRecords.length > 0;
+        const totalDayMinutes = dayActivities.reduce(
+          (sum, r) => sum + (r.durationMinutes || 0),
+          0
+        );
+
         let formattedDateString = '';
         let isSelectedDayToday = false;
 
@@ -5072,12 +5162,18 @@ export function MyPlanView({
         const dayModalContent = (
           <AnimatePresence>
             {activeDayModalDate && (
-              <div className="absolute inset-0 z-60 flex items-center justify-center p-5 pointer-events-auto">
+              <div
+                id="history-day-modal"
+                className="absolute inset-0 z-60 flex items-center justify-center p-5 pointer-events-auto"
+              >
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  onClick={() => setActiveDayModalDate(null)}
+                  onClick={() => {
+                    setEditingActivityId(null);
+                    setActiveDayModalDate(null);
+                  }}
                   className="absolute inset-0 bg-black/40 backdrop-blur-xs"
                 />
 
@@ -5101,17 +5197,23 @@ export function MyPlanView({
                         )}
                       </div>
                       <span className="text-[11px] text-[#8E8E93] block mt-0.5">
-                        {currentRecord?.isSample
-                          ? 'Sample record • Demo data'
-                          : currentRecord
-                          ? 'Logged in local session'
-                          : 'No record yet • Tap below to log'}
+                        {hasAnyRecords
+                          ? `${dayActivities.length} ${
+                              dayActivities.length === 1 ? 'activity' : 'activities'
+                            }${totalDayMinutes > 0 ? ` • ${totalDayMinutes} min` : ''}${
+                              dayRestRecords.length > 0 ? ' • Rest logged' : ''
+                            }`
+                          : 'No record yet • Add below'}
                       </span>
                     </div>
 
                     <button
                       type="button"
-                      onClick={() => setActiveDayModalDate(null)}
+                      id="history-day-modal-close"
+                      onClick={() => {
+                        setEditingActivityId(null);
+                        setActiveDayModalDate(null);
+                      }}
                       className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer shrink-0 transition-colors"
                       aria-label="Close"
                     >
@@ -5119,61 +5221,138 @@ export function MyPlanView({
                     </button>
                   </div>
 
+                  {/* Individual Activity & Rest Records for This Day (Never Collapsed) */}
                   <div
-                    className={`p-3.5 rounded-[18px] border flex flex-col gap-1 ${
-                      currentRecord?.type === 'active'
-                        ? 'bg-[#F4EEFE]/75 border-[#5E5BAE]/20 text-[#1C1C1E]'
-                        : currentRecord?.type === 'rest'
-                        ? 'bg-[#FFE4E6]/50 border-[#E11D48]/20 text-[#1C1C1E]'
-                        : 'bg-[#F2F2F7]/75 border-black/[0.04] text-[#8E8E93]'
-                    }`}
+                    id="history-day-records-list"
+                    className="flex flex-col gap-2"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-[#8E8E93]">
-                        Current Record Status
-                      </span>
-                      {currentRecord?.type === 'active' && (
-                        <span className="text-[11px] font-bold text-[#5E5BAE]">
-                          {currentRecord.sessionsCount ?? 1}{' '}
-                          {(currentRecord.sessionsCount ?? 1) === 1 ? 'activity' : 'activities'} •{' '}
-                          {currentRecord.durationMinutes} min
-                        </span>
-                      )}
-                      {currentRecord?.type === 'rest' && (
-                        <span className="text-[11px] font-bold text-[#E11D48]">
-                          Mindful rest
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[13px] font-semibold text-[#1C1C1E] mt-0.5">
-                      {currentRecord?.type === 'active' &&
-                        (currentRecord.title || 'Active session')}
-                      {currentRecord?.type === 'rest' &&
-                        (currentRecord.title || 'Mindful rest day')}
-                      {(!currentRecord || currentRecord.type === 'none') &&
-                        'No activity or rest recorded for this day'}
-                    </div>
-                    {currentRecord?.note && (
-                      <p className="text-[11.5px] text-[#6C6C70] italic mt-0.5">
-                        “{currentRecord.note}”
-                      </p>
+                    {!hasAnyRecords ? (
+                      <div className="p-3.5 rounded-[18px] border bg-[#F2F2F7]/75 border-black/[0.04] text-[13px] text-[#8E8E93]">
+                        No activity or rest recorded for this day
+                      </div>
+                    ) : (
+                      <>
+                        {dayActivities.map((rec) => {
+                          const isBeingEdited = editingActivityId === rec.id;
+                          const catLabel =
+                            rec.category === 'walk'
+                              ? 'Walk'
+                              : rec.category === 'stretch'
+                              ? 'Stretch'
+                              : 'Other';
+                          return (
+                            <div
+                              key={rec.id}
+                              data-activity-id={rec.id}
+                              className={`p-3 rounded-[16px] border flex items-start justify-between gap-2 ${
+                                isBeingEdited
+                                  ? 'bg-[#F4EEFE] border-[#5E5BAE]'
+                                  : 'bg-[#F4EEFE]/70 border-[#5E5BAE]/15'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[13px] font-semibold text-[#1C1C1E] leading-snug break-words">
+                                  {rec.title}
+                                </div>
+                                <div className="text-[11px] font-medium text-[#5E5BAE] mt-0.5">
+                                  {catLabel} • {rec.durationMinutes} min
+                                </div>
+                                {rec.note && (
+                                  <p className="text-[11px] text-[#6C6C70] italic mt-0.5 break-words">
+                                    “{rec.note}”
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  data-action="edit-day-activity"
+                                  data-activity-id={rec.id}
+                                  onClick={() => handleStartEditDayActivity(rec)}
+                                  className="min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[11px] font-semibold text-[#5E5BAE] hover:bg-[#FAFAFC] transition-colors cursor-pointer"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  data-action="delete-day-activity"
+                                  data-activity-id={rec.id}
+                                  onClick={() => handleDeleteSingleDayActivity(rec.id)}
+                                  className="min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[11px] font-semibold text-[#E11D48] hover:bg-[#FFF1F2] transition-colors cursor-pointer"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {dayRestRecords.map((restRec) => (
+                          <div
+                            key={restRec.id}
+                            data-rest-id={restRec.id}
+                            className="p-3 rounded-[16px] border bg-[#FFE4E6]/50 border-[#E11D48]/20 flex items-start justify-between gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[13px] font-semibold text-[#1C1C1E] leading-snug">
+                                {restRec.title || 'Mindful rest day'}
+                              </div>
+                              <div className="text-[11px] font-medium text-[#E11D48] mt-0.5">
+                                Rest • Not counted as exercise
+                              </div>
+                              {restRec.note && (
+                                <p className="text-[11px] text-[#6C6C70] italic mt-0.5 break-words">
+                                  “{restRec.note}”
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              data-action="delete-day-rest"
+                              data-rest-id={restRec.id}
+                              onClick={() => handleDeleteSingleDayRest(restRec.id)}
+                              className="min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[11px] font-semibold text-[#E11D48] hover:bg-[#FFF1F2] transition-colors cursor-pointer shrink-0"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </>
                     )}
                   </div>
 
                   <div className="flex flex-col gap-2.5">
-                    <span className="text-xs font-bold text-[#1C1C1E]">
-                      Log or Correct Record
-                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#1C1C1E]">
+                        {editingActivityId
+                          ? 'Edit Activity'
+                          : dayDraftType === 'rest'
+                          ? 'Log Rest Day'
+                          : dayDraftType === 'none'
+                          ? 'Clear Day'
+                          : 'Add Activity'}
+                      </span>
+                      {editingActivityId && (
+                        <button
+                          type="button"
+                          onClick={resetDayActivityDraft}
+                          className="text-[11px] font-semibold text-[#5E5BAE] hover:underline cursor-pointer"
+                        >
+                          Cancel edit
+                        </button>
+                      )}
+                    </div>
 
                     <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#F2F2F7] rounded-[14px] border border-black/[0.04]">
                       <button
                         type="button"
+                        id="history-day-mode-active"
                         onClick={() => {
                           setDayDraftType('active');
-                          if (dayDraftType === 'rest' || !dayDraftTitle.trim()) {
+                          if (!dayDraftTitle.trim() || dayDraftType === 'rest') {
+                            setDayDraftCategory('walk');
                             setDayDraftTitle('15-min mindful walk');
                             setDayDraftDuration(15);
-                            setDayDraftSessions(1);
                           }
                         }}
                         className={`py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer ${
@@ -5182,16 +5361,16 @@ export function MyPlanView({
                             : 'text-[#8E8E93] hover:text-[#1C1C1E]'
                         }`}
                       >
-                        Active
+                        {editingActivityId ? 'Edit' : 'Add'}
                       </button>
 
                       <button
                         type="button"
+                        id="history-day-mode-rest"
                         onClick={() => {
+                          setEditingActivityId(null);
                           setDayDraftType('rest');
-                          setDayDraftTitle('Mindful rest day');
-                          setDayDraftDuration(0);
-                          setDayDraftSessions(0);
+                          setDayDraftNote('');
                         }}
                         className={`py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer ${
                           dayDraftType === 'rest'
@@ -5204,7 +5383,11 @@ export function MyPlanView({
 
                       <button
                         type="button"
-                        onClick={() => setDayDraftType('none')}
+                        id="history-day-mode-clear"
+                        onClick={() => {
+                          setEditingActivityId(null);
+                          setDayDraftType('none');
+                        }}
                         className={`py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer ${
                           dayDraftType === 'none'
                             ? 'bg-white text-[#1C1C1E] shadow-2xs font-bold'
@@ -5217,92 +5400,112 @@ export function MyPlanView({
 
                     {dayDraftType === 'active' && (
                       <div className="flex flex-col gap-2 pt-1">
-                        <span className="text-[11px] font-medium text-[#8E8E93]">
-                          Quick Presets
-                        </span>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {[
-                            { title: '15-min mindful walk', dur: 15, sess: 1 },
-                            { title: '5-min desk stretch', dur: 5, sess: 1 },
-                            { title: 'Walk + evening stretch', dur: 20, sess: 2 },
-                            { title: '10-min breath reset', dur: 10, sess: 1 }
-                          ].map((preset) => (
-                            <button
-                              key={preset.title}
-                              type="button"
-                              onClick={() => {
-                                setDayDraftTitle(preset.title);
-                                setDayDraftDuration(preset.dur);
-                                setDayDraftSessions(preset.sess);
-                              }}
-                              className={`p-2 rounded-[12px] text-left text-[11px] font-semibold border transition-all cursor-pointer ${
-                                dayDraftTitle === preset.title
-                                  ? 'bg-[#F4EEFE] border-[#5E5BAE] text-[#5E5BAE] shadow-2xs'
-                                  : 'bg-white border-black/[0.05] text-[#1C1C1E] hover:bg-[#FAFAFC]'
-                              }`}
-                            >
-                              <div className="truncate">{preset.title}</div>
-                              <span className="text-[10px] text-[#8E8E93] block mt-0.5">
-                                {preset.sess} {preset.sess === 1 ? 'activity' : 'activities'} • {preset.dur} min
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 mt-1">
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[11px] font-medium text-[#8E8E93]">
-                              Activities (Sessions)
-                            </label>
-                            <div className="flex items-center gap-1">
-                              {[1, 2, 3].map((sess) => (
+                        {!editingActivityId && (
+                          <>
+                            <span className="text-[11px] font-medium text-[#8E8E93]">
+                              Quick Presets
+                            </span>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {(
+                                [
+                                  { title: '15-min mindful walk', dur: 15, cat: 'walk' },
+                                  { title: '10-min easy walk', dur: 10, cat: 'walk' },
+                                  { title: '5-min desk stretch', dur: 5, cat: 'stretch' },
+                                  { title: '10-min breath reset', dur: 10, cat: 'other' }
+                                ] as const
+                              ).map((preset) => (
                                 <button
-                                  key={sess}
+                                  key={preset.title}
                                   type="button"
-                                  onClick={() => setDayDraftSessions(sess)}
-                                  className={`flex-1 py-1 rounded-[10px] text-xs font-semibold border transition-all cursor-pointer ${
-                                    dayDraftSessions === sess
-                                      ? 'bg-[#5E5BAE] text-white border-[#5E5BAE]'
-                                      : 'bg-white text-[#1C1C1E] border-black/[0.05] hover:bg-[#FAFAFC]'
+                                  onClick={() => {
+                                    setDayDraftCategory(preset.cat);
+                                    setDayDraftTitle(preset.title);
+                                    setDayDraftDuration(preset.dur);
+                                  }}
+                                  className={`p-2 rounded-[12px] text-left text-[11px] font-semibold border transition-all cursor-pointer ${
+                                    dayDraftTitle === preset.title
+                                      ? 'bg-[#F4EEFE] border-[#5E5BAE] text-[#5E5BAE] shadow-2xs'
+                                      : 'bg-white border-black/[0.05] text-[#1C1C1E] hover:bg-[#FAFAFC]'
                                   }`}
                                 >
-                                  {sess}
+                                  <div className="truncate">{preset.title}</div>
+                                  <span className="text-[10px] text-[#8E8E93] block mt-0.5">
+                                    {preset.dur} min
+                                  </span>
                                 </button>
                               ))}
                             </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[11px] font-medium text-[#8E8E93]">
-                              Duration
-                            </label>
-                            <div className="flex items-center gap-1">
-                              {[5, 15, 20, 30].map((dur) => (
-                                <button
-                                  key={dur}
-                                  type="button"
-                                  onClick={() => setDayDraftDuration(dur)}
-                                  className={`flex-1 py-1 rounded-[10px] text-xs font-semibold border transition-all cursor-pointer ${
-                                    dayDraftDuration === dur
-                                      ? 'bg-[#5E5BAE] text-white border-[#5E5BAE]'
-                                      : 'bg-white text-[#1C1C1E] border-black/[0.05] hover:bg-[#FAFAFC]'
-                                  }`}
-                                >
-                                  {dur}m
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
+                          </>
+                        )}
 
                         <div className="flex flex-col gap-1 mt-1">
+                          <label className="text-[11px] font-medium text-[#8E8E93]">
+                            Category
+                          </label>
+                          <div className="grid grid-cols-3 gap-1">
+                            {(
+                              [
+                                { value: 'walk', label: 'Walk' },
+                                { value: 'stretch', label: 'Stretch' },
+                                { value: 'other', label: 'Other' }
+                              ] as const
+                            ).map((cat) => (
+                              <button
+                                key={cat.value}
+                                type="button"
+                                data-day-category={cat.value}
+                                onClick={() => setDayDraftCategory(cat.value)}
+                                className={`py-1.5 rounded-[10px] text-xs font-semibold border transition-all cursor-pointer ${
+                                  dayDraftCategory === cat.value
+                                    ? 'bg-[#5E5BAE] text-white border-[#5E5BAE]'
+                                    : 'bg-white text-[#1C1C1E] border-black/[0.05] hover:bg-[#FAFAFC]'
+                                }`}
+                              >
+                                {cat.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-1 mt-0.5">
+                          <label className="text-[11px] font-medium text-[#8E8E93]">
+                            Duration
+                          </label>
+                          <div className="flex items-center gap-1">
+                            {[5, 10, 15, 20, 30].map((dur) => (
+                              <button
+                                key={dur}
+                                type="button"
+                                data-day-duration={dur}
+                                onClick={() => setDayDraftDuration(dur)}
+                                className={`flex-1 py-1.5 rounded-[10px] text-xs font-semibold border transition-all cursor-pointer ${
+                                  dayDraftDuration === dur
+                                    ? 'bg-[#5E5BAE] text-white border-[#5E5BAE]'
+                                    : 'bg-white text-[#1C1C1E] border-black/[0.05] hover:bg-[#FAFAFC]'
+                                }`}
+                              >
+                                {dur}m
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-1 mt-0.5">
                           <label className="text-[11px] font-medium text-[#8E8E93]">
                             Activity Title
                           </label>
                           <input
+                            id="history-day-title-input"
                             type="text"
                             value={dayDraftTitle}
-                            onChange={(e) => setDayDraftTitle(e.target.value)}
+                            onChange={(e) => {
+                              const nextVal = e.target.value;
+                              setDayDraftTitle(nextVal);
+                              const inferred = inferActivityCategory('', nextVal);
+                              if (inferred === 'walk' || inferred === 'stretch') {
+                                setDayDraftCategory(inferred);
+                              }
+                            }}
                             placeholder="Select a preset above or type here..."
                             className="w-full px-3 py-2 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-xs text-[#1C1C1E] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                           />
@@ -5313,21 +5516,28 @@ export function MyPlanView({
                     {dayDraftType === 'rest' && (
                       <div className="p-3 rounded-[16px] bg-[#FFE4E6]/50 border border-[#E11D48]/20 text-[11.5px] leading-relaxed text-[#1C1C1E]">
                         <p>
-                          <strong>Rest is an active health choice.</strong> In Plan B, restorative days count toward your consistent wellbeing and prevent cumulative fatigue.
+                          <strong>Rest is recorded independently.</strong> It does not add to exercise sessions or active minutes.
                         </p>
                       </div>
                     )}
 
+                    {dayDraftType === 'none' && (
+                      <div className="p-3 rounded-[16px] bg-[#F2F2F7]/80 border border-black/[0.04] text-[11.5px] leading-relaxed text-[#6E6E78]">
+                        Removes all recorded activities and rest entries for this day.
+                      </div>
+                    )}
+
                     {dayDraftType !== 'none' && (
-                      <div className="flex flex-col gap-1 mt-1">
+                      <div className="flex flex-col gap-1 mt-0.5">
                         <label className="text-[11px] font-medium text-[#8E8E93]">
                           Note (Optional)
                         </label>
                         <input
+                          id="history-day-note-input"
                           type="text"
                           value={dayDraftNote}
                           onChange={(e) => setDayDraftNote(e.target.value)}
-                          placeholder="e.g. Followed Plan B pacing calmly"
+                          placeholder="e.g. Easy pace around the block"
                           className="w-full px-3 py-2 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-xs text-[#1C1C1E] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                       </div>
@@ -5343,7 +5553,10 @@ export function MyPlanView({
                   <div className="flex items-center gap-2 pt-1 border-t border-black/[0.05]">
                     <button
                       type="button"
-                      onClick={() => setActiveDayModalDate(null)}
+                      onClick={() => {
+                        setEditingActivityId(null);
+                        setActiveDayModalDate(null);
+                      }}
                       className="flex-1 py-2.5 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-xs font-semibold text-[#1C1C1E] transition-colors cursor-pointer"
                     >
                       Cancel
@@ -5351,6 +5564,7 @@ export function MyPlanView({
 
                     <button
                       type="button"
+                      id="history-day-save-btn"
                       disabled={isSaveDisabled}
                       onClick={handleSaveDayRecord}
                       className={`flex-1 py-2.5 rounded-[14px] text-xs font-semibold shadow-sm transition-colors ${
@@ -5359,7 +5573,13 @@ export function MyPlanView({
                           : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
                       }`}
                     >
-                      {dayDraftType === 'none' ? 'Clear Record' : 'Save Record'}
+                      {dayDraftType === 'none'
+                        ? 'Clear Day'
+                        : dayDraftType === 'rest'
+                        ? 'Save Rest'
+                        : editingActivityId
+                        ? 'Update Activity'
+                        : 'Add Activity'}
                     </button>
                   </div>
                 </motion.div>

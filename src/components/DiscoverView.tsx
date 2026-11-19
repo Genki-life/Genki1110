@@ -139,38 +139,15 @@ export function DiscoverView({
   // Selected content item for detail slide-up sheet
   const [selectedItem, setSelectedItem] = useState<DiscoverItem | null>(null);
 
-  // Audio guide placeholder notification state
-  const [showAudioPlaceholderToast, setShowAudioPlaceholderToast] = useState(false);
-
-  // Toast notification state when "Add to Today's Plan" is tapped (explicit unimplemented state)
-  const [showPlanUnimplementedToast, setShowPlanUnimplementedToast] = useState(false);
-
-  const handleAddToPlan = () => {
-    setShowPlanUnimplementedToast(true);
-    setTimeout(() => setShowPlanUnimplementedToast(false), 2600);
-  };
+  // Audio playback unavailable notification state
+  const [showAudioUnavailableToast, setShowAudioUnavailableToast] = useState(false);
 
   return (
     <div className="flex-1 overflow-y-auto px-4 sm:px-5 pt-2 pb-[148px] flex flex-col gap-3.5 scrollbar-none overscroll-contain z-10 text-[#1C1C1E]">
       
-      {/* Explicit Unimplemented Toast Notification */}
+      {/* Audio Playback Unavailable Notification */}
       <AnimatePresence>
-        {showPlanUnimplementedToast && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="fixed top-14 left-1/2 -translate-x-1/2 bg-[#1C1C1E]/90 text-white px-4 py-2.5 rounded-full text-xs font-medium shadow-lg flex items-center gap-2 z-50 pointer-events-none backdrop-blur-md"
-          >
-            <Clock className="w-4 h-4 text-[#FF7A32] stroke-[2.2]" />
-            <span>Not yet implemented • Adding to Today's Plan is coming soon</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Audio Demo Placeholder Notification */}
-      <AnimatePresence>
-        {showAudioPlaceholderToast && (
+        {showAudioUnavailableToast && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -178,17 +155,14 @@ export function DiscoverView({
             className="fixed top-14 left-1/2 -translate-x-1/2 bg-[#1C1C1E]/90 text-white px-4 py-2.5 rounded-full text-xs font-medium shadow-lg flex items-center gap-2 z-50 pointer-events-none backdrop-blur-md"
           >
             <Info className="w-4 h-4 text-[#5E5BAE] stroke-[2.2]" />
-            <span>Sample audio placeholder • Real media not connected</span>
+            <span>Audio playback is not connected yet</span>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Intro Subtitle / Context Header */}
-      <div className="flex items-center justify-between text-xs text-[#6C6C70] px-0.5">
+      <div className="text-xs text-[#6C6C70] px-0.5">
         <span className="font-medium">Curated resets for your pacing</span>
-        <span className="text-[11px] font-medium text-[#6C6C70] bg-white border border-black/[0.04] px-2.5 py-0.5 rounded-full shadow-2xs">
-          Sample curation
-        </span>
       </div>
 
       {/* Vertical Rich Media Content Stream */}
@@ -372,9 +346,6 @@ export function DiscoverView({
                               <span className="text-xs font-bold leading-tight">
                                 {selectedItem.audioGuideTitle}
                               </span>
-                              <span className="text-[9.5px] font-bold uppercase tracking-wider text-white/90 bg-white/20 backdrop-blur-md px-1.5 py-0.5 rounded-full border border-white/25">
-                                Sample Preview
-                              </span>
                             </div>
                             <div className="text-[10.5px] text-white/85 mt-0.5">
                               {selectedItem.audioGuideSubtitle}
@@ -384,25 +355,17 @@ export function DiscoverView({
                           <button
                             type="button"
                             onClick={() => {
-                              setShowAudioPlaceholderToast(true);
-                              setTimeout(() => setShowAudioPlaceholderToast(false), 2600);
+                              setShowAudioUnavailableToast(true);
+                              setTimeout(() => setShowAudioUnavailableToast(false), 2600);
                             }}
                             className="h-8 px-3 rounded-full bg-white/25 hover:bg-white/35 active:scale-95 text-white flex items-center gap-1.5 shadow-xs border border-white/30 backdrop-blur-md transition-all cursor-pointer shrink-0"
-                            aria-label="Sample audio player placeholder"
-                            title="Sample audio player placeholder"
+                            aria-label="Audio preview"
+                            title="Audio preview"
                           >
                             <Play className="w-3.5 h-3.5 fill-white text-white ml-0.5" />
-                            <span className="text-[11px] font-semibold">Sample</span>
+                            <span className="text-[11px] font-semibold">Preview</span>
                           </button>
                         </div>
-                      </div>
-                    </div>
-
-                    {/* Media sample status disclosure */}
-                    <div className="p-3 rounded-[16px] bg-[#F2F2F7]/80 border border-black/[0.04] flex items-start gap-2 text-xs text-[#6C6C70]">
-                      <Info className="w-3.5 h-3.5 text-[#5E5BAE] shrink-0 mt-0.5 stroke-[2]" />
-                      <div className="text-[11.5px] leading-relaxed">
-                        <span className="font-semibold text-[#1C1C1E]">Audio sample placeholder:</span> Real audio streaming is not yet connected in this prototype.
                       </div>
                     </div>
 
@@ -445,20 +408,8 @@ export function DiscoverView({
                       </div>
                     </div>
 
-                    {/* Action Row: Start session & Add to Today's Plan */}
+                    {/* Action Row */}
                     <div className="pt-2 flex flex-col gap-2.5">
-                      <button
-                        type="button"
-                        onClick={handleAddToPlan}
-                        className="w-full py-3 rounded-[18px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#6C6C70] border border-black/[0.04] text-xs font-semibold shadow-xs active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
-                      >
-                        <Clock className="w-4 h-4 stroke-[2.2] text-[#6C6C70]" />
-                        <span>Add to Today's Plan (Coming Soon)</span>
-                        <span className="text-[10px] bg-black/[0.06] text-[#6C6C70] px-2 py-0.5 rounded-full font-medium">
-                          Not implemented
-                        </span>
-                      </button>
-
                       <button
                         type="button"
                         onClick={() => setSelectedItem(null)}
