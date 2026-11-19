@@ -46,10 +46,21 @@ import {
   upsertTodayActivityRecord,
 } from './utils/weeklyPlanStore';
 import { initializePrototypeDemoData } from './utils/prototypeDemoSeed';
+import { PlanLoadingView } from './components/PlanLoadingView';
 
-const LazyMyPlanView = React.lazy(() =>
-  import('./components/MyPlanView').then((module) => ({ default: module.MyPlanView }))
-);
+let planViewPromise: Promise<{ default: typeof import('./components/MyPlanView').MyPlanView }> | null = null;
+function loadPlanView() {
+  if (!planViewPromise) {
+    planViewPromise = import('./components/MyPlanView')
+      .then((module) => ({ default: module.MyPlanView }))
+      .catch((error) => {
+        planViewPromise = null;
+        throw error;
+      });
+  }
+  return planViewPromise;
+}
+const LazyMyPlanView = React.lazy(loadPlanView);
 const LazyDiscoverView = React.lazy(() =>
   import('./components/DiscoverView').then((module) => ({ default: module.DiscoverView }))
 );
@@ -931,6 +942,27 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>('Today');
   const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(false);
   const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const warmPlan = () => {
+      void loadPlanView()
+        .then(() => {
+          if (!cancelled) React.startTransition(() => setHasVisitedPlan(true));
+        })
+        .catch(() => {});
+    };
+    const idleId =
+      typeof window.requestIdleCallback === 'function'
+        ? window.requestIdleCallback(warmPlan, { timeout: 800 })
+        : null;
+    const timerId = idleId === null ? window.setTimeout(warmPlan, 250) : null;
+    return () => {
+      cancelled = true;
+      if (idleId !== null) window.cancelIdleCallback(idleId);
+      if (timerId !== null) window.clearTimeout(timerId);
+    };
+  }, []);
   
   // Single unified persistent activity & rest store shared by Today, History, This week, Weekly review, and Charts
   const initialUnifiedStoreRef = useRef<ReturnType<typeof loadUnifiedActivityStore> | null>(null);
@@ -4896,9 +4928,7 @@ export default function App() {
         {/* 3. Main Body Content: Plan View (Merged My Plan + Memory) */}
         <div className={`flex-1 flex flex-col min-h-0 ${activeTab === 'Plan' ? 'flex' : 'hidden'}`}>
           {(hasVisitedPlan || activeTab === 'Plan') && (
-            <React.Suspense
-              fallback={<div className="flex-1 w-full h-full bg-transparent" aria-hidden="true" />}
-            >
+            <React.Suspense fallback={<PlanLoadingView />}>
               <LazyMyPlanView
                 phoneFrameRef={phoneFrameRef}
                 activityRecords={activityRecords}
@@ -4984,6 +5014,15 @@ export default function App() {
                   key={tab.id}
                   id={`nav-tab-${tab.id.toLowerCase()}`}
                   type="button"
+                  onPointerEnter={() => {
+                    if (tab.id === 'Plan') void loadPlanView().catch(() => {});
+                  }}
+                  onFocus={() => {
+                    if (tab.id === 'Plan') void loadPlanView().catch(() => {});
+                  }}
+                  onPointerDown={() => {
+                    if (tab.id === 'Plan') void loadPlanView().catch(() => {});
+                  }}
                   onClick={() => {
                     const nextTab = tab.id as 'Today' | 'Plan' | 'Discover';
                     if (nextTab === 'Plan') setHasVisitedPlan(true);
