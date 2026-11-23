@@ -19,7 +19,8 @@ import {
   Footprints,
   Heart,
   Maximize2,
-  FileText
+  FileText,
+  Plus
 } from 'lucide-react';
 
 import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
@@ -983,8 +984,10 @@ const GENKI_MOBILE_UI_STYLES = `
 .genki-mobile-input {font-size:16px;line-height:22px;min-height:44px;min-width:0;}
 #discover-feed-scroll > div > article {padding:18px;}
 #discover-detail-sheet .genki-mobile-section-title {margin:0;}
-#today-header-greeting {font-size:14px;font-weight:400;line-height:20px;color:#70677F;opacity:1;max-width:190px;white-space:normal;text-align:right;}
-@media(prefers-reduced-motion:reduce) {.genki-mobile-control {transition:none;}}
+.genki-chat-attach-btn {width:44px;height:44px;min-width:44px;min-height:44px;flex-shrink:0;border-radius:50%;background:transparent;border:none;color:#70677F;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;touch-action:manipulation;transition:background-color 150ms ease;}
+.genki-chat-attach-btn:active {background:rgba(112,103,127,0.08);}
+.genki-chat-attach-btn:focus-visible {outline:2px solid #5E5BAE;outline-offset:2px;}
+@media(prefers-reduced-motion:reduce) {.genki-mobile-control,.genki-chat-attach-btn {transition:none;}}
 `;
 
 export default function App() {
@@ -1350,12 +1353,12 @@ export default function App() {
     sleet: '/assets/weather/snow.png',
   };
 
-  // Measured transparent insets inside each 512x512 weather PNG (alpha > 12) for optical alignment
-  const WEATHER_ASSET_INSETS: Record<string, { topRatio: number; rightRatio: number }> = {
-    '/assets/weather/thunderstorm.png': { topRatio: 90 / 512, rightRatio: 88 / 512 },
-    '/assets/weather/rain.png': { topRatio: 100 / 512, rightRatio: 88 / 512 },
-    '/assets/weather/partly-cloudy.png': { topRatio: 127 / 512, rightRatio: 88 / 512 },
-    '/assets/weather/snow.png': { topRatio: 101 / 512, rightRatio: 88 / 512 },
+  // Measured visible bounds inside each 512x512 weather PNG (alpha > 12) for vertical center & right-edge alignment
+  const WEATHER_ASSET_INSETS: Record<string, { centerYRatio: number; rightRatio: number }> = {
+    '/assets/weather/thunderstorm.png': { centerYRatio: 255.5 / 512, rightRatio: 88 / 512 },
+    '/assets/weather/rain.png': { centerYRatio: 255.5 / 512, rightRatio: 88 / 512 },
+    '/assets/weather/partly-cloudy.png': { centerYRatio: 252 / 512, rightRatio: 88 / 512 },
+    '/assets/weather/snow.png': { centerYRatio: 255.5 / 512, rightRatio: 88 / 512 },
   };
 
   // Single unified weather state shared by both weather visual and temperature text
@@ -1520,6 +1523,17 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [sheetInput, setSheetInput] = useState('');
   const [inputPlaceholder, setInputPlaceholder] = useState('Type your response…');
+  interface PendingChatAttachment {
+    id: string;
+    file: File;
+    name: string;
+    kind: 'image' | 'pdf' | 'text';
+    previewUrl?: string;
+  }
+  const [chatAttachments, setChatAttachments] = useState<PendingChatAttachment[]>([]);
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
+  const chatAttachmentsRef = useRef<PendingChatAttachment[]>([]);
+  chatAttachmentsRef.current = chatAttachments;
 
   // Adjust-in-Chat -> Today Card replacement animation state & refs
   const adjustSessionRef = useRef<{ cardId: string; initialOldPlan: PlanItem } | null>(null);
@@ -2649,6 +2663,69 @@ export default function App() {
     }
   };
 
+  // Revoke any staged attachment preview object URLs on unmount
+  useEffect(() => {
+    return () => {
+      chatAttachmentsRef.current.forEach((att) => {
+        if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      });
+    };
+  }, []);
+
+  // Keep latest message visible when attachment preview changes scroll area height
+  useEffect(() => {
+    if (!isChatOpen || !isNearBottomRef.current) return;
+    const id = window.requestAnimationFrame(() => {
+      chatMessagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [chatAttachments.length, isChatOpen]);
+
+  const handleAttachmentButtonClick = () => {
+    chatFileInputRef.current?.click();
+  };
+
+  const handleAttachmentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const added: PendingChatAttachment[] = [];
+    for (let i = 0; i < fileList.length; i += 1) {
+      const file = fileList[i];
+      const lowerName = file.name.toLowerCase();
+      const isImage =
+        file.type.startsWith('image/') ||
+        /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif|avif)$/.test(lowerName);
+      const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
+      const isText = file.type === 'text/plain' || lowerName.endsWith('.txt');
+
+      if (!isImage && !isPdf && !isText) continue;
+
+      added.push({
+        id: `att-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
+        file,
+        name: file.name,
+        kind: isImage ? 'image' : isPdf ? 'pdf' : 'text',
+        previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+      });
+    }
+
+    if (added.length > 0) {
+      setChatAttachments((prev) => [...prev, ...added]);
+    }
+    e.target.value = '';
+  };
+
+  const handleRemoveAttachment = (attachmentId: string) => {
+    setChatAttachments((prev) => {
+      const target = prev.find((item) => item.id === attachmentId);
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((item) => item.id !== attachmentId);
+    });
+  };
+
   // 4. Send freeform chat message
   const handleSendChatMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -3598,68 +3675,47 @@ export default function App() {
           </div>
         </div>
 
-        {/* 2. Top Header Bar (Apple HIG Large Title Hierarchy) */}
-        <header 
+        {/* 2. Top Header Bar (Fixed 48px outer flow height so Today header never pushes Avatar or tasks) */}
+        <header
           onClick={() => {
             if (activeTab === 'Today' && isPlanCardOpen) {
               setIsPlanCardOpen(false);
             }
           }}
-          className="px-5 pt-1 pb-1.5 flex items-center justify-between shrink-0 z-20"
+          className="relative px-5 pt-1 pb-1.5 h-[48px] overflow-visible shrink-0 z-20"
         >
-          <span
-            id="today-brand-title"
-            className="text-[32px] font-bold leading-[38px] tracking-[-0.024em] text-[#1C1C1E]"
-          >
-            {activeTab === 'Today' ? 'Genki' : activeTab}
-          </span>
-          {activeTab === 'Discover' && (
-            <button
-              type="button"
-              id="top-saved-btn"
-              onClick={() => setIsSavedSheetOpen(true)}
-              className="genki-mobile-control genki-mobile-secondary liquid-glass-bubble flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] leading-[18px] font-semibold text-[#5E5BAE] transition-colors cursor-pointer active:scale-95 min-h-[34px]"
-              aria-label={`View saved guides (${savedItemIds.length})`}
-            >
-              <Bookmark className="w-3.5 h-3.5 fill-current" />
-              <span>Saved ({savedItemIds.length})</span>
-            </button>
-          )}
-        </header>
-
-        {/* 2b. Today Header Right Group: Weather Asset + Greeting (Kept mounted across tabs to avoid re-fetching; absolute so Avatar/task coordinates remain unchanged) */}
-        <div
-          id="today-upper-right-ambient"
-          aria-hidden={activeTab !== 'Today'}
-          className={`absolute inset-x-0 top-0 pointer-events-none select-none z-15 ${
-            activeTab === 'Today' ? 'block' : 'hidden'
-          }`}
-        >
+          {/* Today Unified Header (Kept mounted across tabs so weather PNG never re-fetches) */}
           {(() => {
             const isShortViewport = frameSize.height < 700;
             const iconSize = isShortViewport ? 96 : 112;
-            // Fixed slot height based on tallest weather asset visible height (331/512) so switching states never shifts the greeting
-            const iconSlotHeight = isShortViewport ? 62.5 : 73;
+            // Stable slot dimensions matching tallest weather subject (336x331 / 512) so switching states never shifts the greeting
+            const iconSlotWidth = isShortViewport ? 63 : 74;
+            const iconSlotHeight = isShortViewport ? 62 : 72;
             const insets = weatherAssetSrc ? WEATHER_ASSET_INSETS[weatherAssetSrc] : null;
-            const imgTopOffset = insets ? Number((iconSize * insets.topRatio).toFixed(2)) : 0;
-            const imgRightOffset = insets ? Number((iconSize * insets.rightRatio).toFixed(2)) : 0;
+            const imgTop = insets ? Number((iconSlotHeight / 2 - iconSize * insets.centerYRatio).toFixed(2)) : 0;
+            const imgRight = insets ? Number((-iconSize * insets.rightRatio).toFixed(2)) : 0;
 
             return (
               <div
-                id="today-header-right"
-                style={{
-                  top: '40px',
-                  right: '20px',
-                  paddingTop: '6.5px',
-                }}
-                className="absolute flex flex-col items-end gap-2 pointer-events-none select-none"
+                id="today-header-top-row"
+                aria-hidden={activeTab !== 'Today'}
+                className={`w-full items-center justify-between select-none ${
+                  activeTab === 'Today' ? 'flex' : 'hidden'
+                }`}
               >
+                <span
+                  id="today-brand-title"
+                  className="text-[32px] font-bold leading-[38px] tracking-[-0.024em] text-[#1C1C1E] shrink-0"
+                >
+                  Genki
+                </span>
+
                 {weatherAssetSrc && (
                   <div
                     id="today-weather-icon-wrap"
                     aria-hidden="true"
                     style={{
-                      width: `${iconSize}px`,
+                      width: `${iconSlotWidth}px`,
                       height: `${iconSlotHeight}px`,
                     }}
                     className="relative overflow-visible shrink-0 pointer-events-none select-none"
@@ -3675,8 +3731,8 @@ export default function App() {
                       draggable={false}
                       style={{
                         position: 'absolute',
-                        top: `${-imgTopOffset}px`,
-                        right: `${-imgRightOffset}px`,
+                        top: `${imgTop}px`,
+                        right: `${imgRight}px`,
                         width: `${iconSize}px`,
                         height: `${iconSize}px`,
                         maxWidth: 'none',
@@ -3687,17 +3743,34 @@ export default function App() {
                     />
                   </div>
                 )}
-
-                <p
-                  id="today-header-greeting"
-                  className="m-0 text-[14px] font-normal leading-[20px] text-[#70677F] opacity-100 text-right max-w-[190px] whitespace-normal"
-                >
-                  Hope your morning feels easy.
-                </p>
               </div>
             );
           })()}
-        </div>
+
+          {/* Plan / Discover Header */}
+          {activeTab !== 'Today' && (
+            <div className="w-full flex items-center justify-between">
+              <span
+                id="tab-brand-title"
+                className="text-[32px] font-bold leading-[38px] tracking-[-0.024em] text-[#1C1C1E]"
+              >
+                {activeTab}
+              </span>
+              {activeTab === 'Discover' && (
+                <button
+                  type="button"
+                  id="top-saved-btn"
+                  onClick={() => setIsSavedSheetOpen(true)}
+                  className="genki-mobile-control genki-mobile-secondary liquid-glass-bubble flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] leading-[18px] font-semibold text-[#5E5BAE] transition-colors cursor-pointer active:scale-95 min-h-[34px]"
+                  aria-label={`View saved guides (${savedItemIds.length})`}
+                >
+                  <Bookmark className="w-3.5 h-3.5 fill-current" />
+                  <span>Saved ({savedItemIds.length})</span>
+                </button>
+              )}
+            </div>
+          )}
+        </header>
 
         {/* 3. Main Body Content: Today View */}
         <div
@@ -5461,7 +5534,77 @@ export default function App() {
                     onSubmit={handleSendChatMessage}
                     className="p-4 pb-6 border-t border-black/[0.06] bg-white/95 backdrop-blur-md shrink-0 flex flex-col gap-2"
                   >
-                    <div className="bg-[#F2F2F7] rounded-full px-4 py-2.5 flex items-center gap-2 border border-black/[0.04] shadow-2xs focus-within:border-[#5E5BAE]/60 focus-within:ring-2 focus-within:ring-[#5E5BAE]/15 transition-all">
+                    <input
+                      ref={chatFileInputRef}
+                      id="chat-attachment-file-input"
+                      type="file"
+                      multiple
+                      accept="image/*,.pdf,application/pdf,.txt,text/plain"
+                      onChange={handleAttachmentSelect}
+                      className="hidden"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    />
+
+                    {/* Compact Attachment Preview Area (expands above input bar, naturally shrinking message scroll region) */}
+                    {chatAttachments.length > 0 && (
+                      <div
+                        id="chat-attachment-preview"
+                        className="flex flex-col gap-1.5 max-h-[112px] overflow-y-auto rounded-[14px] bg-[#F7F6FA] border border-black/[0.06] px-2.5 py-2"
+                      >
+                        {chatAttachments.map((att) => (
+                          <div
+                            key={att.id}
+                            className="flex items-center gap-2 min-w-0"
+                          >
+                            {att.kind === 'image' && att.previewUrl ? (
+                              <img
+                                src={att.previewUrl}
+                                alt=""
+                                className="w-9 h-9 rounded-[8px] object-cover shrink-0 border border-black/[0.06]"
+                              />
+                            ) : (
+                              <div
+                                aria-hidden="true"
+                                className="w-9 h-9 rounded-[8px] bg-[#ECEAF4] text-[#5E5BAE] flex items-center justify-center shrink-0"
+                              >
+                                <FileText className="w-4 h-4 stroke-[1.75]" />
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0 flex flex-col">
+                              <span className="text-[13px] leading-[18px] font-medium text-[#1C1C1E] truncate">
+                                {att.name}
+                              </span>
+                              <span className="text-[11px] leading-[15px] text-[#70677F]">
+                                Not sent to Nova
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveAttachment(att.id)}
+                              aria-label={`Remove ${att.name}`}
+                              className="genki-mobile-focus w-8 h-8 min-w-[32px] min-h-[32px] rounded-full flex items-center justify-center text-[#70677F] hover:bg-black/[0.06] active:bg-black/[0.1] transition-colors shrink-0 cursor-pointer"
+                            >
+                              <X className="w-4 h-4 stroke-[2]" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div
+                      id="chat-input-pill"
+                      className="bg-[#F2F2F7] rounded-full pl-1.5 pr-1.5 py-1 flex items-center border border-black/[0.04] shadow-2xs focus-within:border-[#5E5BAE]/60 focus-within:ring-2 focus-within:ring-[#5E5BAE]/15 transition-all min-w-0"
+                    >
+                      <button
+                        type="button"
+                        id="chat-add-attachment-btn"
+                        onClick={handleAttachmentButtonClick}
+                        aria-label="Add attachment"
+                        className="genki-chat-attach-btn mr-[4px]"
+                      >
+                        <Plus className="w-5 h-5" strokeWidth={1.75} aria-hidden="true" />
+                      </button>
                       <input
                         ref={chatInputRef}
                         type="text"
@@ -5474,13 +5617,16 @@ export default function App() {
                           }, 150);
                         }}
                         placeholder={inputPlaceholder}
-                        className="genki-mobile-input flex-1 bg-transparent text-[13px] leading-[18px] text-[#1C1C1E] placeholder-[#8E8E93] outline-none"
-                      aria-label="Message Nova" name="nova-message" autoComplete="off" />
+                        className="genki-mobile-input flex-1 min-w-0 bg-transparent text-[16px] leading-[22px] text-[#1C1C1E] placeholder-[#8E8E93] outline-none"
+                        aria-label="Message Nova"
+                        name="nova-message"
+                        autoComplete="off"
+                      />
                       <button
                         type="submit"
                         disabled={!sheetInput.trim()}
                         aria-label="Send message"
-                        className={`genki-mobile-control genki-mobile-send w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                        className={`genki-mobile-control genki-mobile-send ml-2 w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
                           sheetInput.trim()
                             ? 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white active:scale-95 shadow-2xs'
                             : 'bg-[#E5E5EA] text-[#8E8E93]'
