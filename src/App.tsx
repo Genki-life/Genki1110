@@ -47,6 +47,12 @@ import {
 } from './utils/weeklyPlanStore';
 import { initializePrototypeDemoData } from './utils/prototypeDemoSeed';
 import { PlanLoadingView } from './components/PlanLoadingView';
+import { DiscoverLoadingView } from './components/DiscoverLoadingView';
+import {
+  loadSavedDiscoverIds,
+  saveSavedDiscoverIds,
+  toggleSavedDiscoverId,
+} from './utils/discoverStore';
 
 let planViewPromise: Promise<{ default: typeof import('./components/MyPlanView').MyPlanView }> | null = null;
 function loadPlanView() {
@@ -61,9 +67,20 @@ function loadPlanView() {
   return planViewPromise;
 }
 const LazyMyPlanView = React.lazy(loadPlanView);
-const LazyDiscoverView = React.lazy(() =>
-  import('./components/DiscoverView').then((module) => ({ default: module.DiscoverView }))
-);
+
+let discoverViewPromise: Promise<{ default: typeof import('./components/DiscoverView').DiscoverView }> | null = null;
+function loadDiscoverView() {
+  if (!discoverViewPromise) {
+    discoverViewPromise = import('./components/DiscoverView')
+      .then((module) => ({ default: module.DiscoverView }))
+      .catch((error) => {
+        discoverViewPromise = null;
+        throw error;
+      });
+  }
+  return discoverViewPromise;
+}
+const LazyDiscoverView = React.lazy(loadDiscoverView);
 
 import mindfulWalkThumbUrl from './assets/images/mindful_walk_thumb_1793264566501.jpg';
 import discoverBreathUrl from './assets/images/discover_breath_1793765860138.jpg';
@@ -305,20 +322,20 @@ function CardPausedOverlay({
                   minWidth: '88px',
                   height: '44px',
                 }}
-                className="flex items-center justify-center bg-transparent border-0 p-0 cursor-pointer transition-opacity duration-150 active:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#766D98] rounded-[16px]"
+                className="genki-mobile-control genki-mobile-restart flex items-center justify-center bg-transparent border-0 p-0 cursor-pointer transition-opacity duration-150 active:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#766D98] rounded-[16px]"
               >
                 <span
                   style={{
-                    height: '32px',
+                    height: '44px',
                     minWidth: '88px',
                     paddingLeft: '20px',
                     paddingRight: '20px',
-                    borderRadius: '16px',
-                    background: 'rgba(255, 255, 255, 0.45)',
+                    borderRadius: '12px',
+                    background: '#EEEDF6',
                     border: '1px solid rgba(118, 109, 152, 0.18)',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    color: '#777086',
+                    fontSize: '15px',
+                    fontWeight: 600,
+                    color: '#514C8C',
                     boxShadow: 'none',
                   }}
                   className="inline-flex items-center justify-center whitespace-nowrap"
@@ -442,7 +459,7 @@ function SuggestionMediaThumbnail({
         height: `${height}px`,
         borderRadius,
       }}
-      className={`relative shrink-0 overflow-hidden bg-[#EBEBF0] border border-black/[0.06] shadow-[0_2px_8px_rgba(38,38,63,0.06)] group active:scale-[0.97] transition-transform select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE] ${
+      className={`genki-mobile-focus relative shrink-0 overflow-hidden bg-[#EBEBF0] border border-black/[0.06] shadow-[0_2px_8px_rgba(38,38,63,0.06)] group active:scale-[0.97] transition-transform select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE] ${
         isInteractive ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
       }`}
     >
@@ -831,7 +848,7 @@ function CardContentWipeRow({
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
           }}
-          className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+          className="genki-mobile-row-title text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
         >
           {displayPlan.title}
         </h2>
@@ -869,7 +886,7 @@ function CardContentWipeRow({
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
             }}
-            className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+            className="genki-mobile-row-title text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
           >
             {wipeAnim.newPlan.title}
           </h2>
@@ -903,7 +920,7 @@ function CardContentWipeRow({
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
             }}
-            className="text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
+            className="genki-mobile-row-title text-[16.5px] sm:text-[17px] font-bold tracking-[-0.02em] text-[#1C1C1E] leading-snug flex-1"
           >
             {wipeAnim.oldPlan.title}
           </h2>
@@ -937,6 +954,38 @@ interface ChatMessage {
   disabled?: boolean;
   selectedOptionLabel?: string;
 }
+
+
+// Shared mobile typography and controls, used by Today and Discover (including portals).
+// Unlayered, explicitly named classes avoid Tailwind preflight layer-order regressions.
+const GENKI_MOBILE_UI_STYLES = `
+#today-brand-title {font-size:32px;font-weight:700;line-height:38px;letter-spacing:-.024em;}
+.genki-mobile-sheet-title {font-size:22px;font-weight:600;line-height:28px;letter-spacing:-.02em;}
+.genki-mobile-section-title {font-size:18px;font-weight:600;line-height:24px;letter-spacing:-.015em;}
+.genki-mobile-row-title {font-size:17px;font-weight:600;line-height:23px;letter-spacing:-.015em;}
+.genki-mobile-body {font-size:15px;font-weight:400;line-height:22px;}
+.genki-mobile-meta {font-size:13px;font-weight:400;line-height:18px;}
+.genki-mobile-control {min-height:44px;min-width:44px;font-size:15px;font-weight:500;line-height:20px;touch-action:manipulation;transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease;}
+.genki-mobile-control:focus-visible,.genki-mobile-focus:focus-visible,.genki-mobile-input:focus-visible {outline:2px solid #5E5BAE;outline-offset:2px;}
+.genki-mobile-control:disabled {opacity:.45;cursor:not-allowed;}
+.genki-mobile-control:not(:disabled):active {opacity:.75;}
+.genki-mobile-primary {min-height:48px;border-radius:14px;padding:12px 16px;background:#5E5BAE;color:white;font-weight:600;box-shadow:none;display:inline-flex;align-items:center;justify-content:center;}
+.genki-mobile-primary:not(:disabled):hover {background:#504D9D;}
+.genki-mobile-secondary {min-height:44px;border-radius:12px;padding:10px 16px;background:#EEEDF6;color:#514C8C;font-weight:600;box-shadow:none;border-color:transparent;display:inline-flex;align-items:center;justify-content:center;}
+.genki-mobile-secondary:not(:disabled):hover {background:#E4E2F1;}
+.genki-mobile-tertiary {min-height:44px;border-radius:12px;font-size:15px;font-weight:500;line-height:20px;}
+.genki-mobile-icon-well {width:44px;height:44px;min-width:44px;min-height:44px;border-radius:999px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.genki-mobile-icon-well > span {width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:999px;}
+.genki-mobile-icon-well svg {width:20px;height:20px;}
+.genki-mobile-send {width:44px;height:44px;flex-shrink:0;border-radius:999px;}
+.genki-mobile-send svg {width:20px;height:20px;}
+.genki-mobile-chat-entry {font-size:15px;font-weight:500;line-height:22px;}
+.genki-mobile-input {font-size:16px;line-height:22px;min-height:44px;min-width:0;}
+#discover-feed-scroll > div > article {padding:18px;}
+#discover-detail-sheet .genki-mobile-section-title {margin:0;}
+#today-top-right-info p {white-space:normal;max-width:230px;}
+@media(prefers-reduced-motion:reduce) {.genki-mobile-control {transition:none;}}
+`;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>('Today');
@@ -1275,8 +1324,69 @@ export default function App() {
     setIsPlanCardOpen(true);
   }, []);
 
-  // Demo sunny weather availability (hides sun watermark & temperature when unavailable)
-  const [isWeatherAvailable] = useState<boolean>(true);
+  type TodayWeatherCondition =
+    | 'thunderstorm'
+    | 'rain'
+    | 'drizzle'
+    | 'partly-cloudy'
+    | 'snow'
+    | 'sleet'
+    | 'clear'
+    | 'cloudy'
+    | 'fog';
+
+  interface TodayWeatherState {
+    available: boolean;
+    temperatureC: number | null;
+    condition: TodayWeatherCondition | null;
+  }
+
+  const WEATHER_ASSET_MAP: Partial<Record<TodayWeatherCondition, string>> = {
+    thunderstorm: '/assets/weather/thunderstorm.png',
+    rain: '/assets/weather/rain.png',
+    drizzle: '/assets/weather/rain.png',
+    'partly-cloudy': '/assets/weather/partly-cloudy.png',
+    snow: '/assets/weather/snow.png',
+    sleet: '/assets/weather/snow.png',
+  };
+
+  // Single unified weather state shared by both weather visual and temperature text
+  const [todayWeather] = useState<TodayWeatherState>(() => {
+    const validConditions: TodayWeatherCondition[] = [
+      'thunderstorm',
+      'rain',
+      'drizzle',
+      'partly-cloudy',
+      'snow',
+      'sleet',
+      'clear',
+      'cloudy',
+      'fog',
+    ];
+    if (typeof window !== 'undefined') {
+      const param = new URLSearchParams(window.location.search).get('weather')?.trim().toLowerCase();
+      if (param === 'unavailable' || param === 'none') {
+        return { available: false, temperatureC: null, condition: null };
+      }
+      if (param && (validConditions as string[]).includes(param)) {
+        return {
+          available: true,
+          temperatureC: 18,
+          condition: param as TodayWeatherCondition,
+        };
+      }
+    }
+    return {
+      available: true,
+      temperatureC: 18,
+      condition: 'partly-cloudy',
+    };
+  });
+
+  const weatherAssetSrc =
+    todayWeather.available && todayWeather.condition
+      ? WEATHER_ASSET_MAP[todayWeather.condition] ?? null
+      : null;
 
   // Collapsed suggestion bubble vertical swipe states (3 suggestions share 1 bubble)
   const [bubbleDragY, setBubbleDragY] = useState<number>(0);
@@ -1334,15 +1444,48 @@ export default function App() {
   const [isAvatarFirstFrameReady, setIsAvatarFirstFrameReady] = useState<boolean>(false);
   const [isHomeLayoutReady, setIsHomeLayoutReady] = useState<boolean>(false);
 
-  // Discover tab saved bookmarks state
-  const [savedItemIds, setSavedItemIds] = useState<string[]>(['walk-mindful', 'desk-decompression']);
+  // Discover tab saved bookmarks state (versioned localStorage, starts empty when unset)
+  const [savedItemIds, setSavedItemIds] = useState<string[]>(() => loadSavedDiscoverIds());
   const [isSavedSheetOpen, setIsSavedSheetOpen] = useState<boolean>(false);
 
   const handleToggleSave = useCallback((id: string) => {
-    setSavedItemIds(prev => 
-      prev.includes(id) ? prev.filter(itemId => itemId !== id) : [...prev, id]
-    );
+    setSavedItemIds((prev) => {
+      const next = toggleSavedDiscoverId(prev, id);
+      saveSavedDiscoverIds(next);
+      return next;
+    });
   }, []);
+
+  // Idle prefetch Discover module only after initial home paint so Avatar first frame is never blocked
+  useEffect(() => {
+    if (!isHomeLayoutReady) return;
+    let cancelled = false;
+    let idleId: number | null = null;
+    let timerId: number | null = null;
+
+    const prefetchDiscover = () => {
+      if (cancelled) return;
+      void loadDiscoverView().catch(() => {});
+    };
+
+    const rafId = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(prefetchDiscover, { timeout: 1500 });
+      } else {
+        timerId = window.setTimeout(prefetchDiscover, 400);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(rafId);
+      if (idleId !== null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timerId !== null) window.clearTimeout(timerId);
+    };
+  }, [isHomeLayoutReady]);
 
   // Hold-to-complete animation state (3 seconds = 3000ms)
   const HOLD_DURATION_MS = 3000;
@@ -3206,6 +3349,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#E5E5EA] flex items-center justify-center p-0 sm:py-6 font-sans antialiased select-none text-[#1C1C1E]">
+      <style>{GENKI_MOBILE_UI_STYLES}</style>
       {/* 393 × 852 px Native Smartphone Frame */}
       <div 
         ref={phoneFrameRef}
@@ -3414,10 +3558,10 @@ export default function App() {
               >
                 <div className="flex items-center justify-between w-full text-white">
                   <div className="flex-1 min-w-0 pr-3">
-                    <div className="text-[13.5px] sm:text-[14px] font-bold leading-tight tracking-[-0.01em]">
+                    <div className="text-[15px] font-semibold leading-[22px] tracking-[-0.01em]">
                       {currentPlan.audioTitle}
                     </div>
-                    <div className="text-[11px] sm:text-[11.5px] text-white/85 mt-0.5 font-normal">
+                    <div className="text-[13px] sm:text-[13px] text-white/85 mt-0.5 font-normal">
                       {currentPlan.audioSubtitle}
                     </div>
                   </div>
@@ -3428,7 +3572,7 @@ export default function App() {
         })()}
 
         {/* 1. iOS Status Bar (44px Height Standard Safe Area) */}
-        <div className="pt-3.5 pb-1 px-7 flex items-center justify-between text-xs font-semibold text-[#1C1C1E] select-none shrink-0 z-30">
+        <div className="pt-3.5 pb-1 px-7 flex items-center justify-between text-[13px] leading-[18px] font-semibold text-[#1C1C1E] select-none shrink-0 z-30">
           <span className="tracking-tight">9:41</span>
           <div className="flex items-center gap-1.5">
             {/* Cellular signal bars */}
@@ -3470,8 +3614,8 @@ export default function App() {
               type="button"
               id="top-saved-btn"
               onClick={() => setIsSavedSheetOpen(true)}
-              className="liquid-glass-bubble flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold text-[#5E5BAE] transition-all cursor-pointer active:scale-95 min-h-[34px]"
-              aria-label="View saved items"
+              className="genki-mobile-control genki-mobile-secondary liquid-glass-bubble flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] leading-[18px] font-semibold text-[#5E5BAE] transition-colors cursor-pointer active:scale-95 min-h-[34px]"
+              aria-label={`View saved guides (${savedItemIds.length})`}
             >
               <Bookmark className="w-3.5 h-3.5 fill-current" />
               <span>Saved ({savedItemIds.length})</span>
@@ -3479,114 +3623,83 @@ export default function App() {
           )}
         </header>
 
-        {/* 2b. Today Upper-Right Ambient Sun Watermark, Warm Sunlight Glow & Right-Aligned Weather/Steps/Greeting */}
-        {activeTab === 'Today' && (
-          <div
-            id="today-upper-right-ambient"
-            className="absolute inset-x-0 top-0 pointer-events-none select-none z-15"
-          >
-            {/* Sunny Weather Watermark & Soft Warm Glow toward Nova (Hidden automatically if weather is unavailable) */}
-            {isWeatherAvailable && (
-              <>
-                {/* Very light warm soft glow on lower-left of the sun angled toward Nova */}
-                <div
-                  id="today-sun-warm-glow"
+        {/* 2b. Today Upper-Right Weather Asset & Right-Aligned Weather/Steps/Greeting (Kept mounted across tabs to avoid re-fetching) */}
+        <div
+          id="today-upper-right-ambient"
+          aria-hidden={activeTab !== 'Today'}
+          className={`absolute inset-x-0 top-0 pointer-events-none select-none z-15 ${
+            activeTab === 'Today' ? 'block' : 'hidden'
+          }`}
+        >
+          {/* Extracted Transparent Weather Asset (112x112 standard, 96x96 short screen < 700px) */}
+          {weatherAssetSrc && (() => {
+            const isShortViewport = frameSize.height < 700;
+            const iconSize = isShortViewport ? 96 : 112;
+            return (
+              <div
+                id="today-weather-icon-wrap"
+                aria-hidden="true"
+                style={{
+                  top: isShortViewport ? '14px' : '24px',
+                  right: '12px',
+                  width: `${iconSize}px`,
+                  height: `${iconSize}px`,
+                }}
+                className="absolute pointer-events-none select-none"
+              >
+                <img
+                  id="today-weather-icon-img"
+                  src={weatherAssetSrc}
+                  alt=""
                   aria-hidden="true"
+                  width={iconSize}
+                  height={iconSize}
+                  decoding="async"
+                  draggable={false}
                   style={{
-                    top: frameSize.height < 700 ? '42px' : '48px',
-                    right: frameSize.height < 700 ? '20px' : '24px',
-                    width: '184px',
-                    height: '152px',
-                    transform: 'rotate(-32deg)',
-                    background:
-                      'radial-gradient(ellipse at 68% 28%, rgba(233, 183, 106, 0.14) 0%, rgba(233, 183, 106, 0.05) 46%, rgba(233, 183, 106, 0) 76%)',
+                    width: `${iconSize}px`,
+                    height: `${iconSize}px`,
+                    objectFit: 'contain',
+                    opacity: 0.88,
                   }}
-                  className="absolute rounded-full blur-xl pointer-events-none"
+                  className="block pointer-events-none select-none"
                 />
-
-                {/* Watermark Sunny Sun SVG (104×104px, viewBox 0 0 120 120, center (60,60), r=25 circle + 12 rays r=34..43) */}
-                <div
-                  id="today-sun-watermark-wrap"
-                  aria-hidden="true"
-                  style={{
-                    top: frameSize.height < 700 ? '18px' : '22px',
-                    right: frameSize.height < 700 ? '6px' : '10px',
-                    width: '104px',
-                    height: '104px',
-                  }}
-                  className="absolute pointer-events-none"
-                >
-                  <svg
-                    id="today-sun-watermark-svg"
-                    viewBox="0 0 120 120"
-                    width="104"
-                    height="104"
-                    style={{ width: '104px', height: '104px' }}
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="w-full h-full pointer-events-none"
-                  >
-                    <circle
-                      cx="60"
-                      cy="60"
-                      r="25"
-                      fill="#E9B76A"
-                      fillOpacity="0.38"
-                    />
-                    {Array.from({ length: 12 }).map((_, idx) => {
-                      const angleRad = (idx * 30 * Math.PI) / 180;
-                      const x1 = Number((60 + 34 * Math.cos(angleRad)).toFixed(3));
-                      const y1 = Number((60 + 34 * Math.sin(angleRad)).toFixed(3));
-                      const x2 = Number((60 + 43 * Math.cos(angleRad)).toFixed(3));
-                      const y2 = Number((60 + 43 * Math.sin(angleRad)).toFixed(3));
-                      return (
-                        <line
-                          key={idx}
-                          x1={x1}
-                          y1={y1}
-                          x2={x2}
-                          y2={y2}
-                          stroke="#E9B76A"
-                          strokeOpacity="0.35"
-                          strokeWidth="3.5"
-                          strokeLinecap="round"
-                        />
-                      );
-                    })}
-                  </svg>
-                </div>
-              </>
-            )}
-
-            {/* Upper-Right Text Block: Separated from Sun rays; Line 1 = 18°C · 3,420 steps, Line 2 = Hope your morning feels easy. */}
-            <div
-              id="today-top-right-info"
-              style={{
-                top: frameSize.height < 700 ? '50px' : '120px',
-                right: frameSize.height < 700 ? '102px' : '20px',
-              }}
-              className="absolute flex flex-col items-end text-right pointer-events-none"
-            >
-              {/* Line 1: Temperature & Steps unified in font size, weight, and color; no step icon */}
-              <div className="flex items-center justify-end whitespace-nowrap leading-none text-[13.5px] font-medium text-[#3C3C43]/80 tabular-nums tracking-[-0.01em]">
-                {isWeatherAvailable && (
-                  <>
-                    <span>18°C</span>
-                    <span className="mx-1.5 text-[#3C3C43]/40 select-none" aria-hidden="true">
-                      ·
-                    </span>
-                  </>
-                )}
-                <span>3,420 steps</span>
               </div>
+            );
+          })()}
 
-              {/* Line 2: Shorter greeting right-aligned below data row, slightly smaller font size */}
-              <p className="mt-1.5 text-[12px] font-normal text-[#6C6C70]/90 leading-snug tracking-[-0.01em] whitespace-nowrap">
-                Hope your morning feels easy.
-              </p>
+          {/* Upper-Right Text Block: Below weather icon with >= 8px visible clearance; Line 1 = 18°C · 3,420 steps, Line 2 = Hope your morning feels easy. */}
+          <div
+            id="today-top-right-info"
+            style={{
+              top: frameSize.height < 700 ? '101px' : '126px',
+              right: '20px',
+            }}
+            className="absolute flex flex-col items-end text-right pointer-events-none"
+          >
+            {/* Line 1: Temperature & Steps unified in 13px / 18px */}
+            <div className="flex items-center justify-end whitespace-nowrap leading-[18px] text-[13px] font-medium text-[#6E6E78] tabular-nums tracking-[-0.01em]">
+              {todayWeather.available && todayWeather.temperatureC !== null && (
+                <>
+                  <span id="today-weather-temp">{todayWeather.temperatureC}°C</span>
+                  <span className="mx-1.5 text-[#3C3C43]/40 select-none" aria-hidden="true">
+                    ·
+                  </span>
+                </>
+              )}
+              <span>3,420 steps</span>
             </div>
+
+            {/* Line 2: Greeting right-aligned below data row */}
+            <p
+              className={`genki-mobile-meta ${
+                frameSize.height < 700 ? 'mt-0.5' : 'mt-1.5'
+              } text-[13px] font-normal text-[#6C6C70]/90 leading-[18px] tracking-[-0.01em] whitespace-nowrap`}
+            >
+              Hope your morning feels easy.
+            </p>
           </div>
-        )}
+        </div>
 
         {/* 3. Main Body Content: Today View */}
         <div
@@ -3860,7 +3973,7 @@ export default function App() {
                               zIndex: 30,
                               overflow: 'visible',
                             }}
-                            className="relative text-left flex flex-col justify-center cursor-pointer select-none overflow-visible"
+                            className="genki-mobile-focus relative text-left flex flex-col justify-center cursor-pointer select-none overflow-visible"
                           >
                             {/* Continuous border ring with 26px top-center mask exclusion so pointer base has zero horizontal border line or seam */}
                             <div
@@ -3932,9 +4045,9 @@ export default function App() {
                               <span
                                 id="today-bubble-speaker"
                                 style={{
-                                  fontSize: '12px',
+                                  fontSize: '13px',
                                   fontWeight: 500,
-                                  lineHeight: '16px',
+                                  lineHeight: '18px',
                                   color: '#766D98',
                                 }}
                               >
@@ -4116,9 +4229,9 @@ export default function App() {
                           <span
                             id="today-with-nova-title"
                             style={{
-                              fontSize: '13px',
+                              fontSize: '18px',
                               fontWeight: 600,
-                              lineHeight: '18px',
+                              lineHeight: '24px',
                               color: '#655C9E',
                             }}
                           >
@@ -4160,15 +4273,15 @@ export default function App() {
                                   background: 'transparent',
                                   borderRadius: '0px',
                                 }}
-                                className="w-full text-left cursor-pointer active:opacity-75 transition-opacity shrink-0"
+                                className="genki-mobile-focus w-full text-left cursor-pointer active:opacity-75 transition-opacity shrink-0"
                               >
                                 {/* Col 1: Task Title (14px, 500, 20px, #34323B, max 2 lines, no strikethrough) */}
                                 <span
                                   data-list-row-title={idx}
                                   style={{
-                                    fontSize: '14px',
+                                    fontSize: '15px',
                                     fontWeight: 500,
-                                    lineHeight: '20px',
+                                    lineHeight: '22px',
                                     color: '#34323B',
                                     display: '-webkit-box',
                                     WebkitLineClamp: 2,
@@ -4186,9 +4299,9 @@ export default function App() {
                                   <span
                                     data-list-row-badge={idx}
                                     style={{
-                                      fontSize: '11px',
+                                      fontSize: '13px',
                                       fontWeight: 500,
-                                      lineHeight: '16px',
+                                      lineHeight: '18px',
                                       color: '#85818F',
                                     }}
                                     className="inline-flex items-center whitespace-nowrap"
@@ -4199,9 +4312,9 @@ export default function App() {
                                   <span
                                     data-list-row-badge={idx}
                                     style={{
-                                      fontSize: '11px',
+                                      fontSize: '13px',
                                       fontWeight: 500,
-                                      lineHeight: '16px',
+                                      lineHeight: '18px',
                                       color: '#52786A',
                                       gap: '4px',
                                     }}
@@ -4223,9 +4336,9 @@ export default function App() {
                                   <span
                                     data-list-row-badge={idx}
                                     style={{
-                                      fontSize: '11px',
+                                      fontSize: '13px',
                                       fontWeight: 500,
-                                      lineHeight: '16px',
+                                      lineHeight: '18px',
                                       color: '#655C9E',
                                       gap: '4px',
                                     }}
@@ -4247,9 +4360,9 @@ export default function App() {
                                   <span
                                     data-list-row-badge={idx}
                                     style={{
-                                      fontSize: '11px',
+                                      fontSize: '13px',
                                       fontWeight: 500,
-                                      lineHeight: '16px',
+                                      lineHeight: '18px',
                                       color: '#85818F',
                                     }}
                                     className="inline-flex items-center whitespace-nowrap"
@@ -4282,7 +4395,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAvatarMode(prev => prev === '3d' ? '2d' : '3d')}
-                className="hidden px-1.5 py-0.5 rounded-full text-[9px] font-medium text-[#8E8E93]/70 hover:text-[#5E5BAE] bg-black/[0.03] hover:bg-[#5E5BAE]/10 active:scale-95 transition-all cursor-pointer select-none border border-black/[0.04]"
+                className="genki-mobile-focus hidden px-1.5 py-0.5 rounded-full text-[13px] font-medium text-[#8E8E93]/70 hover:text-[#5E5BAE] bg-black/[0.03] hover:bg-[#5E5BAE]/10 active:scale-95 transition-all cursor-pointer select-none border border-black/[0.04]"
                 title={avatarMode === '3d' ? "Switch to 2D Nova" : "Switch to 3D Fur Avatar"}
                 aria-label="Toggle 3D/2D Avatar"
               >
@@ -4435,7 +4548,7 @@ export default function App() {
                               setIsPlanCardOpen(false);
                             }
                           }}
-                          className={`absolute rounded-full flex items-center justify-center group active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-[#5E5BAE] ${
+                          className={`genki-mobile-control genki-mobile-icon-well absolute rounded-full flex items-center justify-center group active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-[#5E5BAE] ${
                             isCenterCard ? 'cursor-pointer pointer-events-auto' : 'pointer-events-none'
                           }`}
                           aria-label="Close suggestion card"
@@ -4456,7 +4569,7 @@ export default function App() {
                           <div className="h-[44px] flex items-center pr-[36px]">
                             <div className="relative h-4 flex-1 select-none">
                               <span
-                                className={`text-[10.5px] font-bold uppercase tracking-wider text-[#5E5BAE] absolute inset-0 transition-opacity ${
+                                className={`text-[13px] font-medium tracking-normal text-[#5E5BAE] absolute inset-0 transition-opacity ${
                                   shouldReduceMotion ? 'duration-75' : 'duration-200'
                                 } ${
                                   cardState === 'suggested'
@@ -4467,7 +4580,7 @@ export default function App() {
                                 Today’s suggestion
                               </span>
                               <span
-                                className={`text-[10.5px] font-bold uppercase tracking-wider text-[#5E5BAE] absolute inset-0 transition-opacity ${
+                                className={`text-[13px] font-medium tracking-normal text-[#5E5BAE] absolute inset-0 transition-opacity ${
                                   shouldReduceMotion ? 'duration-75' : 'duration-250 delay-100'
                                 } ${
                                   cardState !== 'suggested'
@@ -4546,8 +4659,8 @@ export default function App() {
                               >
                                 <p
                                   style={{
-                                    fontSize: '14px',
-                                    lineHeight: '20px',
+                                    fontSize: '15px',
+                                    lineHeight: '22px',
                                     display: '-webkit-box',
                                     WebkitLineClamp: 3,
                                     WebkitBoxOrient: 'vertical',
@@ -4588,7 +4701,7 @@ export default function App() {
                                       handleSoundsGood(slotCardIdx);
                                     }
                                   }}
-                                  className="min-h-[44px] px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
+                                  className="genki-mobile-control genki-mobile-primary min-h-[44px] px-3.5 rounded-[15px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] active:scale-[0.98] text-white text-[13.5px] font-semibold shadow-[0_4px_14px_rgba(94,91,174,0.22)] transition-colors flex items-center justify-center text-center cursor-pointer whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                 >
                                   Sounds good
                                 </button>
@@ -4602,7 +4715,7 @@ export default function App() {
                                       handleInitialPlanB(slotCardIdx);
                                     }
                                   }}
-                                  className="min-h-[44px] w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-all flex items-center justify-center text-center cursor-pointer whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
+                                  className="genki-mobile-control genki-mobile-secondary min-h-[44px] w-full px-3.5 rounded-[15px] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-[0.98] text-[#1C1C1E] text-[13.5px] font-semibold transition-colors flex items-center justify-center text-center cursor-pointer whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                 >
                                   Adjust
                                 </button>
@@ -4686,7 +4799,7 @@ export default function App() {
                                           ? 'none'
                                           : 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1)',
                                       }}
-                                      className="relative rounded-full overflow-hidden flex items-center justify-center select-none cursor-pointer bg-[#EFEDF8] border border-[rgba(100,88,177,0.12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6558B1]"
+                                      className="genki-mobile-focus relative rounded-full overflow-hidden flex items-center justify-center select-none cursor-pointer bg-[#EFEDF8] border border-[rgba(100,88,177,0.12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6558B1]"
                                     >
                                       <svg
                                         width="76"
@@ -4774,7 +4887,7 @@ export default function App() {
                                         undoCardCompleted(slotCardIdx);
                                       }
                                     }}
-                                    className="min-h-[44px] px-6 rounded-[12px] text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
+                                    className="genki-mobile-control genki-mobile-tertiary min-h-[44px] px-6 rounded-[12px] text-[13px] leading-[18px] font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap underline underline-offset-3 cursor-pointer flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                   >
                                     Undo completion
                                   </button>
@@ -4790,7 +4903,7 @@ export default function App() {
                                           handleAcceptedPlanB(slotCardIdx);
                                         }
                                       }}
-                                      className="min-h-[44px] px-5 rounded-[12px] text-xs font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap cursor-pointer active:scale-95 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
+                                      className="genki-mobile-control genki-mobile-secondary min-h-[44px] px-5 rounded-[12px] text-[13px] leading-[18px] font-semibold text-[#5E5BAE] hover:text-[#494692] hover:bg-[#5E5BAE]/8 transition-colors whitespace-nowrap cursor-pointer active:scale-95 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                     >
                                       Adjust
                                     </button>
@@ -4804,7 +4917,7 @@ export default function App() {
                                           handleNotToday(slotCardIdx);
                                         }
                                       }}
-                                      className="min-h-[44px] px-5 rounded-[12px] text-xs font-semibold text-[#6C6C70] hover:text-[#1C1C1E] hover:bg-black/[0.04] transition-colors whitespace-nowrap cursor-pointer active:scale-95 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
+                                      className="genki-mobile-control genki-mobile-tertiary min-h-[44px] px-5 rounded-[12px] text-[13px] leading-[18px] font-semibold text-[#6C6C70] hover:text-[#1C1C1E] hover:bg-black/[0.04] transition-colors whitespace-nowrap cursor-pointer active:scale-95 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE]"
                                     >
                                       Not today
                                     </button>
@@ -4911,7 +5024,7 @@ export default function App() {
                           const step = diff === 1 ? 1 : -1;
                           setActiveVirtualIndex((prev) => prev + step);
                         }}
-                        className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE] ${
+                        className={`genki-mobile-focus h-1.5 rounded-full transition-all duration-300 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#5E5BAE] ${
                           isDotActive
                             ? 'w-4 bg-[#1C1C1E]/75'
                             : 'w-1.5 bg-[#1C1C1E]/20 hover:bg-[#1C1C1E]/35'
@@ -4931,6 +5044,7 @@ export default function App() {
             <React.Suspense fallback={<PlanLoadingView />}>
               <LazyMyPlanView
                 phoneFrameRef={phoneFrameRef}
+                isActive={activeTab === 'Plan'}
                 activityRecords={activityRecords}
                 restRecords={restRecords}
                 onAddManualActivity={handleAddManualActivity}
@@ -4948,11 +5062,10 @@ export default function App() {
         {/* 3. Main Body Content: Discover View */}
         <div className={`flex-1 flex flex-col min-h-0 ${activeTab === 'Discover' ? 'flex' : 'hidden'}`}>
           {(hasVisitedDiscover || activeTab === 'Discover') && (
-            <React.Suspense
-              fallback={<div className="flex-1 w-full h-full bg-transparent" aria-hidden="true" />}
-            >
+            <React.Suspense fallback={<DiscoverLoadingView />}>
               <LazyDiscoverView
                 phoneFrameRef={phoneFrameRef}
+                isActive={activeTab === 'Discover'}
                 savedItemIds={savedItemIds}
                 onToggleSave={handleToggleSave}
                 isSavedSheetOpen={isSavedSheetOpen}
@@ -4985,10 +5098,10 @@ export default function App() {
                   ]);
                 });
               }}
-              className="liquid-glass-pill liquid-glass-pill-interactive relative z-30 pointer-events-auto w-full active:scale-[0.99] rounded-full px-4.5 py-2.5 flex items-center gap-3 cursor-pointer min-h-[46px] transition-all text-left"
+              className="genki-mobile-control genki-mobile-chat-entry liquid-glass-pill liquid-glass-pill-interactive relative z-30 pointer-events-auto w-full active:scale-[0.99] rounded-full px-4.5 py-2.5 flex items-center gap-3 cursor-pointer min-h-[46px] transition-colors text-left"
               aria-label="Talk to Nova"
             >
-              <span className="flex-1 text-[14px] text-[#3C3C43] font-medium select-none tracking-[-0.01em]">
+              <span className="flex-1 text-[15px] leading-[22px] text-[#3C3C43] font-medium select-none tracking-[-0.01em]">
                 Talk to Nova…
               </span>
               <div className="w-7 h-7 rounded-full liquid-glass-icon-well text-[#5E5BAE] flex items-center justify-center shrink-0">
@@ -5016,12 +5129,15 @@ export default function App() {
                   type="button"
                   onPointerEnter={() => {
                     if (tab.id === 'Plan') void loadPlanView().catch(() => {});
+                    if (tab.id === 'Discover') void loadDiscoverView().catch(() => {});
                   }}
                   onFocus={() => {
                     if (tab.id === 'Plan') void loadPlanView().catch(() => {});
+                    if (tab.id === 'Discover') void loadDiscoverView().catch(() => {});
                   }}
                   onPointerDown={() => {
                     if (tab.id === 'Plan') void loadPlanView().catch(() => {});
+                    if (tab.id === 'Discover') void loadDiscoverView().catch(() => {});
                   }}
                   onClick={() => {
                     const nextTab = tab.id as 'Today' | 'Plan' | 'Discover';
@@ -5030,14 +5146,14 @@ export default function App() {
                     setActiveTab(nextTab);
                   }}
                   aria-current={isActive ? 'page' : undefined}
-                  className={`flex flex-col items-center gap-0.5 py-1.5 px-3 rounded-full transition-all min-h-[46px] justify-center cursor-pointer active:scale-[0.97] ${
+                  className={`genki-mobile-focus flex flex-col items-center gap-0.5 py-1.5 px-3 rounded-full transition-all min-h-[46px] justify-center cursor-pointer active:scale-[0.97] ${
                     isActive
                       ? 'liquid-glass-active-tab text-[#5E5BAE] font-semibold'
                       : 'text-[#2C2C2E] hover:text-[#1C1C1E] font-medium'
                   }`}
                 >
                   <Icon className={`w-[19px] h-[19px] ${isActive ? 'stroke-[2.4]' : 'stroke-[2]'}`} />
-                  <span className="text-[11px] tracking-[-0.01em] leading-none mt-0.5">{tab.id}</span>
+                  <span className="text-[13px] tracking-[-0.01em] leading-none mt-0.5">{tab.id}</span>
                 </button>
               );
             })}
@@ -5082,17 +5198,17 @@ export default function App() {
                 {/* Sheet Header: Apple HIG Clean Title, No Redundant Pills */}
                 <div 
                   ref={detailHeaderRef}
-                  className="px-5 sm:px-6 pt-5 pb-3.5 border-b border-black/[0.06] flex items-center justify-between shrink-0"
+                  className="px-5 pt-4 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0"
                 >
                   <div className="flex-1 min-w-0 pr-3">
-                    <h3 className="text-[19px] sm:text-[20px] font-bold text-[#1C1C1E] tracking-[-0.02em] leading-tight">
+                    <h3 className="genki-mobile-sheet-title text-[19px] sm:text-[20px] font-bold text-[#1C1C1E] tracking-[-0.02em] leading-tight">
                       {currentPlan.detailTitle}
                     </h3>
                   </div>
                   <button
                     type="button"
                     onClick={closeDetailWithTransition}
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-[#6C6C70] hover:text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 transition-all cursor-pointer shrink-0"
+                    className="genki-mobile-control genki-mobile-icon-well w-8 h-8 rounded-full flex items-center justify-center text-[#6C6C70] hover:text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 transition-colors cursor-pointer shrink-0"
                     aria-label="Close"
                   >
                     <X className="w-4 h-4 stroke-[2.2]" />
@@ -5102,7 +5218,7 @@ export default function App() {
                 {/* Sheet Content: Media & Clean Guideline Rows (No Nested Card-in-Card) */}
                 <div
                   ref={detailScrollBodyRef}
-                  className="flex-1 overflow-y-auto px-5 sm:px-6 py-4 space-y-5"
+                  className="flex-1 overflow-y-auto px-5 py-4 space-y-6"
                 >
                   {/* Media Hero Banner: Clean guide/article cover with matching resource */}
                   <div
@@ -5124,10 +5240,10 @@ export default function App() {
                       <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/20 to-transparent flex items-end p-4 sm:p-4.5">
                         <div className="flex items-center justify-between w-full text-white">
                           <div className="flex-1 min-w-0 pr-3">
-                            <div className="text-[13.5px] sm:text-[14px] font-bold leading-tight tracking-[-0.01em]">
+                            <div className="text-[15px] font-semibold leading-[22px] tracking-[-0.01em]">
                               {currentPlan.audioTitle}
                             </div>
-                            <div className="text-[11px] sm:text-[11.5px] text-white/85 mt-0.5 font-normal">
+                            <div className="text-[13px] sm:text-[13px] text-white/85 mt-0.5 font-normal">
                               {currentPlan.audioSubtitle}
                             </div>
                           </div>
@@ -5153,14 +5269,14 @@ export default function App() {
                   >
                     <p
                       id="detail-full-description"
-                      className="text-[14px] text-[#3C3C43] leading-[21px]"
+                      className="genki-mobile-body text-[14px] text-[#3C3C43] leading-[21px]"
                     >
                       {currentPlan.fullDescription}
                     </p>
 
                     <div className="h-px bg-black/[0.05]" />
 
-                    <h4 className="text-[14px] font-semibold text-[#1C1C1E] tracking-tight">
+                    <h4 className="genki-mobile-row-title text-[14px] font-semibold text-[#1C1C1E] tracking-tight">
                       Gentle Guidelines
                     </h4>
                     
@@ -5170,7 +5286,7 @@ export default function App() {
                         <div className="w-7 h-7 rounded-full bg-[#5E5BAE]/10 flex items-center justify-center shrink-0 mt-0.5">
                           <Clock className="w-3.5 h-3.5 text-[#5E5BAE] stroke-[2.2]" />
                         </div>
-                        <p className="text-[13.5px] text-[#3C3C43] leading-relaxed flex-1">
+                        <p className="genki-mobile-body text-[13.5px] text-[#3C3C43] leading-relaxed flex-1">
                           {currentPlan.tip1}
                         </p>
                       </div>
@@ -5182,7 +5298,7 @@ export default function App() {
                         <div className="w-7 h-7 rounded-full bg-[#FF7A32]/10 flex items-center justify-center shrink-0 mt-0.5">
                           <Sparkles className="w-3.5 h-3.5 text-[#FF7A32] stroke-[2.2]" />
                         </div>
-                        <p className="text-[13.5px] text-[#3C3C43] leading-relaxed flex-1">
+                        <p className="genki-mobile-body text-[13.5px] text-[#3C3C43] leading-relaxed flex-1">
                           {currentPlan.tip2}
                         </p>
                       </div>
@@ -5191,11 +5307,11 @@ export default function App() {
                 </div>
 
                 {/* Sheet Bottom Safe Area & Action */}
-                <div className="p-5 pb-6 border-t border-black/[0.06] bg-white/95 backdrop-blur-md flex flex-col gap-2 shrink-0">
+                <div className="p-5 pb-[calc(24px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white/95 backdrop-blur-md flex flex-col gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={closeDetailWithTransition}
-                    className="w-full py-3 rounded-[18px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#5E5BAE] text-[13.5px] font-semibold text-center active:scale-[0.99] transition-all min-h-[44px] cursor-pointer"
+                    className="genki-mobile-control genki-mobile-secondary w-full py-3 rounded-[18px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#5E5BAE] text-[13.5px] font-semibold text-center active:scale-[0.99] transition-colors min-h-[44px] cursor-pointer"
                   >
                     Back to Today
                   </button>
@@ -5241,7 +5357,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={closeChatWithTransition}
-                  className="absolute top-3.5 right-4 z-40 w-8 h-8 rounded-full flex items-center justify-center text-[#6C6C70] hover:text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 transition-all cursor-pointer"
+                  className="genki-mobile-control genki-mobile-icon-well absolute top-3.5 right-4 z-40 w-8 h-8 rounded-full flex items-center justify-center text-[#6C6C70] hover:text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 transition-colors cursor-pointer"
                   aria-label="Close"
                 >
                   <X className="w-4 h-4 stroke-[2.2]" />
@@ -5249,7 +5365,7 @@ export default function App() {
 
                 {/* Header with Centered Nickname "Nova" */}
                 <div className="pt-14 pb-2 px-5 border-b border-black/[0.06] flex items-center justify-center shrink-0">
-                  <h3 className="text-[17px] font-bold text-[#1C1C1E] tracking-tight text-center">
+                  <h3 className="genki-mobile-sheet-title text-[17px] font-bold text-[#1C1C1E] tracking-tight text-center">
                     Nova
                   </h3>
                 </div>
@@ -5274,7 +5390,7 @@ export default function App() {
                   <div 
                     ref={chatContainerRef}
                     onScroll={handleChatScroll}
-                    className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-3.5 text-xs leading-relaxed"
+                    className="flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-3.5 text-[15px] leading-[22px]"
                   >
                     {chatMessages.map((msg) => {
                       // If AI message has options, render as a genuine frosted chat bubble
@@ -5286,7 +5402,7 @@ export default function App() {
                           >
                             <div className="max-w-[85%] bg-[#F2F2F7]/90 rounded-[22px] rounded-bl-xs border border-black/[0.04] p-4 shadow-2xs space-y-2.5">
                               {/* Suggestion Text */}
-                              <p className="text-[13.5px] leading-relaxed text-[#1C1C1E]">
+                              <p className="genki-mobile-body text-[13.5px] leading-relaxed text-[#1C1C1E]">
                                 {msg.text}
                               </p>
 
@@ -5298,7 +5414,7 @@ export default function App() {
                                       key={optIdx}
                                       type="button"
                                       onClick={() => handleOptionClick(opt, msg.id)}
-                                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[16px] border border-[#5E5BAE]/20 bg-[#F4EEFE] hover:bg-[#EDE7FB] active:scale-[0.98] text-[#5E5BAE] text-xs font-semibold text-left transition-all select-none min-h-[38px] shadow-2xs cursor-pointer"
+                                      className="genki-mobile-control genki-mobile-secondary inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[16px] border border-[#5E5BAE]/20 bg-[#F4EEFE] hover:bg-[#EDE7FB] active:scale-[0.98] text-[#5E5BAE] text-[13px] leading-[18px] font-semibold text-left transition-colors select-none min-h-[38px] shadow-2xs cursor-pointer"
                                     >
                                       <span>{opt.label}</span>
                                     </button>
@@ -5310,7 +5426,7 @@ export default function App() {
                                   Only the chosen option (if any) is shown as a subtle, non-clickable status chip. */}
                               {msg.disabled && msg.selectedOptionLabel && (
                                 <div className="pt-0.5">
-                                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[14px] border border-[#5E5BAE]/20 bg-[#EBE7FA]/80 text-[11.5px] font-medium text-[#5E5BAE] select-none cursor-default">
+                                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[14px] border border-[#5E5BAE]/20 bg-[#EBE7FA]/80 text-[13px] font-medium text-[#5E5BAE] select-none cursor-default">
                                     <Check className="w-3 h-3 stroke-[2.5] text-[#5E5BAE]" />
                                     <span>{msg.selectedOptionLabel}</span>
                                   </span>
@@ -5360,13 +5476,13 @@ export default function App() {
                           }, 150);
                         }}
                         placeholder={inputPlaceholder}
-                        className="flex-1 bg-transparent text-xs text-[#1C1C1E] placeholder-[#8E8E93] outline-none"
-                      />
+                        className="genki-mobile-input flex-1 bg-transparent text-[13px] leading-[18px] text-[#1C1C1E] placeholder-[#8E8E93] outline-none"
+                      aria-label="Message Nova" name="nova-message" autoComplete="off" />
                       <button
                         type="submit"
                         disabled={!sheetInput.trim()}
                         aria-label="Send message"
-                        className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+                        className={`genki-mobile-control genki-mobile-send w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
                           sheetInput.trim()
                             ? 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white active:scale-95 shadow-2xs'
                             : 'bg-[#E5E5EA] text-[#8E8E93]'
@@ -5394,10 +5510,10 @@ export default function App() {
           >
             <div className="bg-white/95 backdrop-blur-2xl border border-white/90 rounded-[24px] p-6 w-full max-w-[310px] shadow-[0_16px_48px_rgba(28,28,45,0.18)] animate-in zoom-in-95 duration-150 flex flex-col gap-3.5 text-[#1C1C1E]">
               <div>
-                <h3 id="accessible-dialog-title" className="text-base font-bold text-[#1C1C1E]">
+                <h3 id="accessible-dialog-title" className="genki-mobile-sheet-title text-base font-bold text-[#1C1C1E]">
                   Mark plan as complete?
                 </h3>
-                <p className="text-xs text-[#6C6C70] mt-1.5 leading-relaxed">
+                <p className="genki-mobile-body text-[13px] leading-[18px] text-[#6C6C70] mt-1.5 leading-relaxed">
                   Confirm that you’ve completed <span className="font-semibold text-[#1C1C1E]">“{currentPlan.title}”</span> for today.
                 </p>
               </div>
@@ -5406,7 +5522,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setIsAccessibleConfirmOpen(false)}
-                  className="px-3.5 py-2 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-xs font-semibold text-[#6C6C70] hover:text-[#1C1C1E] active:scale-95 transition-all min-h-[44px]"
+                  className="genki-mobile-control genki-mobile-secondary px-3.5 py-2 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-[13px] leading-[18px] font-semibold text-[#6C6C70] hover:text-[#1C1C1E] active:scale-95 transition-colors min-h-[44px]"
                 >
                   Cancel
                 </button>
@@ -5420,7 +5536,7 @@ export default function App() {
                     recordCardCompleted(activeCardIndexRef.current);
                     setHoldProgress(100);
                   }}
-                  className="px-4 py-2 rounded-[16px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] text-white text-xs font-bold shadow-[0_4px_14px_rgba(94,91,174,0.22)] active:scale-95 transition-all min-h-[44px]"
+                  className="genki-mobile-control genki-mobile-primary px-4 py-2 rounded-[16px] bg-[#5E5BAE] hover:bg-[#524FA0] active:bg-[#484591] text-white text-[13px] leading-[18px] font-bold shadow-[0_4px_14px_rgba(94,91,174,0.22)] active:scale-95 transition-colors min-h-[44px]"
                 >
                   Confirm Done
                 </button>

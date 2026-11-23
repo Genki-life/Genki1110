@@ -1177,12 +1177,13 @@ export function loadWeeklyReviewFeedbacks(): Record<string, WeeklyReviewFeedback
 
 export function saveWeeklyReviewFeedbacks(
   feedbacks: Record<string, WeeklyReviewFeedback>
-): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
+): boolean {
+  if (typeof window === 'undefined' || !window.localStorage) return false;
   try {
     window.localStorage.setItem(WEEKLY_REVIEWS_STORAGE_KEY, JSON.stringify(feedbacks));
+    return true;
   } catch {
-    // Ignore storage quota or private mode errors
+    return false;
   }
 }
 

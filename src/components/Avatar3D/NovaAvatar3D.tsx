@@ -24,6 +24,8 @@ export interface NovaAvatar3DProps {
   isTransitioning?: boolean;
   /** Callback invoked once when 3D first frame or 2D fallback is visible */
   onReady?: () => void;
+  /** Framing & buffer preset: 'default' for Today hero, 'compact' for small 76px Plan guide */
+  variant?: 'default' | 'compact';
 }
 
 export function NovaAvatar3D({
@@ -36,7 +38,9 @@ export function NovaAvatar3D({
   isListening = false,
   isTransitioning = false,
   onReady,
+  variant = 'default',
 }: NovaAvatar3DProps) {
+  const isCompact = variant === 'compact';
   const containerRef = useRef<HTMLDivElement>(null);
   const isActiveTabRef = useRef(isActiveTab);
   useEffect(() => {
@@ -393,12 +397,13 @@ export function NovaAvatar3D({
       setErrorMessage('WebGL context not available');
       return;
     }
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
 
     isDisposedRef.current = false;
 
     try {
-      const width = container.clientWidth || 240;
-      const height = container.clientHeight || 240;
+      const width = container.clientWidth || (isCompact ? 76 : 240);
+      const height = container.clientHeight || (isCompact ? 76 : 240);
 
       // 2. WebGL Renderer with Alpha: true for seamless gradient integration
       const renderer = new THREE.WebGLRenderer({
@@ -411,8 +416,9 @@ export function NovaAvatar3D({
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       renderer.setPixelRatio(dpr);
+      const minBufferSide = isCompact ? 152 : 230;
       const initMinSide = Math.min(width, height);
-      const initScale = initMinSide < 230 ? 230 / Math.max(1, initMinSide) : 1;
+      const initScale = initMinSide < minBufferSide ? minBufferSide / Math.max(1, initMinSide) : 1;
       let lastRenderW = Math.round(width * initScale);
       let lastRenderH = Math.round(height * initScale);
       let lastAspect = Math.max(0.5, width / Math.max(1, height));
@@ -450,24 +456,24 @@ export function NovaAvatar3D({
           camera.aspect = aspect;
 
           // Bounding requirements for short-fur plush Nova: half-width ~1.32, half-height ~1.38 (center Y at 0.19)
+          // Compact 76x76 framing adds gentle margin so upright ear tip and plush lower body stay 100% unclipped.
           const vFovRad = (camera.fov * Math.PI) / 180;
           const tanHalfV = Math.tan(vFovRad / 2);
           const tanHalfH = tanHalfV * aspect;
 
-          const distV = 1.38 / tanHalfV;
-          const distH = 1.32 / tanHalfH;
-          const targetDist = Math.max(distV, distH, 4.65);
+          const distV = (isCompact ? 1.48 : 1.38) / tanHalfV;
+          const distH = (isCompact ? 1.42 : 1.32) / tanHalfH;
+          const targetDist = Math.max(distV, distH, isCompact ? 5.05 : 4.65);
 
           camera.position.set(0.0, 0.24, targetDist);
-          camera.lookAt(0.0, 0.19, 0.0);
+          camera.lookAt(0.0, isCompact ? 0.21 : 0.19, 0.0);
           camera.updateProjectionMatrix();
         }
 
         if (allowBufferResize) {
-          // Maintain at least a 230px short-side internal buffer so docked 124x124 chat view stays super crisp
-          // and transitions between 230x230 and 124x124 require zero buffer reallocation.
+          // Maintain crisp internal buffer without unnecessary reallocation
           const minSide = Math.min(w, h);
-          const scale = minSide < 230 ? 230 / Math.max(1, minSide) : 1;
+          const scale = minSide < minBufferSide ? minBufferSide / Math.max(1, minSide) : 1;
           const targetRenderW = Math.round(w * scale);
           const targetRenderH = Math.round(h * scale);
 
@@ -493,7 +499,8 @@ export function NovaAvatar3D({
       const keyLight = new THREE.DirectionalLight('#f7f8f6', 1.55);
       keyLight.position.set(1.8, 2.1, 2.2);
       keyLight.castShadow = true;
-      keyLight.shadow.mapSize.set(1024, 1024);
+      const shadowSize = isCompact ? 512 : 1024;
+      keyLight.shadow.mapSize.set(shadowSize, shadowSize);
       keyLight.shadow.bias = -0.0005;
       keyLight.shadow.radius = 2.0;
       keyLightRef.current = keyLight;
@@ -686,7 +693,7 @@ export function NovaAvatar3D({
       setHasError(true);
       setErrorMessage(err?.message || '3D initialization error');
     }
-  }, [mode, startAnimationLoop, stopAnimationLoop]);
+  }, [mode, isCompact, startAnimationLoop, stopAnimationLoop]);
 
   // Tab Activation / Background Page Visibility Loop Controller
   useEffect(() => {
@@ -734,14 +741,18 @@ export function NovaAvatar3D({
     return (
       <div className={`relative flex items-center justify-center select-none ${className}`}>
         {/* Soft radial glow halo */}
-        <div className="absolute inset-0 rounded-full bg-radial from-[#F4EEFE]/90 via-[#FDF1F5]/45 to-transparent blur-2xl pointer-events-none -z-10" />
+        <div
+          className={`absolute inset-0 rounded-full bg-radial from-[#F4EEFE]/90 via-[#FDF1F5]/45 to-transparent pointer-events-none -z-10 ${
+            isCompact ? 'blur-lg' : 'blur-2xl'
+          }`}
+        />
 
         <FurryNovaStaticAvatar
-          size={240}
+          size={isCompact ? 76 : 240}
           className="w-full h-full object-contain pointer-events-none drop-shadow-xs"
         />
 
-        {hasError && (
+        {hasError && !isCompact && (
           <div className="absolute bottom-2 inset-x-2 py-1 px-2 rounded-lg bg-black/60 backdrop-blur-xs text-[10px] text-white/90 text-center">
             {errorMessage || 'WebGL fallback active'}
           </div>
@@ -753,7 +764,11 @@ export function NovaAvatar3D({
   return (
     <div className={`relative flex items-center justify-center select-none ${className}`}>
       {/* Subtle soft radial glow behind the 3D character */}
-      <div className="absolute inset-2 rounded-full bg-radial from-[#F4EEFE]/85 via-[#FDF1F5]/40 to-transparent blur-2xl pointer-events-none -z-10" />
+      <div
+        className={`absolute rounded-full bg-radial from-[#F4EEFE]/85 via-[#FDF1F5]/40 to-transparent pointer-events-none -z-10 ${
+          isCompact ? 'inset-1 blur-lg' : 'inset-2 blur-2xl'
+        }`}
+      />
 
       {/* Three.js Canvas Container */}
       <div
@@ -763,7 +778,7 @@ export function NovaAvatar3D({
       />
 
       {/* Non-intrusive Toggleable Diagnostic View Controls (Exit restores 100% formal state) */}
-      {!isDebugOpen ? (
+      {!isCompact && (!isDebugOpen ? (
         <button
           type="button"
           onClick={(e) => {
@@ -880,7 +895,7 @@ export function NovaAvatar3D({
             )}
           </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }

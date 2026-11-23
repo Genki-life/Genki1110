@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -27,6 +27,7 @@ import {
   CornerDownRight
 } from 'lucide-react';
 import { FurryNovaStaticAvatar } from './Avatar3D/FurryNovaStaticAvatar';
+import { NovaAvatar3D } from './Avatar3D/NovaAvatar3D';
 import {
   ActivityCategory,
   ActivityCompletionRecord,
@@ -39,11 +40,11 @@ import {
   WeeklyReviewFeeling,
   WeeklySchedule,
   WeeklySchedulesByWeek,
+  addLocalDays,
   applyWeeklyAdjustmentProposal,
   buildWeeklyAdjustmentProposal,
-  buildWeeklyReviewObservation,
-  buildWeeklyReviewSummary,
   formatReviewOnSundayLabel,
+  formatShortMonthDay,
   getLastCompletedWeekBounds,
   getLocalWeekBounds,
   getNextWeekBounds,
@@ -53,10 +54,12 @@ import {
   loadResolvedAdjustmentKeys,
   loadWeeklyReviewFeedbacks,
   loadWeeklySchedulesByWeek,
+  parseLocalDateKey,
   saveResolvedAdjustmentKeys,
   saveWeeklyReviewFeedbacks,
   saveWeeklySchedulesByWeek,
   setWeeklyScheduleFieldValue,
+  toLocalDateKey,
 } from '../utils/weeklyPlanStore';
 import {
   FOCUS_STORAGE_KEY,
@@ -191,6 +194,90 @@ function createDefaultDemoFocus(referenceDate: Date = new Date()): DirectionStat
     source: 'demo',
     isSample: true,
   };
+}
+
+function formatFocusHeadline(goalTitle: string): string {
+  const trimmed = goalTitle.trim();
+  if (!trimmed) return 'A gentle focus.';
+  if (trimmed.toLowerCase() === 'feel more energetic') {
+    return 'A little more energy.';
+  }
+  return trimmed;
+}
+
+function formatFocusApproach(executionApproach: string): string {
+  return executionApproach.trim();
+}
+
+const FOCUS_SHORT_MONTH_INDEX: Record<string, number> = {
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
+};
+
+function formatFocusReviewLabel(rawReviewDate: string, referenceToday: Date): string {
+  const trimmed = rawReviewDate.trim();
+  const sourceText = trimmed || formatReviewOnSundayLabel(referenceToday);
+
+  const todayMidnight = new Date(
+    referenceToday.getFullYear(),
+    referenceToday.getMonth(),
+    referenceToday.getDate()
+  );
+
+  let parsedDate: Date | null = null;
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(sourceText);
+  if (isoMatch) {
+    const dt = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+    if (!Number.isNaN(dt.getTime())) parsedDate = dt;
+  } else {
+    const shortMatch = /^(?:Review(?:\s+on)?\s+)?([A-Za-z]{3})\s+(\d{1,2})(?:,\s*(\d{4}))?$/i.exec(
+      sourceText
+    );
+    if (shortMatch) {
+      const monthIdx = FOCUS_SHORT_MONTH_INDEX[shortMatch[1].toLowerCase()];
+      const dayNum = Number(shortMatch[2]);
+      if (monthIdx !== undefined && dayNum >= 1 && dayNum <= 31) {
+        if (shortMatch[3]) {
+          const dt = new Date(Number(shortMatch[3]), monthIdx, dayNum);
+          if (dt.getMonth() === monthIdx && dt.getDate() === dayNum) parsedDate = dt;
+        } else {
+          // Pick closest calendar year occurrence around referenceToday (handles Dec/Jan rollover cleanly)
+          const baseYear = todayMidnight.getFullYear();
+          let best: Date | null = null;
+          let bestDiff = Infinity;
+          for (const yr of [baseYear - 1, baseYear, baseYear + 1]) {
+            const candidate = new Date(yr, monthIdx, dayNum);
+            if (candidate.getMonth() !== monthIdx || candidate.getDate() !== dayNum) continue;
+            const diff = Math.abs(candidate.getTime() - todayMidnight.getTime());
+            if (diff < bestDiff) {
+              bestDiff = diff;
+              best = candidate;
+            }
+          }
+          parsedDate = best;
+        }
+      }
+    }
+  }
+
+  if (parsedDate) {
+    if (parsedDate.getTime() < todayMidnight.getTime()) {
+      return 'Review due';
+    }
+    return `Review ${formatShortMonthDay(parsedDate)}`;
+  }
+
+  return sourceText.replace(/^Review\s+on\s+/i, 'Review ');
 }
 
 function normalizeFocusRecord(
@@ -518,6 +605,7 @@ function ActiveMinutesBarChart({
 
 interface MyPlanViewProps {
   phoneFrameRef?: React.RefObject<HTMLDivElement | null>;
+  isActive?: boolean;
   activityRecords?: ActivityCompletionRecord[];
   restRecords?: RestRecord[];
   onAddManualActivity?: (input: ManualActivityInput) => void;
@@ -529,8 +617,161 @@ interface MyPlanViewProps {
   onNavigateToToday?: () => void;
 }
 
+const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
+  isActive,
+}: {
+  isActive: boolean;
+}) {
+  const [shouldMount3D, setShouldMount3D] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+
+  // Defer 3D initialization until after Plan becomes active and paints its first frame
+  // so intro copy and planning content render immediately without waiting for WebGL.
+  useEffect(() => {
+    if (!isActive || shouldMount3D) return;
+    let cancelled = false;
+    let rafId2: number | null = null;
+    const rafId1 = requestAnimationFrame(() => {
+      rafId2 = requestAnimationFrame(() => {
+        if (!cancelled) {
+          setShouldMount3D(true);
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId1);
+      if (rafId2 !== null) cancelAnimationFrame(rafId2);
+    };
+  }, [isActive, shouldMount3D]);
+
+  const handleReady = useCallback(() => {
+    setIsReady(true);
+  }, []);
+
+  return (
+    <div
+      id="plan-nova-avatar-slot"
+      className="genki-plan-nova-avatar-slot"
+      aria-hidden="true"
+    >
+      {!isReady && (
+        <div
+          className="absolute inset-2 rounded-full bg-radial from-[#E6E8DE]/75 via-[#F2F1F7]/45 to-transparent blur-sm pointer-events-none"
+        />
+      )}
+      {shouldMount3D && (
+        <div
+          className={`w-full h-full transition-opacity duration-200 ${
+            isReady ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <NovaAvatar3D
+            variant="compact"
+            isActiveTab={isActive}
+            onReady={handleReady}
+            className="w-full h-full"
+          />
+        </div>
+      )}
+    </div>
+  );
+});
+
+
+/* Plan-only visual primitives. Unlayered selectors intentionally outrank Tailwind preflight. */
+const GENKI_PLAN_UI_STYLES = `
+.genki-plan-screen {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+.genki-plan-nova-intro {display:flex;align-items:center;gap:12px;width:100%;background:transparent;}
+.genki-plan-nova-avatar-slot {width:76px;height:76px;min-width:76px;min-height:76px;flex:0 0 76px;position:relative;display:flex;align-items:center;justify-content:center;overflow:visible;}
+.genki-plan-nova-copy {flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px;}
+.genki-plan-nova-name {font-size:13px;font-weight:600;line-height:18px;color:#6E6A80;margin:0;}
+.genki-plan-nova-lead {font-size:20px;font-weight:600;line-height:27px;letter-spacing:-0.018em;color:#302D3D;margin:0;overflow-wrap:break-word;white-space:normal;}
+.genki-plan-heading {font-size:18px;font-weight:600;line-height:24px;letter-spacing:-.015em;color:#1C1C1E;}
+.genki-plan-section-header {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;column-gap:12px;row-gap:4px;}
+.genki-plan-section-title {font-size:18px;font-weight:600;line-height:25px;letter-spacing:-0.015em;color:#302D3D;min-width:0;overflow-wrap:break-word;}
+.genki-plan-section-date {font-size:12px;font-weight:400;line-height:17px;color:#706A7C;flex-shrink:0;margin-left:auto;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.genki-plan-section-subtitle {font-size:14px;font-weight:400;line-height:21px;color:#706A7C;}
+.genki-plan-focus-goal {font-size:20px;font-weight:600;line-height:27px;letter-spacing:-0.018em;color:#302D3D;text-wrap:balance;}
+.genki-plan-body {font-size:15px;font-weight:400;line-height:22px;color:#706A7C;}
+.genki-plan-meta {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;}
+.genki-plan-row-title {font-size:15px;font-weight:600;line-height:22px;color:#302D3D;}
+.genki-plan-activity-count {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;text-align:right;font-variant-numeric:tabular-nums;}
+.genki-plan-metric-row {display:inline-flex;align-items:baseline;gap:5px;font-variant-numeric:tabular-nums;}
+.genki-plan-metric-value {font-size:36px;font-weight:600;line-height:40px;letter-spacing:-0.025em;color:#302D3D;font-variant-numeric:tabular-nums;}
+.genki-plan-metric-denom {font-size:20px;font-weight:500;line-height:24px;color:#8B8498;font-variant-numeric:tabular-nums;}
+.genki-plan-metric-caption {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;}
+.genki-plan-week-track {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));height:60px;align-items:center;}
+.genki-plan-week-day {display:flex;flex-direction:column;align-items:center;justify-content:center;height:60px;min-width:0;}
+.genki-plan-week-day-letter {font-size:11px;font-weight:500;line-height:16px;color:#8B8498;}
+.genki-plan-week-day-num {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;font-variant-numeric:tabular-nums;margin-top:2px;}
+.genki-plan-week-day-num-today {font-weight:600;color:#514879;}
+.genki-plan-week-day-indicator {height:6px;margin-top:6px;display:flex;align-items:center;justify-content:center;}
+.genki-plan-week-dot {width:6px;height:6px;border-radius:999px;display:block;box-sizing:border-box;}
+.genki-plan-week-dot-completed {background:#7770B6;}
+.genki-plan-week-dot-past {background:transparent;border:1px solid #C8C2D4;}
+.genki-plan-week-dot-future {background:#E7E3ED;}
+.genki-plan-week-dash-rest {width:8px;height:2px;border-radius:999px;background:#B0A9BE;display:block;}
+.genki-plan-progress-track {width:100%;height:4px;border-radius:2px;background:#ECE8F2;overflow:hidden;}
+.genki-plan-progress-fill {height:100%;border-radius:2px;background:#8B82BD;transition:width 220ms ease;}
+.genki-plan-phase-title {font-size:15px;font-weight:600;line-height:22px;}
+.genki-plan-phase-current {font-size:12px;font-weight:500;line-height:17px;color:#7770B6;flex-shrink:0;}
+.genki-plan-phase-desc {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.genki-plan-review-chart {width:100%;height:120px;display:grid;align-items:stretch;}
+.genki-plan-review-col {display:flex;flex-direction:column;align-items:center;min-width:0;height:120px;}
+.genki-plan-review-plot {width:100%;height:88px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;}
+.genki-plan-review-value {font-size:13px;font-weight:500;line-height:18px;color:#514879;font-variant-numeric:tabular-nums;margin-bottom:4px;}
+.genki-plan-review-value-unknown {color:#9A93A8;margin-bottom:2px;}
+.genki-plan-review-bar {width:28px;border-radius:5px 5px 0 0;transition:height 220ms ease;}
+.genki-plan-review-bar-current {background:#8B82BD;}
+.genki-plan-review-bar-other {background:rgba(139,130,189,0.28);}
+.genki-plan-review-bar-zero {width:28px;height:2px;border-radius:1px;}
+.genki-plan-review-bar-zero-current {background:rgba(139,130,189,0.45);}
+.genki-plan-review-bar-zero-other {background:rgba(139,130,189,0.22);}
+.genki-plan-review-label {margin-top:12px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:400;line-height:16px;color:#706A7C;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.genki-plan-review-summary {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;}
+.genki-plan-feedback-question {font-size:15px;font-weight:600;line-height:22px;color:#302D3D;}
+.genki-plan-sheet-heading {font-size:22px;font-weight:600;line-height:28px;letter-spacing:-.02em;color:#1C1C1E;}
+.genki-plan-subheading {font-size:17px;font-weight:600;line-height:23px;color:#1C1C1E;}
+.genki-plan-unified-container {width:100%;padding:20px;border-radius:28px;background:rgba(255,255,255,0.76);border:1px solid rgba(255,255,255,0.70);box-shadow:0 8px 28px rgba(49,40,75,0.04);display:flex;flex-direction:column;gap:0;}
+.genki-plan-section-divider {width:100%;height:1px;background:rgba(74,66,98,0.08);margin:24px 0;flex-shrink:0;}
+.genki-plan-auxiliary-list {width:100%;padding:4px 16px;border-radius:22px;background:rgba(255,255,255,0.56);border:1px solid rgba(255,255,255,0.64);display:flex;flex-direction:column;}
+.genki-plan-label {font-size:15px;font-weight:500;line-height:22px;color:#1C1C1E;}
+.genki-plan-field {font-size:16px;line-height:22px;min-height:48px;border-radius:12px;}
+.genki-plan-control {min-height:44px;min-width:44px;font-size:15px;font-weight:500;line-height:20px;touch-action:manipulation;cursor:pointer;transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease;}
+.genki-plan-screen button:focus-visible,.genki-plan-control:focus-visible,.genki-plan-field:focus-visible,.genki-plan-text-action:focus-visible,.genki-plan-week-row:focus-visible,.genki-plan-phase-row:focus-visible {outline:2px solid #7770B6;outline-offset:2px;}
+.genki-plan-control:disabled {opacity:.45;cursor:not-allowed;}
+.genki-plan-control:not(:disabled):active {opacity:.75;}
+.genki-plan-text-action {min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:flex-end;cursor:pointer;touch-action:manipulation;transition:color 150ms ease,opacity 150ms ease;}
+.genki-plan-text-action:hover {color:#4B4895;}
+.genki-plan-text-action:active {opacity:.72;}
+.genki-plan-week-row {width:100%;min-height:46px;padding:12px 0;background:transparent;border:0;border-radius:0;display:flex;flex-direction:column;justify-content:center;text-align:left;cursor:pointer;touch-action:manipulation;transition:opacity 150ms ease;}
+.genki-plan-week-row:active {opacity:.72;}
+.genki-plan-week-row-static {cursor:default;}
+.genki-plan-week-row-static:active {opacity:1;}
+.genki-plan-week-row + .genki-plan-week-row {border-top:1px solid rgba(74,66,98,0.06);}
+.genki-plan-phase-row {width:100%;min-height:0;padding:0;border:0;border-radius:8px;background:transparent;display:flex;align-items:stretch;gap:10px;text-align:left;cursor:pointer;touch-action:manipulation;transition:opacity 150ms ease;}
+.genki-plan-phase-row:active {opacity:.72;}
+.genki-plan-control-primary,.genki-plan-control-destructive {min-height:48px;border-radius:14px;padding:12px 16px;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:center;box-shadow:none;color:white;background:#5E5BAE;}
+.genki-plan-control-primary:not(:disabled):hover {background:#504D9D;}
+.genki-plan-control-destructive {background:#D92D4B;}
+.genki-plan-control-secondary {min-height:44px;min-width:96px;margin-right:0;padding:10px 16px;border-radius:12px;font-size:15px;font-weight:600;line-height:20px;color:#514C8C;background:#EEEDF6;display:inline-flex;align-items:center;justify-content:center;box-shadow:none;}
+.genki-plan-control-secondary:not(:disabled):hover {background:#E4E2F1;}
+.genki-plan-control-icon {width:44px;height:44px;min-width:44px;min-height:44px;padding:0;flex-shrink:0;border-radius:999px;background:#F2F2F7;display:inline-flex;align-items:center;justify-content:center;}
+.genki-plan-control-icon svg {width:20px;height:20px;}
+.genki-plan-feedback-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
+.genki-plan-control-feedback {width:100%;min-width:0;min-height:48px;padding:8px 6px;border-radius:12px;border:1px solid transparent;background:#F1EFF6;color:#615B73;font-size:14px;font-weight:500;line-height:18px;display:flex;align-items:center;justify-content:center;text-align:center;white-space:normal;}
+.genki-plan-control-feedback:hover {background:#EAE6F4;}
+.genki-plan-control-feedback[aria-pressed="true"] {border-color:#BEB4DE;background:#E5E0F3;color:#514879;}
+.genki-plan-screen [aria-label="Additional plan sections"] > button {min-height:56px;}
+.genki-plan-screen #focus-card-review,.genki-plan-screen [id$="progress"] {font-variant-numeric:tabular-nums;}
+.genki-plan-screen #focus-card-title {text-wrap:balance;}
+@media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-week-row,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill,.genki-plan-review-bar {transition:none;}}
+`;
+
 export function MyPlanView({
   phoneFrameRef,
+  isActive = true,
   activityRecords = [],
   restRecords = [],
   onAddManualActivity,
@@ -882,20 +1123,44 @@ export function MyPlanView({
   const weeklySchedule = weeklySchedulesByWeek[currentWeekBounds.weekStartKey] ?? null;
   const nextWeekSchedule = weeklySchedulesByWeek[nextWeekBounds.weekStartKey] ?? null;
 
-  // This week reads from the SAME unified activityRecords store as History and Weekly review
-  const thisWeekCompletions = useMemo(() => {
-    return activityRecords
-      .filter(
-        (record) =>
-          record.category !== 'rest' &&
-          isDateKeyInWeek(
-            record.dateKey,
-            currentWeekBounds.weekStartKey,
-            currentWeekBounds.weekEndKey
-          )
-      )
-      .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
-  }, [activityRecords, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey]);
+  // Shared deduplication helper so This week and Weekly review use the exact same completion counting rules
+  const getDeduplicatedWeekCompletions = useCallback(
+    (weekStartKey: string, weekEndKey: string): ActivityCompletionRecord[] => {
+      const valid = activityRecords
+        .filter(
+          (record) =>
+            record.category !== 'rest' &&
+            isDateKeyInWeek(record.dateKey, weekStartKey, weekEndKey)
+        )
+        .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+
+      const seenSourceKeys = new Set<string>();
+      const seenIds = new Set<string>();
+      const deduped: ActivityCompletionRecord[] = [];
+      for (const record of valid) {
+        if (record.sourceKey) {
+          if (seenSourceKeys.has(record.sourceKey)) continue;
+          seenSourceKeys.add(record.sourceKey);
+        }
+        if (seenIds.has(record.id)) continue;
+        seenIds.add(record.id);
+        deduped.push(record);
+      }
+      return deduped;
+    },
+    [activityRecords]
+  );
+
+  // This week reads from the SAME unified activityRecords store as History and Weekly review.
+  // Excludes rest records and deduplicates by stable task sourceKey/id so replacement plans never double-count.
+  const thisWeekCompletions = useMemo(
+    () =>
+      getDeduplicatedWeekCompletions(
+        currentWeekBounds.weekStartKey,
+        currentWeekBounds.weekEndKey
+      ),
+    [getDeduplicatedWeekCompletions, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey]
+  );
 
   const thisWeekWalkRecords = useMemo(
     () => thisWeekCompletions.filter((r) => r.category === 'walk'),
@@ -907,57 +1172,262 @@ export function MyPlanView({
     [thisWeekCompletions]
   );
 
+  // Total planned non-rest activity count for This week; null when no fixed plan targets exist (never / 0)
+  const thisWeekPlannedTotal = useMemo(() => {
+    if (!weeklySchedule) return null;
+    const walkTarget =
+      typeof weeklySchedule.walk.targetCount === 'number' && weeklySchedule.walk.targetCount > 0
+        ? weeklySchedule.walk.targetCount
+        : 0;
+    const stretchTarget =
+      typeof weeklySchedule.stretch.targetCount === 'number' &&
+      weeklySchedule.stretch.targetCount > 0
+        ? weeklySchedule.stretch.targetCount
+        : 0;
+    const total = walkTarget + stretchTarget;
+    return total > 0 ? total : null;
+  }, [weeklySchedule]);
+
+  // 7-day Monday -> Sunday behavior track derived purely from actual activityRecords & restRecords
+  const thisWeekSevenDays = useMemo(() => {
+    const weekdayLetters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
+    const weekdayFullNames = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ] as const;
+
+    const completionCountsByDate = new Map<string, number>();
+    for (const rec of thisWeekCompletions) {
+      completionCountsByDate.set(rec.dateKey, (completionCountsByDate.get(rec.dateKey) ?? 0) + 1);
+    }
+
+    const restDatesThisWeek = new Set<string>();
+    for (const rec of restRecords) {
+      if (
+        isDateKeyInWeek(
+          rec.dateKey,
+          currentWeekBounds.weekStartKey,
+          currentWeekBounds.weekEndKey
+        )
+      ) {
+        restDatesThisWeek.add(rec.dateKey);
+      }
+    }
+
+    const todayKey = deviceToday.dateStr;
+
+    return weekdayLetters.map((letter, offset) => {
+      const dayDate = addLocalDays(currentWeekBounds.weekStart, offset);
+      const dateKey = toLocalDateKey(dayDate);
+      const dayNumber = dayDate.getDate();
+      const completedCount = completionCountsByDate.get(dateKey) ?? 0;
+      const isRest = restDatesThisWeek.has(dateKey);
+      const isToday = dateKey === todayKey;
+      const isPast = dateKey < todayKey;
+
+      let status: 'completed' | 'rest' | 'past' | 'future';
+      if (completedCount > 0) {
+        status = 'completed';
+      } else if (isRest) {
+        status = 'rest';
+      } else if (isPast) {
+        status = 'past';
+      } else {
+        status = 'future';
+      }
+
+      const dateText = `${weekdayFullNames[offset]}, ${formatShortMonthDay(dayDate)}${
+        isToday ? ' (Today)' : ''
+      }`;
+      const statusText =
+        completedCount > 0
+          ? `${completedCount} ${completedCount === 1 ? 'activity' : 'activities'} completed`
+          : isRest
+          ? 'Rest day'
+          : isPast
+          ? 'No completed activity'
+          : 'Upcoming';
+
+      return {
+        dateKey,
+        letter,
+        dayNumber,
+        completedCount,
+        isRest,
+        isToday,
+        status,
+        ariaLabel: `${dateText}: ${statusText}`,
+      };
+    });
+  }, [
+    thisWeekCompletions,
+    restRecords,
+    currentWeekBounds.weekStart,
+    currentWeekBounds.weekStartKey,
+    currentWeekBounds.weekEndKey,
+    deviceToday.dateStr,
+  ]);
+
   // Last completed calendar week (Monday start -> Sunday end) for Weekly review
   const lastCompletedWeekBounds = useMemo(
     () => getLastCompletedWeekBounds(new Date(deviceToday.year, deviceToday.month, deviceToday.day)),
     [deviceToday.year, deviceToday.month, deviceToday.day]
   );
 
-  // Weekly review reads from the SAME unified activityRecords & restRecords store as History
-  const lastWeekCompletions = useMemo(() => {
-    return activityRecords.filter(
-      (record) =>
-        record.category !== 'rest' &&
-        isDateKeyInWeek(
-          record.dateKey,
-          lastCompletedWeekBounds.weekStartKey,
-          lastCompletedWeekBounds.weekEndKey
-        )
+  // Weekly review reads from the SAME unified activityRecords & restRecords store with the exact same counting rules
+  const lastWeekCompletions = useMemo(
+    () =>
+      getDeduplicatedWeekCompletions(
+        lastCompletedWeekBounds.weekStartKey,
+        lastCompletedWeekBounds.weekEndKey
+      ),
+    [
+      getDeduplicatedWeekCompletions,
+      lastCompletedWeekBounds.weekStartKey,
+      lastCompletedWeekBounds.weekEndKey,
+    ]
+  );
+
+  // Up to 4 most recent completed weeks (strictly excluding currentWeekBounds), chronologically ordered.
+  // Only weeks supported by real historical records are rendered; confirmed 0 shows 0; unknown gaps show —.
+  const weeklyReviewChartModel = useMemo(() => {
+    const currentStartKey = currentWeekBounds.weekStartKey;
+    let earliestHistoryWeekKey: string | null = null;
+
+    const considerDateKey = (dateKey: string) => {
+      if (!dateKey || dateKey >= currentStartKey) return;
+      const dt = parseLocalDateKey(dateKey);
+      if (!dt) return;
+      const wStartKey = getLocalWeekBounds(dt).weekStartKey;
+      if (wStartKey < currentStartKey && (!earliestHistoryWeekKey || wStartKey < earliestHistoryWeekKey)) {
+        earliestHistoryWeekKey = wStartKey;
+      }
+    };
+
+    for (const r of activityRecords) {
+      if (r.category !== 'rest') considerDateKey(r.dateKey);
+    }
+    for (const r of restRecords) {
+      considerDateKey(r.dateKey);
+    }
+    for (const wkKey of Object.keys(weeklySchedulesByWeek)) {
+      considerDateKey(wkKey);
+    }
+    for (const wkKey of Object.keys(weeklyReviewFeedbacks)) {
+      considerDateKey(wkKey);
+    }
+
+    if (!earliestHistoryWeekKey) {
+      return {
+        hasHistory: false,
+        weeks: [] as {
+          weekStartKey: string;
+          rangeLabel: string;
+          startLabel: string;
+          isReviewWeek: boolean;
+          status: 'known' | 'unknown';
+          count: number | null;
+          barHeightPx: number;
+          ariaLabel: string;
+        }[],
+        maxKnownCount: 0,
+        reviewWeekStatus: 'unknown' as 'known' | 'unknown',
+      };
+    }
+
+    const candidateWeeks = [-3, -2, -1, 0].map((weekOffset) => {
+      const refDate = addLocalDays(lastCompletedWeekBounds.weekStart, weekOffset * 7);
+      const bounds = getLocalWeekBounds(refDate);
+      const isReviewWeek = weekOffset === 0;
+      const completions = getDeduplicatedWeekCompletions(bounds.weekStartKey, bounds.weekEndKey);
+      const hasRestInWeek = restRecords.some((r) =>
+        isDateKeyInWeek(r.dateKey, bounds.weekStartKey, bounds.weekEndKey)
+      );
+      const hasScheduleInWeek = Boolean(weeklySchedulesByWeek[bounds.weekStartKey]);
+      const hasReviewInWeek = Boolean(weeklyReviewFeedbacks[bounds.weekStartKey]);
+
+      const count = completions.length;
+      const isConfirmed = count > 0 || hasRestInWeek || hasScheduleInWeek || hasReviewInWeek;
+
+      return {
+        bounds,
+        isReviewWeek,
+        status: (isConfirmed ? 'known' : 'unknown') as 'known' | 'unknown',
+        count: isConfirmed ? count : null,
+      };
+    });
+
+    // Retain only weeks at or after the earliest week supported by historical records (chronological order)
+    const retained = candidateWeeks.filter(
+      (item) => item.bounds.weekStartKey >= earliestHistoryWeekKey!
     );
+
+    const maxKnownCount = retained.reduce(
+      (max, item) => (item.status === 'known' && item.count !== null && item.count > max ? item.count : max),
+      0
+    );
+
+    const MAX_BAR_HEIGHT_PX = 66; // 88px plot area - 18px value label - 4px gap = 66px
+    const weeks = retained.map((item) => {
+      let barHeightPx = 0;
+      if (item.status === 'known' && item.count !== null && item.count > 0 && maxKnownCount > 0) {
+        barHeightPx = Math.max(6, Math.round((item.count / maxKnownCount) * MAX_BAR_HEIGHT_PX));
+      }
+
+      const startLabel = formatShortMonthDay(item.bounds.weekStart);
+      const suffix = item.isReviewWeek ? ' (review week)' : '';
+      const ariaLabel =
+        item.status === 'known' && item.count !== null
+          ? `${item.bounds.rangeLabel}: ${item.count} ${
+              item.count === 1 ? 'activity' : 'activities'
+            } completed${suffix}`
+          : `${item.bounds.rangeLabel}: No records available${suffix}`;
+
+      return {
+        weekStartKey: item.bounds.weekStartKey,
+        rangeLabel: item.bounds.rangeLabel,
+        startLabel,
+        isReviewWeek: item.isReviewWeek,
+        status: item.status,
+        count: item.count,
+        barHeightPx,
+        ariaLabel,
+      };
+    });
+
+    const reviewWeekItem = candidateWeeks[candidateWeeks.length - 1];
+
+    return {
+      hasHistory: weeks.length > 0,
+      weeks,
+      maxKnownCount,
+      reviewWeekStatus: reviewWeekItem.status,
+    };
   }, [
     activityRecords,
-    lastCompletedWeekBounds.weekStartKey,
-    lastCompletedWeekBounds.weekEndKey,
-  ]);
-
-  const lastWeekRestDayCount = useMemo(() => {
-    const uniqueRestDates = new Set(
-      restRecords
-        .filter((r) =>
-          isDateKeyInWeek(
-            r.dateKey,
-            lastCompletedWeekBounds.weekStartKey,
-            lastCompletedWeekBounds.weekEndKey
-          )
-        )
-        .map((r) => r.dateKey)
-    );
-    return uniqueRestDates.size;
-  }, [
     restRecords,
-    lastCompletedWeekBounds.weekStartKey,
-    lastCompletedWeekBounds.weekEndKey,
+    weeklySchedulesByWeek,
+    weeklyReviewFeedbacks,
+    currentWeekBounds.weekStartKey,
+    lastCompletedWeekBounds.weekStart,
+    getDeduplicatedWeekCompletions,
   ]);
 
-  const lastWeekSummaryText = useMemo(
-    () => buildWeeklyReviewSummary(lastWeekCompletions),
-    [lastWeekCompletions]
-  );
-
-  const lastWeekObservationText = useMemo(
-    () => buildWeeklyReviewObservation(lastWeekCompletions, lastWeekRestDayCount),
-    [lastWeekCompletions, lastWeekRestDayCount]
-  );
+  const lastWeekCompactSummaryText = useMemo(() => {
+    const count = lastWeekCompletions.length;
+    if (count > 0) {
+      return `${count} ${count === 1 ? 'activity' : 'activities'} completed.`;
+    }
+    if (weeklyReviewChartModel.reviewWeekStatus === 'known') {
+      return '0 activities completed.';
+    }
+    return 'No activities recorded last week.';
+  }, [lastWeekCompletions.length, weeklyReviewChartModel.reviewWeekStatus]);
 
   const lastWeekFeedback =
     weeklyReviewFeedbacks[lastCompletedWeekBounds.weekStartKey] ?? null;
@@ -978,6 +1448,16 @@ export function MyPlanView({
     [adjustmentTargetBaseSchedule, lastWeekFeedback, nextWeekBounds, resolvedAdjustmentKeys]
   );
 
+  const [weeklyReviewSaveError, setWeeklyReviewSaveError] = useState<string | null>(null);
+
+  const weeklyReviewResponseText = selectedWeeklyReviewFeeling
+    ? ({
+        too_much: 'Thanks for telling me. We can take it easier.',
+        about_right: 'Good to know. This pace feels worth keeping.',
+        ready_for_more: 'We can explore a little more when you’re ready.',
+      } as const)[selectedWeeklyReviewFeeling]
+    : null;
+
   const handleSelectWeeklyReviewFeeling = (feeling: WeeklyReviewFeeling) => {
     const weekStartKey = lastCompletedWeekBounds.weekStartKey;
     const nextFeedbacks: Record<string, WeeklyReviewFeedback> = {
@@ -988,8 +1468,13 @@ export function MyPlanView({
         updatedAt: new Date().toISOString(),
       },
     };
+    const didSave = saveWeeklyReviewFeedbacks(nextFeedbacks);
+    if (!didSave) {
+      setWeeklyReviewSaveError('Couldn’t save your feedback. Please try again.');
+      return;
+    }
+    setWeeklyReviewSaveError(null);
     setWeeklyReviewFeedbacks(nextFeedbacks);
-    saveWeeklyReviewFeedbacks(nextFeedbacks);
   };
 
   const handleAcceptAdjustment = () => {
@@ -1948,7 +2433,8 @@ export function MyPlanView({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto px-5 pt-[18px] pb-[calc(104px+env(safe-area-inset-bottom,0px))] flex flex-col gap-6 z-10 scrollbar-none select-none">
+    <div className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[14px] pb-[calc(112px+env(safe-area-inset-bottom,0px))] flex flex-col gap-5 z-10 scrollbar-none select-none">
+      <style>{GENKI_PLAN_UI_STYLES}</style>
       {/* Toast Notifications */}
       <AnimatePresence>
         {directionToast && (
@@ -1956,13 +2442,13 @@ export function MyPlanView({
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-xs font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
+            className="bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-[13px] leading-[18px] font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
           >
             <div className="flex items-center gap-2">
               <Check className="w-4 h-4 stroke-[2.5]" />
               <span>Focus updated</span>
             </div>
-            <span className="text-[11px] text-white/80">Saved</span>
+            <span className="text-[13px] text-white/80">Saved</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1973,384 +2459,449 @@ export function MyPlanView({
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-xs font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
+            className="bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-[13px] leading-[18px] font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
           >
             <div className="flex items-center gap-2">
               <Check className="w-4 h-4 stroke-[2.5]" />
               <span>{dayUpdateToast}</span>
             </div>
-            <span className="text-[11px] text-white/80">Updated</span>
+            <span className="text-[13px] text-white/80">Updated</span>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* ============================================================ */}
-      {/* 1. Your focus                                                */}
+      {/* Nova Guide Intro + Unified Nova Planning Container           */}
       {/* ============================================================ */}
-      <section
-        id="plan-module-focus"
-        aria-labelledby="plan-heading-focus"
-        className="flex flex-col gap-2.5"
-      >
-        <h2
-          id="plan-heading-focus"
-          className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-        >
-          Your focus
-        </h2>
-
-        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
-          <p
-            id="focus-card-title"
-            className="text-[22px] font-semibold leading-[28px] tracking-[-0.02em] text-[#1C1C1E]"
-          >
-            {direction.goalTitle}
-          </p>
-
-          <p
-            id="focus-card-phase"
-            className="mt-3 text-[13px] font-medium leading-[18px] text-[#5E5BAE]"
-          >
-            {currentPhase.name}
-          </p>
-
-          {direction.executionApproach && (
-            <p
-              id="focus-card-approach"
-              className="mt-1 text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
-            >
-              {direction.executionApproach}
+      <div className="flex flex-col gap-4">
+        <div id="plan-nova-intro" className="genki-plan-nova-intro">
+          <PlanNovaGuideAvatar isActive={isActive} />
+          <div className="genki-plan-nova-copy">
+            <p id="plan-nova-name" className="genki-plan-nova-name">
+              Nova
             </p>
-          )}
-
-          <div className="mt-4 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-3">
-            <span
-              id="focus-card-review"
-              className="text-[13px] font-normal leading-[18px] text-[#6E6E78] min-w-0"
-            >
-              {direction.nextReviewDate}
-            </span>
-
-            <button
-              type="button"
-              id="plan-focus-action-btn"
-              onClick={handleOpenFocusAdjust}
-              className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
-            >
-              Adjust
-            </button>
+            <p id="plan-nova-lead" className="genki-plan-nova-lead">
+              Let’s find a rhythm that feels good.
+            </p>
           </div>
         </div>
-      </section>
 
-      {/* ============================================================ */}
-      {/* 2. This week                                                 */}
-      {/* ============================================================ */}
-      <section
-        id="plan-module-this-week"
-        aria-labelledby="plan-heading-this-week"
-        className="flex flex-col gap-2.5"
-      >
-        <div className="flex items-baseline justify-between gap-3">
-          <h2
-            id="plan-heading-this-week"
-            className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-          >
-            This week
-          </h2>
-          <span
-            id="this-week-date-range"
-            className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0"
-          >
-            {currentWeekBounds.rangeLabel}
-          </span>
-        </div>
+        <div id="plan-unified-container" className="genki-plan-unified-container">
+        {/* 1. Your focus */}
+        {(() => {
+          const focusHeadline = formatFocusHeadline(direction.goalTitle);
+          const focusApproach = formatFocusApproach(direction.executionApproach);
+          const showFocusApproach =
+            Boolean(focusApproach) &&
+            focusApproach.toLowerCase() !== direction.goalTitle.trim().toLowerCase() &&
+            focusApproach.toLowerCase() !== focusHeadline.trim().toLowerCase();
+          const reviewDisplayLabel = formatFocusReviewLabel(
+            direction.nextReviewDate,
+            new Date(deviceToday.year, deviceToday.month, deviceToday.day)
+          );
 
-        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
-          {!weeklySchedule ? (
-            <>
-              <p
-                id="this-week-empty-text"
-                className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+          return (
+            <section
+              id="plan-module-focus"
+              aria-labelledby="plan-heading-focus"
+              className="flex flex-col"
+            >
+              <div className="genki-plan-section-header">
+                <h2 id="plan-heading-focus" className="genki-plan-section-title">
+                  Your focus
+                </h2>
+                <span id="focus-card-review" className="genki-plan-section-date">
+                  {reviewDisplayLabel}
+                </span>
+              </div>
+
+              <div className="mt-[16px] flex flex-col">
+                <p id="focus-card-title" className="genki-plan-focus-goal">
+                  {focusHeadline}
+                </p>
+
+                {showFocusApproach && (
+                  <p id="focus-card-approach" className="genki-plan-body mt-[8px]">
+                    {focusApproach}
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-[8px] flex items-center justify-end">
+                <button
+                  type="button"
+                  id="plan-focus-action-btn"
+                  onClick={handleOpenFocusAdjust}
+                  className="genki-plan-text-action"
+                >
+                  Adjust
+                </button>
+              </div>
+            </section>
+          );
+        })()}
+
+        <div aria-hidden="true" className="genki-plan-section-divider" />
+
+        {/* 2. This week */}
+        <section
+          id="plan-module-this-week"
+          aria-labelledby="plan-heading-this-week"
+          className="flex flex-col"
+        >
+          <div className="genki-plan-section-header">
+            <h2 id="plan-heading-this-week" className="genki-plan-section-title">
+              This week
+            </h2>
+            <span id="this-week-date-range" className="genki-plan-section-date">
+              {currentWeekBounds.rangeLabel}
+            </span>
+          </div>
+
+          {/* 2a. Hero completion count */}
+          <div id="this-week-summary-metric" className="mt-[16px] flex flex-col">
+            <div className="genki-plan-metric-row">
+              <span id="this-week-completed-count" className="genki-plan-metric-value">
+                {thisWeekCompletions.length}
+              </span>
+              {thisWeekPlannedTotal !== null && (
+                <span id="this-week-planned-denom" className="genki-plan-metric-denom">
+                  / {thisWeekPlannedTotal}
+                </span>
+              )}
+            </div>
+            <p id="this-week-metric-caption" className="genki-plan-metric-caption mt-[4px]">
+              activities completed
+            </p>
+          </div>
+
+          {/* 2b. Non-interactive 7-day behavior track */}
+          <div
+            id="this-week-seven-day-track"
+            role="list"
+            aria-label="This week daily activity"
+            className="genki-plan-week-track mt-[16px]"
+          >
+            {thisWeekSevenDays.map((day) => (
+              <div
+                key={day.dateKey}
+                role="listitem"
+                aria-label={day.ariaLabel}
+                data-date-key={day.dateKey}
+                data-day-status={day.status}
+                data-completed-count={day.completedCount}
+                data-is-today={day.isToday ? 'true' : undefined}
+                className="genki-plan-week-day"
               >
+                <span aria-hidden="true" className="genki-plan-week-day-letter">
+                  {day.letter}
+                </span>
+                <span
+                  aria-hidden="true"
+                  className={`genki-plan-week-day-num ${
+                    day.isToday ? 'genki-plan-week-day-num-today' : ''
+                  }`}
+                >
+                  {day.dayNumber}
+                </span>
+                <span aria-hidden="true" className="genki-plan-week-day-indicator">
+                  {day.status === 'completed' ? (
+                    <span className="genki-plan-week-dot genki-plan-week-dot-completed" />
+                  ) : day.status === 'rest' ? (
+                    <span className="genki-plan-week-dash-rest" />
+                  ) : day.status === 'past' ? (
+                    <span className="genki-plan-week-dot genki-plan-week-dot-past" />
+                  ) : (
+                    <span className="genki-plan-week-dot genki-plan-week-dot-future" />
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* 2c. Activity list (Walk, Stretch, Rest) */}
+          <div id="this-week-activity-list" className="mt-[16px] flex flex-col">
+            {!weeklySchedule ? (
+              <p id="this-week-empty-text" className="genki-plan-body">
                 Start with a simple week.
               </p>
-
-              <div className="mt-4 pt-2 border-t border-black/[0.06] flex items-center justify-end">
-                <button
-                  type="button"
-                  id="plan-week-action-btn"
-                  onClick={() => handleOpenWeekAdjust('this_week')}
-                  className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
-                >
-                  Set up
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex flex-col divide-y divide-black/[0.06] -my-1">
+            ) : (
+              <div className="flex flex-col">
                 {/* Row 1: Walk */}
-                <button
-                  type="button"
-                  id="this-week-row-walk"
-                  onClick={() => setActiveWeekCategoryList('walk')}
-                  className="w-full min-h-[64px] py-2.5 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
-                      <Footprints className="w-4 h-4 stroke-[2]" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <span
-                        id="this-week-walk-title"
-                        className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]"
-                      >
-                        Walk
-                      </span>
-                      <span
-                        id="this-week-walk-subtitle"
-                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-                      >
-                        {weeklySchedule.walk.targetCount !== null
-                          ? `${weeklySchedule.walk.targetCount} × ${weeklySchedule.walk.durationLabel}`
-                          : `Flexible · ${weeklySchedule.walk.durationLabel}`}
-                      </span>
-                    </div>
-                  </div>
+                {(() => {
+                  const walkCount = thisWeekWalkRecords.length;
+                  const walkTarget = weeklySchedule.walk.targetCount;
+                  const walkPct =
+                    walkTarget !== null && walkTarget > 0
+                      ? Math.min(100, Math.max(0, (walkCount / walkTarget) * 100))
+                      : null;
 
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {thisWeekWalkRecords.length > 0 && (
-                      <span
-                        id="this-week-progress-walk"
-                        className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]"
-                      >
-                        {weeklySchedule.walk.targetCount !== null
-                          ? `${thisWeekWalkRecords.length} of ${weeklySchedule.walk.targetCount}`
-                          : `${thisWeekWalkRecords.length} ${
-                              thisWeekWalkRecords.length === 1 ? 'session' : 'sessions'
-                            }`}
-                      </span>
-                    )}
-                    <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
-                  </div>
-                </button>
+                  return (
+                    <button
+                      type="button"
+                      id="this-week-row-walk"
+                      onClick={() => setActiveWeekCategoryList('walk')}
+                      className="genki-plan-week-row"
+                    >
+                      <div className="w-full flex items-center justify-between gap-3">
+                        <span
+                          id="this-week-walk-title"
+                          className="genki-plan-row-title shrink-0"
+                        >
+                          Walk
+                        </span>
+
+                        <div className="flex items-center justify-end gap-1.5 min-w-0">
+                          <span
+                            id="this-week-walk-count"
+                            className="genki-plan-activity-count whitespace-nowrap"
+                          >
+                            {walkTarget !== null
+                              ? `${walkCount} / ${walkTarget}`
+                              : walkCount > 0
+                              ? `${walkCount} · Flexible`
+                              : 'Flexible'}
+                          </span>
+                          <ChevronRight className="w-4 h-4 text-[#706A7C]/70 stroke-[2] shrink-0" />
+                        </div>
+                      </div>
+
+                      {walkPct !== null && (
+                        <div
+                          id="this-week-walk-progress-bar"
+                          className="genki-plan-progress-track mt-[8px]"
+                          role="progressbar"
+                          aria-label="Walk weekly progress"
+                          aria-valuenow={walkCount}
+                          aria-valuemin={0}
+                          aria-valuemax={walkTarget ?? undefined}
+                        >
+                          <div
+                            id="this-week-walk-progress-fill"
+                            className="genki-plan-progress-fill"
+                            style={{ width: `${walkPct}%` }}
+                          />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })()}
 
                 {/* Row 2: Stretch */}
-                <button
-                  type="button"
-                  id="this-week-row-stretch"
-                  onClick={() => setActiveWeekCategoryList('stretch')}
-                  className="w-full min-h-[64px] py-2.5 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
-                      <Sparkles className="w-4 h-4 stroke-[2]" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <span
-                        id="this-week-stretch-title"
-                        className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]"
-                      >
-                        Stretch
-                      </span>
-                      <span
-                        id="this-week-stretch-subtitle"
-                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-                      >
-                        {weeklySchedule.stretch.targetCount !== null
-                          ? `${weeklySchedule.stretch.targetCount} × ${weeklySchedule.stretch.durationLabel}`
-                          : `Flexible · ${weeklySchedule.stretch.durationLabel}`}
-                      </span>
-                    </div>
-                  </div>
+                {(() => {
+                  const stretchCount = thisWeekStretchRecords.length;
+                  const stretchTarget = weeklySchedule.stretch.targetCount;
+                  const stretchPct =
+                    stretchTarget !== null && stretchTarget > 0
+                      ? Math.min(100, Math.max(0, (stretchCount / stretchTarget) * 100))
+                      : null;
 
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {thisWeekStretchRecords.length > 0 && (
-                      <span
-                        id="this-week-progress-stretch"
-                        className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]"
-                      >
-                        {weeklySchedule.stretch.targetCount !== null
-                          ? `${thisWeekStretchRecords.length} of ${weeklySchedule.stretch.targetCount}`
-                          : `${thisWeekStretchRecords.length} ${
-                              thisWeekStretchRecords.length === 1 ? 'session' : 'sessions'
-                            }`}
-                      </span>
-                    )}
-                    <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
-                  </div>
-                </button>
+                  return (
+                    <button
+                      type="button"
+                      id="this-week-row-stretch"
+                      onClick={() => setActiveWeekCategoryList('stretch')}
+                      className="genki-plan-week-row"
+                    >
+                      <div className="w-full flex items-center justify-between gap-3">
+                        <span
+                          id="this-week-stretch-title"
+                          className="genki-plan-row-title shrink-0"
+                        >
+                          Stretch
+                        </span>
 
-                {/* Row 3: Rest (As needed, never counted as exercise target) */}
+                        <div className="flex items-center justify-end gap-1.5 min-w-0">
+                          <span
+                            id="this-week-stretch-count"
+                            className="genki-plan-activity-count whitespace-nowrap"
+                          >
+                            {stretchTarget !== null
+                              ? `${stretchCount} / ${stretchTarget}`
+                              : stretchCount > 0
+                              ? `${stretchCount} · Flexible`
+                              : 'Flexible'}
+                          </span>
+                          <ChevronRight className="w-4 h-4 text-[#706A7C]/70 stroke-[2] shrink-0" />
+                        </div>
+                      </div>
+
+                      {stretchPct !== null && (
+                        <div
+                          id="this-week-stretch-progress-bar"
+                          className="genki-plan-progress-track mt-[8px]"
+                          role="progressbar"
+                          aria-label="Stretch weekly progress"
+                          aria-valuenow={stretchCount}
+                          aria-valuemin={0}
+                          aria-valuemax={stretchTarget ?? undefined}
+                        >
+                          <div
+                            id="this-week-stretch-progress-fill"
+                            className="genki-plan-progress-fill"
+                            style={{ width: `${stretchPct}%` }}
+                          />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })()}
+
+                {/* Row 3: Rest (As needed, never counted as exercise target, no progress bar) */}
                 <div
                   id="this-week-row-rest"
-                  className="w-full min-h-[64px] py-2.5 flex items-center justify-between gap-3"
+                  className="genki-plan-week-row genki-plan-week-row-static"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
-                      <Moon className="w-4 h-4 stroke-[2]" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <span
-                        id="this-week-rest-title"
-                        className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]"
-                      >
-                        Rest
-                      </span>
-                      <span
-                        id="this-week-rest-subtitle"
-                        className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-                      >
-                        As needed
-                      </span>
-                    </div>
+                  <div className="w-full flex items-center justify-between gap-3">
+                    <span
+                      id="this-week-rest-title"
+                      className="genki-plan-row-title shrink-0"
+                    >
+                      Rest
+                    </span>
+
+                    <span
+                      id="this-week-rest-subtitle"
+                      className="genki-plan-activity-count whitespace-nowrap"
+                    >
+                      As needed
+                    </span>
                   </div>
                 </div>
               </div>
-
-              <div className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-end">
-                <button
-                  type="button"
-                  id="plan-week-action-btn"
-                  onClick={() => handleOpenWeekAdjust('this_week')}
-                  className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
-                >
-                  Adjust week
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </section>
-
-      {/* ============================================================ */}
-      {/* 2b. On-demand adjustment card (Shown only with clear evidence) */}
-      {/* ============================================================ */}
-      {(activeAdjustmentProposal || lastAppliedAdjustment) && (
-        <section
-          id="plan-module-adjustment"
-          aria-labelledby="plan-heading-adjustment"
-          className="flex flex-col gap-2.5"
-        >
-          <div className="flex items-baseline justify-between gap-3">
-            <h2
-              id="plan-heading-adjustment"
-              className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-            >
-              A small adjustment
-            </h2>
-            <span
-              id="plan-adjustment-target-week"
-              className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0"
-            >
-              Next week ·{' '}
-              {lastAppliedAdjustment
-                ? lastAppliedAdjustment.proposal.targetWeekRangeLabel
-                : activeAdjustmentProposal?.targetWeekRangeLabel}
-            </span>
+            )}
           </div>
 
-          <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
-            {lastAppliedAdjustment ? (
-              <div
-                id="plan-adjustment-updated-state"
-                className="flex items-center justify-between gap-3"
-              >
-                <div className="flex flex-col gap-0.5 min-w-0">
-                  <span
-                    id="plan-adjustment-updated-label"
-                    className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]"
-                  >
-                    Updated
-                  </span>
-                  <span
-                    id="plan-adjustment-updated-change"
-                    className="text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-                  >
-                    Next week ({lastAppliedAdjustment.proposal.targetWeekRangeLabel}) ·{' '}
-                    {lastAppliedAdjustment.proposal.changeLabel}
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  id="plan-adjustment-undo-btn"
-                  onClick={handleUndoAdjustment}
-                  className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
-                >
-                  Undo
-                </button>
-              </div>
-            ) : activeAdjustmentProposal ? (
-              <>
-                <p
-                  id="plan-adjustment-headline"
-                  className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]"
-                >
-                  {activeAdjustmentProposal.headline}
-                </p>
-
-                <p
-                  id="plan-adjustment-change"
-                  className="mt-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE]"
-                >
-                  {activeAdjustmentProposal.changeLabel}
-                </p>
-
-                <p
-                  id="plan-adjustment-reason"
-                  className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-                >
-                  {activeAdjustmentProposal.reason}
-                </p>
-
-                <div className="mt-3.5 pt-3 border-t border-black/[0.06] flex flex-wrap items-center gap-2.5">
-                  <button
-                    type="button"
-                    id="plan-adjustment-accept-btn"
-                    onClick={handleAcceptAdjustment}
-                    className="min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold leading-[20px] transition-colors cursor-pointer"
-                  >
-                    Try this
-                  </button>
-
-                  <button
-                    type="button"
-                    id="plan-adjustment-dismiss-btn"
-                    onClick={handleDismissAdjustment}
-                    className="min-h-[44px] px-3.5 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[14px] font-medium leading-[20px] transition-colors cursor-pointer"
-                  >
-                    Keep my plan
-                  </button>
-                </div>
-              </>
-            ) : null}
+          <div className="mt-[8px] flex items-center justify-end">
+            <button
+              type="button"
+              id="plan-week-action-btn"
+              onClick={() => handleOpenWeekAdjust('this_week')}
+              className="genki-plan-text-action"
+            >
+              {weeklySchedule ? 'Adjust week' : 'Set up'}
+            </button>
           </div>
         </section>
-      )}
 
-      {/* ============================================================ */}
-      {/* 3. Up next                                                   */}
-      {/* ============================================================ */}
-      <section
-        id="plan-module-up-next"
-        aria-labelledby="plan-heading-up-next"
-        className="flex flex-col gap-2.5"
-      >
-        <h2
-          id="plan-heading-up-next"
-          className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+        {/* 2b. On-demand adjustment section (Shown only with clear evidence) */}
+        {(activeAdjustmentProposal || lastAppliedAdjustment) && (
+          <>
+            <div aria-hidden="true" className="genki-plan-section-divider" />
+            <section
+              id="plan-module-adjustment"
+              aria-labelledby="plan-heading-adjustment"
+              className="flex flex-col"
+            >
+              <div className="genki-plan-section-header">
+                <h2 id="plan-heading-adjustment" className="genki-plan-section-title">
+                  A small adjustment
+                </h2>
+                <span id="plan-adjustment-target-week" className="genki-plan-section-date">
+                  {lastAppliedAdjustment
+                    ? lastAppliedAdjustment.proposal.targetWeekRangeLabel
+                    : activeAdjustmentProposal?.targetWeekRangeLabel}
+                </span>
+              </div>
+
+              <div className="mt-[16px] flex flex-col">
+                {lastAppliedAdjustment ? (
+                  <div
+                    id="plan-adjustment-updated-state"
+                    className="flex items-center justify-between gap-3"
+                  >
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <span
+                        id="plan-adjustment-updated-label"
+                        className="text-[15px] font-semibold leading-[22px] text-[#302D3D]"
+                      >
+                        Updated
+                      </span>
+                      <span
+                        id="plan-adjustment-updated-change"
+                        className="genki-plan-meta"
+                      >
+                        Next week ({lastAppliedAdjustment.proposal.targetWeekRangeLabel}) ·{' '}
+                        {lastAppliedAdjustment.proposal.changeLabel}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      id="plan-adjustment-undo-btn"
+                      onClick={handleUndoAdjustment}
+                      className="genki-plan-text-action shrink-0"
+                    >
+                      Undo
+                    </button>
+                  </div>
+                ) : activeAdjustmentProposal ? (
+                  <>
+                    <p
+                      id="plan-adjustment-headline"
+                      className="text-[16px] font-semibold leading-[22px] text-[#302D3D]"
+                    >
+                      {activeAdjustmentProposal.headline}
+                    </p>
+
+                    <p
+                      id="plan-adjustment-change"
+                      className="mt-[6px] text-[15px] font-medium leading-[22px] text-[#5E5BAE]"
+                    >
+                      {activeAdjustmentProposal.changeLabel}
+                    </p>
+
+                    <p
+                      id="plan-adjustment-reason"
+                      className="genki-plan-body mt-[4px]"
+                    >
+                      {activeAdjustmentProposal.reason}
+                    </p>
+
+                    <div className="mt-[12px] flex flex-wrap items-center gap-2.5">
+                      <button
+                        type="button"
+                        id="plan-adjustment-accept-btn"
+                        onClick={handleAcceptAdjustment}
+                        className="genki-plan-control genki-plan-control-primary min-h-[44px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold leading-[20px] transition-colors cursor-pointer"
+                      >
+                        Try this
+                      </button>
+
+                      <button
+                        type="button"
+                        id="plan-adjustment-dismiss-btn"
+                        onClick={handleDismissAdjustment}
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-3.5 rounded-[12px] text-[14px] font-medium leading-[20px] transition-colors cursor-pointer"
+                      >
+                        Keep my plan
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </section>
+          </>
+        )}
+
+        <div aria-hidden="true" className="genki-plan-section-divider" />
+
+        {/* 3. Up next */}
+        <section
+          id="plan-module-up-next"
+          aria-labelledby="plan-heading-up-next"
+          className="flex flex-col"
         >
-          Up next
-        </h2>
+          <div className="genki-plan-section-header">
+            <h2 id="plan-heading-up-next" className="genki-plan-section-title">
+              Up next
+            </h2>
+          </div>
 
-        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
-          <div className="flex flex-col">
+          <div id="up-next-phase-timeline" className="mt-[16px] flex flex-col">
             {visiblePhases.map((phase, idx) => {
               const isCurrent = idx === currentPhaseIndex;
               const isNext = idx === currentPhaseIndex + 1;
-              const isCollapsedPhase = !isCurrent && !isNext;
               const hasTopLine = idx > 0;
               const hasBottomLine = idx < visiblePhases.length - 1;
 
@@ -2360,31 +2911,29 @@ export function MyPlanView({
                   type="button"
                   id={`up-next-phase-row-${idx}`}
                   data-phase-id={phase.id}
-                  data-phase-state={isCurrent ? 'current' : isNext ? 'next' : 'collapsed'}
+                  data-phase-state={isCurrent ? 'current' : isNext ? 'next' : 'upcoming'}
                   onClick={() => handleOpenPhaseDetail(phase.id)}
-                  className="w-full min-h-[44px] flex items-stretch gap-3 text-left transition-opacity active:opacity-70 cursor-pointer group"
+                  className="genki-plan-phase-row group"
                 >
-                  {/* Vertical timeline rail: small dots & thin connecting line */}
+                  {/* Vertical timeline rail: 16px column, 8px node, 1px line */}
                   <div
-                    className="w-4 shrink-0 flex flex-col items-center"
+                    className="w-[16px] shrink-0 flex flex-col items-center"
                     aria-hidden="true"
                   >
                     <div
-                      className={`w-[1.5px] ${
-                        isCurrent ? 'h-[13px]' : 'h-[14px]'
-                      } shrink-0 ${hasTopLine ? 'bg-[#DEDCEB]' : 'bg-transparent'}`}
+                      className={`w-px h-[7px] shrink-0 ${
+                        hasTopLine ? 'bg-[#E5E1EC]' : 'bg-transparent'
+                      }`}
                     />
                     <span
                       data-phase-dot={isCurrent ? 'current' : 'future'}
-                      className={`rounded-full shrink-0 transition-colors ${
-                        isCurrent
-                          ? 'w-2.5 h-2.5 bg-[#5E5BAE] ring-[3px] ring-[#5E5BAE]/15'
-                          : 'w-2 h-2 bg-[#CFCDE3]'
+                      className={`w-[8px] h-[8px] rounded-full shrink-0 ${
+                        isCurrent ? 'bg-[#7770B6]' : 'bg-[#D9D5E5]'
                       }`}
                     />
                     <div
-                      className={`w-[1.5px] flex-1 min-h-[10px] ${
-                        hasBottomLine ? 'bg-[#DEDCEB]' : 'bg-transparent'
+                      className={`w-px flex-1 ${
+                        hasBottomLine ? 'bg-[#E5E1EC]' : 'bg-transparent'
                       }`}
                     />
                   </div>
@@ -2392,110 +2941,156 @@ export function MyPlanView({
                   {/* Phase content */}
                   <div
                     className={`flex-1 min-w-0 flex items-start justify-between gap-2 ${
-                      isCurrent ? 'pt-2 pb-4' : isNext ? 'pt-2 pb-3.5' : 'py-2'
+                      hasBottomLine ? 'pb-[16px]' : 'pb-0'
                     }`}
                   >
                     <div className="flex-1 min-w-0 flex flex-col">
                       <div className="flex items-baseline justify-between gap-2">
                         <span
-                          className={`text-[15px] font-semibold leading-[20px] ${
-                            isCollapsedPhase ? 'text-[#6E6E78]' : 'text-[#1C1C1E]'
+                          className={`genki-plan-phase-title ${
+                            isCurrent ? 'text-[#302D3D]' : 'text-[#706A7C]'
                           }`}
                         >
                           {phase.name}
                         </span>
                         {isCurrent && (
-                          <span className="text-[12px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
+                          <span
+                            id="up-next-current-label"
+                            className="genki-plan-phase-current"
+                          >
                             Current
                           </span>
                         )}
                       </div>
 
-                      {isCurrent && (
-                        <p className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                          {phase.description}
-                        </p>
-                      )}
-
-                      {isNext && (
-                        <p className="mt-0.5 text-[13px] font-normal leading-[18px] text-[#6E6E78] line-clamp-1">
+                      {isCurrent && phase.description && (
+                        <p
+                          id="up-next-current-desc"
+                          className="genki-plan-phase-desc mt-[2px]"
+                        >
                           {phase.description}
                         </p>
                       )}
                     </div>
 
-                    <ChevronRight className="w-4 h-4 text-[#6E6E78]/70 stroke-[2] shrink-0 mt-0.5" />
+                    <ChevronRight className="w-4 h-4 text-[#706A7C]/70 stroke-[2] shrink-0 mt-[3px]" />
                   </div>
                 </button>
               );
             })}
           </div>
 
-          <div className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+          <div className="mt-[8px] flex items-center justify-end">
             <button
               type="button"
               id="plan-up-next-view-path-btn"
               onClick={() => setSelectedModule('path')}
-              className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+              className="genki-plan-text-action"
             >
               View path
             </button>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ============================================================ */}
-      {/* 4. Weekly review                                             */}
-      {/* ============================================================ */}
-      <section
-        id="plan-module-weekly-review"
-        aria-labelledby="plan-heading-weekly-review"
-        className="flex flex-col gap-2.5"
-      >
-        <div className="flex items-baseline justify-between gap-3">
-          <h2
-            id="plan-heading-weekly-review"
-            className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-          >
-            Weekly review
-          </h2>
-          <span
-            id="weekly-review-date-range"
-            className="text-[13px] font-normal leading-[18px] text-[#6E6E78] shrink-0"
-          >
-            {lastCompletedWeekBounds.rangeLabel}
-          </span>
-        </div>
+        <div aria-hidden="true" className="genki-plan-section-divider" />
 
-        <div className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col">
-          <p
-            id="weekly-review-summary"
-            className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
-          >
-            {lastWeekSummaryText}
-          </p>
+        {/* 4. Weekly review */}
+        <section
+          id="plan-module-weekly-review"
+          aria-labelledby="plan-heading-weekly-review"
+          className="flex flex-col"
+        >
+          <div className="genki-plan-section-header">
+            <h2 id="plan-heading-weekly-review" className="genki-plan-section-title">
+              Weekly review
+            </h2>
+            <span id="weekly-review-date-range" className="genki-plan-section-date">
+              {lastCompletedWeekBounds.rangeLabel}
+            </span>
+          </div>
 
-          {lastWeekObservationText && (
-            <p
-              id="weekly-review-observation"
-              className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]"
-            >
-              {lastWeekObservationText}
+          {weeklyReviewChartModel.hasHistory ? (
+            <>
+              <div
+                id="weekly-review-bar-chart"
+                role="figure"
+                aria-label="Completed activities across recent completed weeks"
+                className="mt-[16px]"
+              >
+                <div
+                  role="list"
+                  className="genki-plan-review-chart"
+                  style={{
+                    gridTemplateColumns: `repeat(${weeklyReviewChartModel.weeks.length}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {weeklyReviewChartModel.weeks.map((week) => (
+                    <div
+                      key={week.weekStartKey}
+                      role="listitem"
+                      aria-label={week.ariaLabel}
+                      data-week-start={week.weekStartKey}
+                      data-week-status={week.status}
+                      data-week-count={week.count !== null ? String(week.count) : 'unknown'}
+                      data-is-review-week={week.isReviewWeek ? 'true' : undefined}
+                      className="genki-plan-review-col"
+                    >
+                      <div className="genki-plan-review-plot" aria-hidden="true">
+                        {week.status === 'known' && week.count !== null ? (
+                          <>
+                            <span className="genki-plan-review-value">{week.count}</span>
+                            {week.count > 0 ? (
+                              <span
+                                className={`genki-plan-review-bar ${
+                                  week.isReviewWeek
+                                    ? 'genki-plan-review-bar-current'
+                                    : 'genki-plan-review-bar-other'
+                                }`}
+                                style={{ height: `${week.barHeightPx}px` }}
+                              />
+                            ) : (
+                              <span
+                                className={`genki-plan-review-bar-zero ${
+                                  week.isReviewWeek
+                                    ? 'genki-plan-review-bar-zero-current'
+                                    : 'genki-plan-review-bar-zero-other'
+                                }`}
+                              />
+                            )}
+                          </>
+                        ) : (
+                          <span className="genki-plan-review-value genki-plan-review-value-unknown">
+                            —
+                          </span>
+                        )}
+                      </div>
+                      <span className="genki-plan-review-label" aria-hidden="true">
+                        {week.startLabel}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <p id="weekly-review-summary" className="genki-plan-review-summary mt-[12px]">
+                {lastWeekCompactSummaryText}
+              </p>
+            </>
+          ) : (
+            <p id="weekly-review-empty" className="genki-plan-review-summary mt-[16px]">
+              Your weekly rhythm will appear here.
             </p>
           )}
 
-          <div className="mt-3.5 pt-3 border-t border-black/[0.06] flex flex-col gap-2.5">
-            <p
-              id="weekly-review-question"
-              className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
-            >
-              How did the week feel?
+          <div id="weekly-review-feedback-block" className="mt-[20px] flex flex-col">
+            <p id="weekly-review-question" className="genki-plan-feedback-question">
+              How did it feel?
             </p>
 
             <div
               role="group"
               aria-labelledby="weekly-review-question"
-              className="flex flex-wrap gap-2"
+              className="genki-plan-feedback-grid mt-[10px]"
             >
               {(
                 [
@@ -2512,42 +3107,57 @@ export function MyPlanView({
                     id={`weekly-review-option-${opt.value}`}
                     aria-pressed={isSelected}
                     onClick={() => handleSelectWeeklyReviewFeeling(opt.value)}
-                    className={`min-h-[44px] px-3.5 py-2 rounded-[14px] text-[14px] font-medium leading-[20px] border transition-colors cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
-                        : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
-                    }`}
+                    className="genki-plan-control genki-plan-control-feedback"
                   >
                     {opt.label}
                   </button>
                 );
               })}
             </div>
+
+            {weeklyReviewSaveError ? (
+              <p
+                id="weekly-review-save-error"
+                role="alert"
+                className="mt-[12px] text-[14px] font-medium leading-[20px] text-[#B42318]"
+              >
+                {weeklyReviewSaveError}
+              </p>
+            ) : weeklyReviewResponseText ? (
+              <p
+                id="weekly-review-response"
+                role="status"
+                aria-live="polite"
+                className="genki-plan-body mt-[12px]"
+              >
+                {weeklyReviewResponseText}
+              </p>
+            ) : null}
           </div>
 
-          <div className="mt-3 pt-2 border-t border-black/[0.06] flex items-center justify-end">
-            {selectedWeeklyReviewFeeling ? (
+          <div className="mt-[8px] flex items-center justify-end gap-4">
+            {selectedWeeklyReviewFeeling && (
               <button
                 type="button"
                 id="weekly-review-adjust-next-week-btn"
                 onClick={() => handleOpenWeekAdjust('next_week')}
-                className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
+                className="genki-plan-text-action"
               >
                 Adjust next week
               </button>
-            ) : (
-              <button
-                type="button"
-                id="weekly-review-view-history-btn"
-                onClick={() => setSelectedModule('history')}
-                className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
-              >
-                View history
-              </button>
             )}
+            <button
+              type="button"
+              id="weekly-review-view-history-btn"
+              onClick={() => setSelectedModule('history')}
+              className="genki-plan-text-action"
+            >
+              View history
+            </button>
           </div>
+        </section>
         </div>
-      </section>
+      </div>
 
       {/* ============================================================ */}
       {/* 5. Bottom Auxiliary Entries: History, Preferences, Health data */}
@@ -2555,15 +3165,15 @@ export function MyPlanView({
       <section
         id="plan-auxiliary-entries"
         aria-label="Additional plan sections"
-        className="rounded-[24px] p-4 bg-[rgba(255,255,255,0.88)] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05),0_1px_2px_rgba(0,0,0,0.02)] flex flex-col divide-y divide-black/[0.06]"
+        className="genki-plan-auxiliary-list divide-y divide-[rgba(74,66,98,0.08)]"
       >
         <button
           type="button"
           id="plan-entry-history"
           onClick={() => setSelectedModule('history')}
-          className="w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+          className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
-          <span className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+          <span className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]">
             History
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -2578,10 +3188,10 @@ export function MyPlanView({
           type="button"
           id="plan-entry-preferences"
           onClick={() => setSelectedModule('preferences')}
-          className="w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+          className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
           <div className="flex flex-col min-w-0">
-            <span className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+            <span className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]">
               Preferences
             </span>
             {confirmedPreferenceTags.length > 0 && (
@@ -2607,9 +3217,9 @@ export function MyPlanView({
           type="button"
           id="plan-entry-health"
           onClick={() => setSelectedModule('health')}
-          className="w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+          className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
-          <span className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+          <span className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]">
             Health data
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -2660,7 +3270,7 @@ export function MyPlanView({
                         onClick={() => {
                           setSelectedModule(null);
                         }}
-                        className="min-h-[44px] -ml-2 px-2 flex items-center gap-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 transition-opacity cursor-pointer"
+                        className="genki-plan-control genki-plan-control-base min-h-[44px] -ml-2 px-2 flex items-center gap-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 transition-opacity cursor-pointer"
                         aria-label="Return to Plan"
                       >
                         <ChevronLeft className="w-5 h-5 stroke-[2.2]" />
@@ -2671,7 +3281,7 @@ export function MyPlanView({
                         <button
                           type="button"
                           onClick={() => setIsMemoryInfoModalOpen(true)}
-                          className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#5E5BAE] transition-colors cursor-pointer"
+                          className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#5E5BAE] transition-colors cursor-pointer"
                           aria-label="How preferences work"
                         >
                           <HelpCircle className="w-4 h-4 stroke-[2.2]" />
@@ -2680,7 +3290,7 @@ export function MyPlanView({
                     </div>
 
                     <div>
-                      <h3 className="text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
+                      <h3 className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
                         {selectedModule === 'path' && 'Your path'}
                         {selectedModule === 'history' && 'History'}
                         {selectedModule === 'preferences' && 'Preferences'}
@@ -2717,7 +3327,7 @@ export function MyPlanView({
                                 type="button"
                                 id={`view-path-phase-row-${idx}`}
                                 onClick={() => handleOpenPhaseDetail(phase.id)}
-                                className="w-full min-h-[44px] flex items-stretch gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+                                className="genki-plan-control genki-plan-control-base w-full min-h-[44px] flex items-stretch gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
                               >
                                 <div
                                   className="w-4 shrink-0 flex flex-col items-center"
@@ -2749,7 +3359,7 @@ export function MyPlanView({
                                         {phase.name}
                                       </span>
                                       {isCurrent && (
-                                        <span className="text-[12px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
+                                        <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
                                           Current
                                         </span>
                                       )}
@@ -2771,7 +3381,7 @@ export function MyPlanView({
                             type="button"
                             id="view-path-edit-btn"
                             onClick={handleOpenPathEdit}
-                            className="min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+                            className="genki-plan-control genki-plan-control-base min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
                           >
                             Edit
                           </button>
@@ -2784,7 +3394,7 @@ export function MyPlanView({
                   {/* SECONDARY PAGE 1: HISTORY (Activity Calendar + 6-Month Trend + Detailed Stats) */}
                   {/* ======================================================= */}
                   {selectedModule === 'history' && (
-                    <div className="flex flex-col gap-4 text-xs text-[#3C3C43]">
+                    <div className="flex flex-col gap-4 text-[13px] leading-[18px] text-[#3C3C43]">
                       {/* Activity Monthly Calendar */}
                       <div
                         id="history-calendar-card"
@@ -2797,7 +3407,7 @@ export function MyPlanView({
                               setPickerYear(viewYear);
                               setIsMonthPickerOpen(true);
                             }}
-                            className="min-h-[44px] flex items-center gap-1.5 text-[14px] font-semibold text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
+                            className="genki-plan-control genki-plan-control-base min-h-[44px] flex items-center gap-1.5 text-[14px] font-semibold text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
                             aria-label="Select month"
                           >
                             <CalendarIcon className="w-4 h-4 text-[#5E5BAE]" />
@@ -2812,7 +3422,7 @@ export function MyPlanView({
                               type="button"
                               id="activity-this-month-btn"
                               onClick={handleJumpToThisMonth}
-                              className="min-h-[44px] flex items-center gap-1.5 text-[13px] font-semibold text-[#5E5BAE] bg-[#5E5BAE]/10 hover:bg-[#5E5BAE]/18 active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
+                              className="genki-plan-control genki-plan-control-base min-h-[44px] flex items-center gap-1.5 text-[13px] font-semibold text-[#5E5BAE] bg-[#5E5BAE]/10 hover:bg-[#5E5BAE]/18 active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
                               aria-label="Return to this month"
                             >
                               <RotateCcw className="w-3.5 h-3.5 stroke-[2.2]" />
@@ -2824,7 +3434,7 @@ export function MyPlanView({
                         {/* Weekday indicators */}
                         <div className="grid grid-cols-7 gap-x-0 text-center select-none pt-0.5">
                           {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayInitial, idx) => (
-                            <span key={idx} className="text-[11px] font-semibold text-[#6E6E78] uppercase tracking-wider">
+                            <span key={idx} className="text-[13px] font-semibold text-[#6E6E78] uppercase tracking-wider">
                               {dayInitial}
                             </span>
                           ))}
@@ -2881,7 +3491,7 @@ export function MyPlanView({
                                   onClick={() => handleOpenDayDetail(dStr)}
                                   aria-label={`${dStr}: ${record?.type || 'no record'}`}
                                   aria-current={isToday ? 'date' : undefined}
-                                  className="w-full min-h-[44px] flex items-center justify-center rounded-[10px] cursor-pointer group active:scale-92 transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5E5BAE]/50"
+                                  className="genki-plan-control genki-plan-control-base w-full min-h-[44px] flex items-center justify-center rounded-[10px] cursor-pointer group active:scale-92 transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5E5BAE]/50"
                                 >
                                   <span
                                     className={`w-9 h-9 rounded-[10px] flex items-center justify-center text-[13px] font-medium leading-[18px] tabular-nums transition-colors duration-150 ${
@@ -2940,14 +3550,14 @@ export function MyPlanView({
 
                       {/* Detailed Stats Range Toggle */}
                       <div className="flex items-center justify-between bg-[#F2F2F7]/80 p-1 rounded-full border border-black/[0.04]">
-                        <span className="text-xs font-semibold text-[#1C1C1E] pl-3">
+                        <span className="text-[13px] leading-[18px] font-semibold text-[#1C1C1E] pl-3">
                           {currentRecentData.rangeLabel}
                         </span>
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => setRhythmFilter('7d')}
-                            className={`min-h-[44px] px-4 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                            className={`genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-full text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
                               rhythmFilter === '7d'
                                 ? 'bg-white text-[#1C1C1E] shadow-2xs'
                                 : 'text-[#6E6E78] hover:text-[#1C1C1E]'
@@ -2958,7 +3568,7 @@ export function MyPlanView({
                           <button
                             type="button"
                             onClick={() => setRhythmFilter('month')}
-                            className={`min-h-[44px] px-4 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                            className={`genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-full text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
                               rhythmFilter === 'month'
                                 ? 'bg-white text-[#1C1C1E] shadow-2xs'
                                 : 'text-[#6E6E78] hover:text-[#1C1C1E]'
@@ -2970,7 +3580,7 @@ export function MyPlanView({
                       </div>
 
                       <div className="bg-[#F4EEFE]/75 p-4 rounded-[20px] border border-[#5E5BAE]/15 flex flex-col gap-1.5">
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#5E5BAE]">
+                        <div className="flex items-center gap-1.5 text-[13px] leading-[18px] font-bold text-[#5E5BAE]">
                           <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE]" />
                           <span>Summary</span>
                         </div>
@@ -2982,42 +3592,42 @@ export function MyPlanView({
                       {/* 4 Distinct Metrics: Active Days vs Activities vs Active Time vs Rest Days */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[11px] font-medium text-[#6E6E78]">Active days</span>
+                          <span className="text-[13px] font-medium text-[#6E6E78]">Active days</span>
                           <div className="mt-1">
                             <span className="text-[18px] font-bold text-[#1C1C1E] leading-none">
                               {currentRecentData.activeDaysCount}
                             </span>
-                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">days</span>
+                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">days</span>
                           </div>
                         </div>
 
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[11px] font-medium text-[#6E6E78]">Activities</span>
+                          <span className="text-[13px] font-medium text-[#6E6E78]">Activities</span>
                           <div className="mt-1">
                             <span className="text-[18px] font-bold text-[#5E5BAE] leading-none">
                               {currentRecentData.completedCount}
                             </span>
-                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">sessions</span>
+                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">sessions</span>
                           </div>
                         </div>
 
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[11px] font-medium text-[#6E6E78]">Duration</span>
+                          <span className="text-[13px] font-medium text-[#6E6E78]">Duration</span>
                           <div className="mt-1">
                             <span className="text-[18px] font-bold text-[#1C1C1E] leading-none">
                               {currentRecentData.activeMinutes}
                             </span>
-                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">minutes</span>
+                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">minutes</span>
                           </div>
                         </div>
 
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[11px] font-medium text-[#6E6E78]">Rest days</span>
+                          <span className="text-[13px] font-medium text-[#6E6E78]">Rest days</span>
                           <div className="mt-1">
                             <span className="text-[18px] font-bold text-[#E59980] leading-none">
                               {currentRecentData.restDaysCount}
                             </span>
-                            <span className="text-[11px] text-[#6E6E78] block mt-0.5">rests</span>
+                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">rests</span>
                           </div>
                         </div>
                       </div>
@@ -3046,7 +3656,7 @@ export function MyPlanView({
                           timeframe={rhythmFilter}
                         />
 
-                        <div className="pt-2 border-t border-black/[0.04] flex flex-wrap items-center justify-between gap-2 text-[12px] text-[#6E6E78]">
+                        <div className="pt-2 border-t border-black/[0.04] flex flex-wrap items-center justify-between gap-2 text-[13px] text-[#6E6E78]">
                           <span>Purple: Active minutes (m)</span>
                           <span className="text-[#C7765C]">Peach: Rest days</span>
                         </div>
@@ -3058,7 +3668,7 @@ export function MyPlanView({
                           <span className="font-bold text-[#1C1C1E] text-[13px]">
                             Recorded Days ({currentMonthRecords.length})
                           </span>
-                          <span className="text-[11px] text-[#6E6E78]">
+                          <span className="text-[13px] text-[#6E6E78]">
                             Tap edit to modify or clear
                           </span>
                         </div>
@@ -3098,12 +3708,12 @@ export function MyPlanView({
                                             {dateLabel}
                                           </span>
                                           {isToday && (
-                                            <span className="text-[12px] text-[#5E5BAE] font-semibold">
+                                            <span className="text-[13px] text-[#5E5BAE] font-semibold">
                                               Today
                                             </span>
                                           )}
                                         </div>
-                                        <div className="text-[12px] text-[#6E6E78] mt-0.5 truncate">
+                                        <div className="text-[13px] text-[#6E6E78] mt-0.5 truncate">
                                           {rec.type === 'active' ? (
                                             <span>
                                               {rec.title} • {sessCount}{' '}
@@ -3115,7 +3725,7 @@ export function MyPlanView({
                                           )}
                                         </div>
                                         {rec.note && (
-                                          <div className="text-[11px] text-[#6E6E78] mt-0.5 italic truncate">
+                                          <div className="text-[13px] text-[#6E6E78] mt-0.5 italic truncate">
                                             “{rec.note}”
                                           </div>
                                         )}
@@ -3125,7 +3735,7 @@ export function MyPlanView({
                                     <button
                                       type="button"
                                       onClick={() => handleOpenDayDetail(rec.date)}
-                                      className="min-h-[44px] min-w-[52px] px-3 rounded-[12px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[12px] font-semibold text-[#5E5BAE] shrink-0 transition-colors cursor-pointer"
+                                      className="genki-plan-control genki-plan-control-base min-h-[44px] min-w-[52px] px-3 rounded-[12px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[13px] font-semibold text-[#5E5BAE] shrink-0 transition-colors cursor-pointer"
                                     >
                                       Edit
                                     </button>
@@ -3139,7 +3749,7 @@ export function MyPlanView({
                       <button
                         type="button"
                         onClick={() => setIsMethodologyOpen(true)}
-                        className="w-full min-h-[44px] py-2.5 px-3 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-[12px] font-medium text-[#6E6E78] hover:text-[#1C1C1E] flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
+                        className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2.5 px-3 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-[13px] font-medium text-[#6E6E78] hover:text-[#1C1C1E] flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
                       >
                         <HelpCircle className="w-3.5 h-3.5 stroke-[2]" />
                         <span>Data source & calculation methodology</span>
@@ -3155,14 +3765,14 @@ export function MyPlanView({
                       {/* Section 1: User-provided & confirmed preferences */}
                       <div id="preferences-confirmed-section" className="flex flex-col gap-2.5">
                         <div className="flex items-center justify-between gap-2">
-                          <h4 className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
                             Your preferences
                           </h4>
                           <button
                             type="button"
                             id="preferences-add-btn"
                             onClick={handleOpenAddPreference}
-                            className="min-h-[44px] px-2 -mr-2 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
+                            className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
                           >
                             Add
                           </button>
@@ -3188,7 +3798,7 @@ export function MyPlanView({
                                   <button
                                     type="button"
                                     onClick={() => setSelectedMemory(item)}
-                                    className="w-full text-left flex flex-col gap-1 cursor-pointer"
+                                    className="genki-plan-control genki-plan-control-base w-full text-left flex flex-col gap-1 cursor-pointer"
                                   >
                                     <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
                                       {item.title}
@@ -3201,7 +3811,7 @@ export function MyPlanView({
                                   </button>
 
                                   <div className="mt-1 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-2">
-                                    <span className="text-[12px] font-medium leading-[16px] text-[#6E6E78] truncate">
+                                    <span className="text-[13px] font-medium leading-[16px] text-[#6E6E78] truncate">
                                       {tagLabel}
                                     </span>
 
@@ -3210,7 +3820,7 @@ export function MyPlanView({
                                         type="button"
                                         data-pref-edit-id={item.id}
                                         onClick={(e) => handleOpenEditPreference(item, e)}
-                                        className="min-h-[44px] px-2.5 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent cursor-pointer"
+                                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent cursor-pointer"
                                       >
                                         Edit
                                       </button>
@@ -3221,7 +3831,7 @@ export function MyPlanView({
                                           e.stopPropagation();
                                           setMemoryToDelete(item);
                                         }}
-                                        className="min-h-[44px] px-2.5 -mr-2 text-[14px] font-medium text-[#6E6E78] hover:text-[#E11D48] active:opacity-70 bg-transparent cursor-pointer"
+                                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 -mr-2 text-[14px] font-medium text-[#6E6E78] hover:text-[#E11D48] active:opacity-70 bg-transparent cursor-pointer"
                                       >
                                         Delete
                                       </button>
@@ -3237,7 +3847,7 @@ export function MyPlanView({
                       {/* Section 2: Nova's pending inferences (presented as questions) */}
                       <div id="preferences-pending-section" className="flex flex-col gap-2.5">
                         <div className="flex items-center justify-between gap-2">
-                          <h4 className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
                             Needs confirmation
                           </h4>
                           {checkMemories.length > 0 && (
@@ -3265,7 +3875,7 @@ export function MyPlanView({
                                 <button
                                   type="button"
                                   onClick={() => setSelectedMemory(item)}
-                                  className="w-full text-left flex flex-col gap-1 cursor-pointer"
+                                  className="genki-plan-control genki-plan-control-base w-full text-left flex flex-col gap-1 cursor-pointer"
                                 >
                                   <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
                                     {formatAsCheckQuestion(item.title)}
@@ -3282,7 +3892,7 @@ export function MyPlanView({
                                     type="button"
                                     data-pref-confirm-id={item.id}
                                     onClick={(e) => handleConfirmPendingMemory(item.id, e)}
-                                    className="flex-1 min-h-[44px] px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold transition-colors cursor-pointer"
+                                    className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold transition-colors cursor-pointer"
                                   >
                                     Confirm
                                   </button>
@@ -3290,7 +3900,7 @@ export function MyPlanView({
                                     type="button"
                                     data-pref-ignore-id={item.id}
                                     onClick={(e) => handleDismissPendingMemory(item.id, e)}
-                                    className="min-h-[44px] px-4 rounded-[14px] bg-white hover:bg-[#F2F2F7] border border-black/[0.06] text-[#1C1C1E] text-[14px] font-medium transition-colors cursor-pointer"
+                                    className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-white hover:bg-[#F2F2F7] border border-black/[0.06] text-[#1C1C1E] text-[14px] font-medium transition-colors cursor-pointer"
                                   >
                                     Ignore
                                   </button>
@@ -3305,7 +3915,7 @@ export function MyPlanView({
                         type="button"
                         id="preferences-talk-nova-btn"
                         onClick={() => handleStartTalkToNovaMemory(null)}
-                        className="w-full min-h-[44px] px-4 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[14px] font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-base w-full min-h-[44px] px-4 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[14px] font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
                       >
                         <MessageSquare className="w-4 h-4 text-[#5E5BAE] stroke-[2]" />
                         <span>Update in chat</span>
@@ -3331,7 +3941,7 @@ export function MyPlanView({
                             <Heart className="w-4 h-4 stroke-[2]" />
                           </div>
                           <div className="min-w-0">
-                            <h4 className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]">
+                            <h4 className="genki-plan-subheading text-[17px] font-semibold leading-[23px] text-[#1C1C1E]">
                               Apple Health is not connected
                             </h4>
                             <span className="text-[13px] leading-[18px] text-[#6E6E78]">
@@ -3340,7 +3950,7 @@ export function MyPlanView({
                           </div>
                         </div>
 
-                        <p className="text-[15px] font-normal leading-[21px] text-[#1C1C1E] mt-1">
+                        <p className="text-[15px] font-normal leading-[22px] text-[#1C1C1E] mt-1">
                           No biometric or wearable metrics are connected. Metrics stay empty until a source is connected.
                         </p>
                         <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
@@ -3424,12 +4034,12 @@ export function MyPlanView({
                 >
                   <div className="flex items-start justify-between gap-3 pb-3 border-b border-black/[0.06]">
                     <div>
-                      <span className="text-[12px] font-medium text-[#5E5BAE] block mb-1">
+                      <span className="text-[13px] font-medium text-[#5E5BAE] block mb-1">
                         {selectedMemory.isConfirmed && selectedMemory.source === 'user_explicit'
                           ? 'Saved preference'
                           : 'Needs confirmation'}
                       </span>
-                      <h3 className="text-[17px] font-semibold text-[#1C1C1E] leading-snug">
+                      <h3 className="genki-plan-sheet-heading text-[17px] font-semibold text-[#1C1C1E] leading-snug">
                         {selectedMemory.isConfirmed && selectedMemory.source === 'user_explicit'
                           ? selectedMemory.title
                           : formatAsCheckQuestion(selectedMemory.title)}
@@ -3439,7 +4049,7 @@ export function MyPlanView({
                     <button
                       type="button"
                       onClick={() => setSelectedMemory(null)}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] shrink-0 cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] shrink-0 cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -3447,14 +4057,14 @@ export function MyPlanView({
                   </div>
 
                   {selectedMemory.summary && (
-                    <p className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]">
+                    <p className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]">
                       {selectedMemory.summary}
                     </p>
                   )}
 
                   {selectedMemory.learnedFrom && (
                     <div className="p-3.5 rounded-[16px] bg-[#F2F2F7] flex flex-col gap-1">
-                      <span className="text-[12px] font-medium text-[#6E6E78]">Source</span>
+                      <span className="text-[13px] font-medium text-[#6E6E78]">Source</span>
                       <p className="text-[13px] leading-[18px] text-[#1C1C1E]">
                         {selectedMemory.learnedFrom}
                       </p>
@@ -3466,14 +4076,14 @@ export function MyPlanView({
                       <button
                         type="button"
                         onClick={() => handleConfirmPendingMemory(selectedMemory.id)}
-                        className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
+                        className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
                       >
                         Confirm
                       </button>
                       <button
                         type="button"
                         onClick={() => handleDismissPendingMemory(selectedMemory.id)}
-                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[15px] font-medium cursor-pointer transition-colors"
+                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[15px] font-medium cursor-pointer transition-colors"
                       >
                         Ignore
                       </button>
@@ -3483,14 +4093,14 @@ export function MyPlanView({
                       <button
                         type="button"
                         onClick={() => handleOpenEditPreference(selectedMemory)}
-                        className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
+                        className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
                       >
                         Edit
                       </button>
                       <button
                         type="button"
                         onClick={() => setMemoryToDelete(selectedMemory)}
-                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#FFE4E6]/60 text-[#E11D48] text-[15px] font-medium cursor-pointer transition-colors"
+                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#FFE4E6]/60 text-[#E11D48] text-[15px] font-medium cursor-pointer transition-colors"
                       >
                         Delete
                       </button>
@@ -3544,7 +4154,7 @@ export function MyPlanView({
                   <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
                     <h3
                       id="pref-form-sheet-title"
-                      className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                      className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                     >
                       {prefFormEditingId ? 'Edit preference' : 'Add preference'}
                     </h3>
@@ -3553,7 +4163,7 @@ export function MyPlanView({
                       type="button"
                       id="pref-form-close-btn"
                       onClick={() => setIsPrefFormOpen(false)}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -3568,7 +4178,7 @@ export function MyPlanView({
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="pref-input-title"
-                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                         >
                           Preference
                         </label>
@@ -3579,14 +4189,14 @@ export function MyPlanView({
                           onChange={(e) => setPrefDraftTitle(e.target.value)}
                           onFocus={handleFieldFocusScroll}
                           placeholder="e.g. Short walks after lunch"
-                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                       </div>
 
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="pref-input-tag"
-                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                         >
                           Short label (optional)
                         </label>
@@ -3597,14 +4207,14 @@ export function MyPlanView({
                           onChange={(e) => setPrefDraftTag(e.target.value)}
                           onFocus={handleFieldFocusScroll}
                           placeholder="e.g. After lunch"
-                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                       </div>
 
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="pref-input-summary"
-                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                         >
                           Note (optional)
                         </label>
@@ -3615,7 +4225,7 @@ export function MyPlanView({
                           onChange={(e) => setPrefDraftSummary(e.target.value)}
                           onFocus={handleFieldFocusScroll}
                           placeholder="Short context"
-                          className="w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
+                          className="genki-plan-field w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
                         />
                       </div>
                     </div>
@@ -3625,7 +4235,7 @@ export function MyPlanView({
                         type="button"
                         id="pref-form-cancel-btn"
                         onClick={() => setIsPrefFormOpen(false)}
-                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -3634,7 +4244,7 @@ export function MyPlanView({
                         type="submit"
                         id="pref-form-save-btn"
                         disabled={isPrefSaveDisabled}
-                        className={`flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
                           isPrefSaveDisabled
                             ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
                             : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
@@ -3701,10 +4311,10 @@ export function MyPlanView({
                         <FurryNovaStaticAvatar size={36} className="w-full h-full" />
                       </div>
                       <div>
-                        <h4 className="text-[15px] font-bold text-[#1C1C1E] leading-tight">
+                        <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E] leading-tight">
                           Talk to Nova
                         </h4>
-                        <span className="text-[11px] text-[#8E8E93] block">
+                        <span className="text-[13px] text-[#8E8E93] block">
                           {editingMemory
                             ? 'Refine memory • Confirms before saving'
                             : 'Add or update what Nova knows'}
@@ -3718,7 +4328,7 @@ export function MyPlanView({
                         setIsMemoryChatOpen(false);
                         setEditingMemory(null);
                       }}
-                      className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close conversation"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -3726,7 +4336,7 @@ export function MyPlanView({
                   </div>
 
                   {editingMemory && (
-                    <div className="mx-6 mt-3 px-3.5 py-2 rounded-[14px] bg-[#F2F2F7]/75 border border-black/[0.04] flex items-center gap-2 text-[11.5px] text-[#6C6C70] shrink-0">
+                    <div className="mx-6 mt-3 px-3.5 py-2 rounded-[14px] bg-[#F2F2F7]/75 border border-black/[0.04] flex items-center gap-2 text-[13px] text-[#6C6C70] shrink-0">
                       <CornerDownRight className="w-3.5 h-3.5 text-[#5E5BAE] shrink-0" />
                       <span className="truncate font-medium">{editingMemory.title}</span>
                     </div>
@@ -3758,7 +4368,7 @@ export function MyPlanView({
                                   ? 'Proposed Memory Update'
                                   : 'Proposed New Memory'}
                               </span>
-                              <span className="text-[10px] text-[#8E8E93] bg-[#F2F2F7] px-2 py-0.5 rounded-full border border-black/5">
+                              <span className="text-[13px] text-[#8E8E93] bg-[#F2F2F7] px-2 py-0.5 rounded-full border border-black/5">
                                 Needs confirmation
                               </span>
                             </div>
@@ -3766,12 +4376,12 @@ export function MyPlanView({
                             <h5 className="text-[13.5px] font-bold text-[#1C1C1E] leading-snug">
                               {msg.proposal.newTitle}
                             </h5>
-                            <p className="text-[12px] text-[#6C6C70] leading-relaxed">
+                            <p className="text-[13px] text-[#6C6C70] leading-relaxed">
                               {msg.proposal.newSummary}
                             </p>
 
                             {msg.proposalAccepted ? (
-                              <div className="py-2 px-3 rounded-[12px] bg-[#F4EEFE] text-[#5E5BAE] text-xs font-bold flex items-center justify-center gap-1.5 border border-[#5E5BAE]/20">
+                              <div className="py-2 px-3 rounded-[12px] bg-[#F4EEFE] text-[#5E5BAE] text-[13px] leading-[18px] font-bold flex items-center justify-center gap-1.5 border border-[#5E5BAE]/20">
                                 <Check className="w-4 h-4 stroke-[2.5]" />
                                 <span>Confirmed & Saved</span>
                               </div>
@@ -3780,7 +4390,7 @@ export function MyPlanView({
                                 <button
                                   type="button"
                                   onClick={() => handleConfirmMemoryProposal(msg.id)}
-                                  className="flex-1 py-2.5 px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                  className="genki-plan-control genki-plan-control-primary flex-1 py-2.5 px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[13px] leading-[18px] font-bold shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
                                 >
                                   <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                                   <span>Confirm & Save</span>
@@ -3791,7 +4401,7 @@ export function MyPlanView({
                                     setIsMemoryChatOpen(false);
                                     setEditingMemory(null);
                                   }}
-                                  className="py-2.5 px-3 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#8E8E93] text-xs font-semibold cursor-pointer"
+                                  className="genki-plan-control genki-plan-control-base py-2.5 px-3 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#8E8E93] text-[13px] leading-[18px] font-semibold cursor-pointer"
                                 >
                                   Keep as is
                                 </button>
@@ -3804,7 +4414,7 @@ export function MyPlanView({
 
                     {memoryChatMessages.length === 1 && (
                       <div className="pt-1 flex flex-col items-start gap-1.5">
-                        <span className="text-[11px] text-[#8E8E93] pl-1">
+                        <span className="text-[13px] text-[#8E8E93] pl-1">
                           Quick ways to {editingMemory ? 'adjust' : 'share'}:
                         </span>
                         {quickMemoryChips.map((chip) => (
@@ -3812,7 +4422,7 @@ export function MyPlanView({
                             key={chip}
                             type="button"
                             onClick={() => handleSendMemoryChat(chip)}
-                            className="text-left text-xs font-semibold text-[#5E5BAE] bg-white hover:bg-[#FAFAFC] px-3.5 py-2 rounded-[16px] border border-[#5E5BAE]/20 shadow-2xs transition-all active:scale-98 cursor-pointer"
+                            className="genki-plan-control genki-plan-control-base text-left text-[13px] leading-[18px] font-semibold text-[#5E5BAE] bg-white hover:bg-[#FAFAFC] px-3.5 py-2 rounded-[16px] border border-[#5E5BAE]/20 shadow-2xs transition-all active:scale-98 cursor-pointer"
                           >
                             “{chip}”
                           </button>
@@ -3829,13 +4439,13 @@ export function MyPlanView({
                       onChange={(e) => setMemoryChatInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSendMemoryChat()}
                       placeholder="Tell Nova what feels right for you..."
-                      className="flex-1 bg-[#F2F2F7] px-4 py-2.5 rounded-full text-xs text-[#1C1C1E] placeholder-[#8E8E93] border border-black/[0.06] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                      className="genki-plan-field flex-1 bg-[#F2F2F7] px-4 py-2.5 rounded-full text-[13px] leading-[18px] text-[#1C1C1E] placeholder-[#8E8E93] border border-black/[0.06] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                     />
                     <button
                       type="button"
                       onClick={() => handleSendMemoryChat()}
                       disabled={!memoryChatInput.trim()}
-                      className={`w-9 h-9 rounded-full flex items-center justify-center transition-all ${
+                      className={`genki-plan-control genki-plan-control-icon w-9 h-9 rounded-full flex items-center justify-center transition-all ${
                         memoryChatInput.trim()
                           ? 'bg-[#5E5BAE] text-white cursor-pointer shadow-xs'
                           : 'bg-black/10 text-black/30 cursor-not-allowed'
@@ -3893,7 +4503,7 @@ export function MyPlanView({
                   <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
                     <h3
                       id="focus-adjust-sheet-title"
-                      className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                      className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                     >
                       Your focus
                     </h3>
@@ -3902,7 +4512,7 @@ export function MyPlanView({
                       type="button"
                       id="focus-close-btn"
                       onClick={handleCloseFocusAdjust}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -3917,7 +4527,7 @@ export function MyPlanView({
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="focus-input-title"
-                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                         >
                           Focus
                         </label>
@@ -3928,14 +4538,14 @@ export function MyPlanView({
                           onChange={(e) => setFocusDraftTitle(e.target.value)}
                           onFocus={handleFieldFocusScroll}
                           placeholder="What are you focusing on?"
-                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                       </div>
 
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="focus-input-approach"
-                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                         >
                           Current approach
                         </label>
@@ -3946,14 +4556,14 @@ export function MyPlanView({
                           onChange={(e) => setFocusDraftApproach(e.target.value)}
                           onFocus={handleFieldFocusScroll}
                           placeholder="One short note on how you want to keep this doable"
-                          className="w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
+                          className="genki-plan-field w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
                         />
                       </div>
 
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="focus-input-review"
-                          className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                         >
                           Review date
                         </label>
@@ -3966,7 +4576,7 @@ export function MyPlanView({
                           placeholder={`e.g. ${formatReviewOnSundayLabel(
                             new Date(deviceToday.year, deviceToday.month, deviceToday.day)
                           )}`}
-                          className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                         <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
                           A gentle check-in date you can change anytime.
@@ -3979,7 +4589,7 @@ export function MyPlanView({
                         type="button"
                         id="focus-cancel-btn"
                         onClick={handleCloseFocusAdjust}
-                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -3988,7 +4598,7 @@ export function MyPlanView({
                         type="submit"
                         id="focus-save-btn"
                         disabled={isSaveDisabled}
-                        className={`flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
                           isSaveDisabled
                             ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
                             : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
@@ -4059,7 +4669,7 @@ export function MyPlanView({
                     <div>
                       <h3
                         id="this-week-sheet-title"
-                        className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                        className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                       >
                         {editingWeekTarget === 'next_week' ? 'Next week' : 'This week'}
                       </h3>
@@ -4077,7 +4687,7 @@ export function MyPlanView({
                       type="button"
                       id="this-week-close-btn"
                       onClick={handleCloseWeekAdjust}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -4095,7 +4705,7 @@ export function MyPlanView({
                           <div className="w-8 h-8 rounded-[10px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
                             <Footprints className="w-4 h-4 stroke-[2]" />
                           </div>
-                          <span className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]">
+                          <span className="text-[17px] font-semibold leading-[23px] text-[#1C1C1E]">
                             Walk
                           </span>
                         </div>
@@ -4123,7 +4733,7 @@ export function MyPlanView({
                                       walk: { ...prev.walk, targetCount: opt },
                                     }))
                                   }
-                                  className={`min-h-[44px] px-2 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                  className={`genki-plan-control genki-plan-control-base min-h-[44px] px-2 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
                                     isSelected
                                       ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
                                       : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
@@ -4154,7 +4764,7 @@ export function MyPlanView({
                                       walk: { ...prev.walk, durationLabel: dur },
                                     }))
                                   }
-                                  className={`min-h-[44px] px-3.5 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                  className={`genki-plan-control genki-plan-control-base min-h-[44px] px-3.5 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
                                     isSelected
                                       ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
                                       : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
@@ -4176,7 +4786,7 @@ export function MyPlanView({
                           <div className="w-8 h-8 rounded-[10px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
                             <Sparkles className="w-4 h-4 stroke-[2]" />
                           </div>
-                          <span className="text-[16px] font-semibold leading-[22px] text-[#1C1C1E]">
+                          <span className="text-[17px] font-semibold leading-[23px] text-[#1C1C1E]">
                             Stretch
                           </span>
                         </div>
@@ -4204,7 +4814,7 @@ export function MyPlanView({
                                       stretch: { ...prev.stretch, targetCount: opt },
                                     }))
                                   }
-                                  className={`min-h-[44px] px-2 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                  className={`genki-plan-control genki-plan-control-base min-h-[44px] px-2 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
                                     isSelected
                                       ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
                                       : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
@@ -4235,7 +4845,7 @@ export function MyPlanView({
                                       stretch: { ...prev.stretch, durationLabel: dur },
                                     }))
                                   }
-                                  className={`min-h-[44px] px-3.5 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
+                                  className={`genki-plan-control genki-plan-control-base min-h-[44px] px-3.5 rounded-[12px] text-[13px] font-medium border transition-colors cursor-pointer ${
                                     isSelected
                                       ? 'bg-[#5E5BAE] border-[#5E5BAE] text-white'
                                       : 'bg-[#F2F2F7] border-black/[0.05] text-[#1C1C1E] hover:bg-[#E5E5EA]'
@@ -4280,7 +4890,7 @@ export function MyPlanView({
                         type="button"
                         id="this-week-cancel-btn"
                         onClick={handleCloseWeekAdjust}
-                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -4288,7 +4898,7 @@ export function MyPlanView({
                       <button
                         type="submit"
                         id="this-week-save-btn"
-                        className="flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold bg-[#5E5BAE] hover:bg-[#524FA0] text-white transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold bg-[#5E5BAE] hover:bg-[#524FA0] text-white transition-colors cursor-pointer"
                       >
                         Save
                       </button>
@@ -4365,7 +4975,7 @@ export function MyPlanView({
                       <div>
                         <h3
                           id="this-week-activity-sheet-title"
-                          className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                          className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                         >
                           {categoryTitle}
                         </h3>
@@ -4379,7 +4989,7 @@ export function MyPlanView({
                       type="button"
                       id="this-week-activity-close-btn"
                       onClick={() => setActiveWeekCategoryList(null)}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -4391,7 +5001,7 @@ export function MyPlanView({
                       <div className="py-4 flex flex-col gap-1">
                         <p
                           id="this-week-activity-empty"
-                          className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+                          className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]"
                         >
                           Nothing recorded yet.
                         </p>
@@ -4432,7 +5042,7 @@ export function MyPlanView({
                         setActiveWeekCategoryList(null);
                         onNavigateToToday?.();
                       }}
-                      className="w-full min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                      className="genki-plan-control genki-plan-control-primary w-full min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
                     >
                       View Today
                     </button>
@@ -4497,7 +5107,7 @@ export function MyPlanView({
                     <div>
                       <h3
                         id="up-next-detail-title"
-                        className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                        className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                       >
                         {selectedPhase.name}
                       </h3>
@@ -4515,7 +5125,7 @@ export function MyPlanView({
                       type="button"
                       id="up-next-detail-close-btn"
                       onClick={handleClosePhaseDetail}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -4525,7 +5135,7 @@ export function MyPlanView({
                   <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-3.5">
                     <p
                       id="up-next-detail-description"
-                      className="text-[15px] font-normal leading-[21px] text-[#1C1C1E]"
+                      className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]"
                     >
                       {selectedPhase.description}
                     </p>
@@ -4562,7 +5172,7 @@ export function MyPlanView({
                               handleClosePhaseDetail();
                               setSelectedModule('path');
                             }}
-                            className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                            className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                           >
                             View path
                           </button>
@@ -4571,7 +5181,7 @@ export function MyPlanView({
                           type="button"
                           id="up-next-keep-pace-btn"
                           onClick={handleClosePhaseDetail}
-                          className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                          className="genki-plan-control genki-plan-control-secondary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
                         >
                           Keep current pace
                         </button>
@@ -4582,7 +5192,7 @@ export function MyPlanView({
                           type="button"
                           id="up-next-detail-cancel-btn"
                           onClick={handleClosePhaseDetail}
-                          className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                          className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                         >
                           Cancel
                         </button>
@@ -4590,7 +5200,7 @@ export function MyPlanView({
                           type="button"
                           id="up-next-request-switch-btn"
                           onClick={() => setIsConfirmingPhaseSwitch(true)}
-                          className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                          className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
                         >
                           {selectedPhaseIdx < currentPhaseIndex
                             ? 'Step back to this phase'
@@ -4603,7 +5213,7 @@ export function MyPlanView({
                           type="button"
                           id="up-next-confirm-cancel-btn"
                           onClick={() => setIsConfirmingPhaseSwitch(false)}
-                          className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                          className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                         >
                           Cancel
                         </button>
@@ -4611,7 +5221,7 @@ export function MyPlanView({
                           type="button"
                           id="up-next-confirm-switch-btn"
                           onClick={() => handleConfirmPhaseSwitch(selectedPhase)}
-                          className="flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
+                          className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
                         >
                           Confirm switch
                         </button>
@@ -4667,7 +5277,7 @@ export function MyPlanView({
                     <div>
                       <h3
                         id="edit-path-sheet-title"
-                        className="text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                        className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                       >
                         Edit path
                       </h3>
@@ -4680,7 +5290,7 @@ export function MyPlanView({
                       type="button"
                       id="edit-path-close-btn"
                       onClick={handleClosePathEdit}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -4706,7 +5316,7 @@ export function MyPlanView({
                                 Phase {idx + 1}
                               </span>
                               {isDraftCurrent && (
-                                <span className="text-[12px] font-medium leading-[18px] text-[#5E5BAE]">
+                                <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]">
                                   Current
                                 </span>
                               )}
@@ -4715,7 +5325,7 @@ export function MyPlanView({
                             <div className="flex flex-col gap-1.5">
                               <label
                                 htmlFor={`edit-path-name-${idx}`}
-                                className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                                className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                               >
                                 Phase name
                               </label>
@@ -4733,14 +5343,14 @@ export function MyPlanView({
                                 }}
                                 onFocus={handleFieldFocusScroll}
                                 placeholder="Phase name"
-                                className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                                className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                               />
                             </div>
 
                             <div className="flex flex-col gap-1.5">
                               <label
                                 htmlFor={`edit-path-desc-${idx}`}
-                                className="text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                                className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
                               >
                                 Short description
                               </label>
@@ -4758,7 +5368,7 @@ export function MyPlanView({
                                 }}
                                 onFocus={handleFieldFocusScroll}
                                 placeholder="One-line pacing direction"
-                                className="w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[21px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                                className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                               />
                             </div>
                           </div>
@@ -4771,7 +5381,7 @@ export function MyPlanView({
                         type="button"
                         id="edit-path-cancel-btn"
                         onClick={handleClosePathEdit}
-                        className="min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -4780,7 +5390,7 @@ export function MyPlanView({
                         type="submit"
                         id="edit-path-save-btn"
                         disabled={isPathSaveDisabled}
-                        className={`flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
                           isPathSaveDisabled
                             ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
                             : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
@@ -4826,7 +5436,7 @@ export function MyPlanView({
                 >
                   <div className="flex items-center gap-2 text-[#E11D48]">
                     <Trash2 className="w-4 h-4 stroke-[2.2]" />
-                    <h4 className="text-[15px] font-bold text-[#1C1C1E]">Delete preference?</h4>
+                    <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E]">Delete preference?</h4>
                   </div>
 
                   <p className="text-[13px] text-[#6E6E78] leading-[18px]">
@@ -4838,7 +5448,7 @@ export function MyPlanView({
                       type="button"
                       id="pref-delete-cancel-btn"
                       onClick={() => setMemoryToDelete(null)}
-                      className="flex-1 min-h-[44px] rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[14px] font-medium text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-secondary flex-1 min-h-[44px] rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[14px] font-medium text-[#1C1C1E] cursor-pointer transition-colors"
                     >
                       Cancel
                     </button>
@@ -4846,7 +5456,7 @@ export function MyPlanView({
                       type="button"
                       id="pref-delete-confirm-btn"
                       onClick={handleDeleteMemoryConfirmed}
-                      className="flex-1 min-h-[44px] rounded-[14px] bg-[#E11D48] hover:bg-[#BE123C] text-white text-[14px] font-semibold shadow-xs cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-destructive flex-1 min-h-[44px] rounded-[14px] bg-[#E11D48] hover:bg-[#BE123C] text-white text-[14px] font-semibold shadow-xs cursor-pointer transition-colors"
                     >
                       Delete
                     </button>
@@ -4888,12 +5498,12 @@ export function MyPlanView({
                   <div className="flex items-center justify-between pb-2 border-b border-black/[0.05]">
                     <div className="flex items-center gap-1.5">
                       <ShieldCheck className="w-4 h-4 text-[#5E5BAE]" />
-                      <h4 className="text-[15px] font-bold text-[#1C1C1E]">Preferences</h4>
+                      <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E]">Preferences</h4>
                     </div>
                     <button
                       type="button"
                       onClick={() => setIsMemoryInfoModalOpen(false)}
-                      className="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-3.5 h-3.5 stroke-[2.2]" />
@@ -4909,7 +5519,7 @@ export function MyPlanView({
                   <button
                     type="button"
                     onClick={() => setIsMemoryInfoModalOpen(false)}
-                    className="w-full min-h-[44px] rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
+                    className="genki-plan-control genki-plan-control-primary w-full min-h-[44px] rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
                   >
                     Done
                   </button>
@@ -4951,19 +5561,19 @@ export function MyPlanView({
                   <div className="flex items-center justify-between pb-2 border-b border-black/[0.05]">
                     <div className="flex items-center gap-1.5">
                       <HelpCircle className="w-4 h-4 text-[#5E5BAE]" />
-                      <h4 className="text-[15px] font-bold text-[#1C1C1E]">How it’s measured</h4>
+                      <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E]">How it’s measured</h4>
                     </div>
                     <button
                       type="button"
                       onClick={() => setIsMethodologyOpen(false)}
-                      className="w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-3.5 h-3.5 stroke-[2.2]" />
                     </button>
                   </div>
 
-                  <div className="space-y-2.5 text-xs text-[#6C6C70] leading-relaxed">
+                  <div className="space-y-2.5 text-[13px] leading-[18px] text-[#6C6C70] leading-relaxed">
                     <div>
                       <strong className="text-[#1C1C1E] font-semibold block mb-0.5">
                         • Active days (days)
@@ -4989,7 +5599,7 @@ export function MyPlanView({
                   <button
                     type="button"
                     onClick={() => setIsMethodologyOpen(false)}
-                    className="w-full py-2.5 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-xs font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
+                    className="genki-plan-control genki-plan-control-primary w-full py-2.5 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[13px] leading-[18px] font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
                   >
                     Got it
                   </button>
@@ -5031,12 +5641,12 @@ export function MyPlanView({
                   <div className="flex items-center justify-between pb-2 border-b border-black/[0.05]">
                     <div className="flex items-center gap-1.5">
                       <CalendarIcon className="w-4 h-4 text-[#5E5BAE]" />
-                      <h4 className="text-[15px] font-bold text-[#1C1C1E]">Select Month</h4>
+                      <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E]">Select Month</h4>
                     </div>
                     <button
                       type="button"
                       onClick={() => setIsMonthPickerOpen(false)}
-                      className="w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-3.5 h-3.5 stroke-[2.2]" />
@@ -5047,7 +5657,7 @@ export function MyPlanView({
                     <button
                       type="button"
                       onClick={() => setPickerYear((y) => y - 1)}
-                      className="px-2.5 py-1 text-xs font-semibold text-[#5E5BAE] hover:bg-black/5 active:scale-95 rounded-[8px] transition-all cursor-pointer"
+                      className="genki-plan-control genki-plan-control-base px-2.5 py-1 text-[13px] leading-[18px] font-semibold text-[#5E5BAE] hover:bg-black/5 active:scale-95 rounded-[8px] transition-all cursor-pointer"
                       aria-label="Previous year"
                     >
                       ‹ {pickerYear - 1}
@@ -5058,7 +5668,7 @@ export function MyPlanView({
                     <button
                       type="button"
                       onClick={() => setPickerYear((y) => y + 1)}
-                      className="px-2.5 py-1 text-xs font-semibold text-[#5E5BAE] hover:bg-black/5 active:scale-95 rounded-[8px] transition-all cursor-pointer"
+                      className="genki-plan-control genki-plan-control-base px-2.5 py-1 text-[13px] leading-[18px] font-semibold text-[#5E5BAE] hover:bg-black/5 active:scale-95 rounded-[8px] transition-all cursor-pointer"
                       aria-label="Next year"
                     >
                       {pickerYear + 1} ›
@@ -5082,7 +5692,7 @@ export function MyPlanView({
                           key={`${pickerYear}-${idx}`}
                           type="button"
                           onClick={() => handleSelectMonth(pickerYear, idx)}
-                          className={`w-full p-2.5 rounded-[16px] text-left flex items-center justify-between transition-all cursor-pointer ${
+                          className={`genki-plan-control genki-plan-control-base w-full p-2.5 rounded-[16px] text-left flex items-center justify-between transition-all cursor-pointer ${
                             isSelected
                               ? 'bg-[#5E5BAE] text-white font-bold shadow-2xs'
                               : 'bg-[#F2F2F7]/75 hover:bg-[#E5E5EA] text-[#1C1C1E] border border-black/[0.04]'
@@ -5092,7 +5702,7 @@ export function MyPlanView({
                             <span className="text-[13px]">{monthName}</span>
                             {isCurrent && (
                               <span
-                                className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                                className={`text-[13px] px-2 py-0.5 rounded-full font-semibold ${
                                   isSelected
                                     ? 'bg-white/20 text-white'
                                     : 'bg-[#F4EEFE] text-[#5E5BAE] border border-[#5E5BAE]/20'
@@ -5103,7 +5713,7 @@ export function MyPlanView({
                             )}
                           </div>
                           <span
-                            className={`text-[11px] ${
+                            className={`text-[13px] ${
                               isSelected ? 'text-white/80' : 'text-[#8E8E93]'
                             }`}
                           >
@@ -5187,16 +5797,16 @@ export function MyPlanView({
                   <div className="flex items-start justify-between pb-2 border-b border-black/[0.05]">
                     <div>
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <h4 className="text-[15px] font-bold text-[#1C1C1E]">
+                        <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E]">
                           {formattedDateString}
                         </h4>
                         {isSelectedDayToday && (
-                          <span className="bg-[#5E5BAE] text-white text-[9.5px] px-2 py-0.5 rounded-full font-bold">
+                          <span className="bg-[#5E5BAE] text-white text-[13px] px-2 py-0.5 rounded-full font-bold">
                             Today
                           </span>
                         )}
                       </div>
-                      <span className="text-[11px] text-[#8E8E93] block mt-0.5">
+                      <span className="text-[13px] text-[#8E8E93] block mt-0.5">
                         {hasAnyRecords
                           ? `${dayActivities.length} ${
                               dayActivities.length === 1 ? 'activity' : 'activities'
@@ -5214,7 +5824,7 @@ export function MyPlanView({
                         setEditingActivityId(null);
                         setActiveDayModalDate(null);
                       }}
-                      className="w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer shrink-0 transition-colors"
+                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer shrink-0 transition-colors"
                       aria-label="Close"
                     >
                       <X className="w-4 h-4 stroke-[2.2]" />
@@ -5254,11 +5864,11 @@ export function MyPlanView({
                                 <div className="text-[13px] font-semibold text-[#1C1C1E] leading-snug break-words">
                                   {rec.title}
                                 </div>
-                                <div className="text-[11px] font-medium text-[#5E5BAE] mt-0.5">
+                                <div className="text-[13px] font-medium text-[#5E5BAE] mt-0.5">
                                   {catLabel} • {rec.durationMinutes} min
                                 </div>
                                 {rec.note && (
-                                  <p className="text-[11px] text-[#6C6C70] italic mt-0.5 break-words">
+                                  <p className="text-[13px] text-[#6C6C70] italic mt-0.5 break-words">
                                     “{rec.note}”
                                   </p>
                                 )}
@@ -5269,7 +5879,7 @@ export function MyPlanView({
                                   data-action="edit-day-activity"
                                   data-activity-id={rec.id}
                                   onClick={() => handleStartEditDayActivity(rec)}
-                                  className="min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[11px] font-semibold text-[#5E5BAE] hover:bg-[#FAFAFC] transition-colors cursor-pointer"
+                                  className="genki-plan-control genki-plan-control-base min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[13px] font-semibold text-[#5E5BAE] hover:bg-[#FAFAFC] transition-colors cursor-pointer"
                                 >
                                   Edit
                                 </button>
@@ -5278,7 +5888,7 @@ export function MyPlanView({
                                   data-action="delete-day-activity"
                                   data-activity-id={rec.id}
                                   onClick={() => handleDeleteSingleDayActivity(rec.id)}
-                                  className="min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[11px] font-semibold text-[#E11D48] hover:bg-[#FFF1F2] transition-colors cursor-pointer"
+                                  className="genki-plan-control genki-plan-control-base min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[13px] font-semibold text-[#E11D48] hover:bg-[#FFF1F2] transition-colors cursor-pointer"
                                 >
                                   Delete
                                 </button>
@@ -5297,11 +5907,11 @@ export function MyPlanView({
                               <div className="text-[13px] font-semibold text-[#1C1C1E] leading-snug">
                                 {restRec.title || 'Mindful rest day'}
                               </div>
-                              <div className="text-[11px] font-medium text-[#E11D48] mt-0.5">
+                              <div className="text-[13px] font-medium text-[#E11D48] mt-0.5">
                                 Rest • Not counted as exercise
                               </div>
                               {restRec.note && (
-                                <p className="text-[11px] text-[#6C6C70] italic mt-0.5 break-words">
+                                <p className="text-[13px] text-[#6C6C70] italic mt-0.5 break-words">
                                   “{restRec.note}”
                                 </p>
                               )}
@@ -5311,7 +5921,7 @@ export function MyPlanView({
                               data-action="delete-day-rest"
                               data-rest-id={restRec.id}
                               onClick={() => handleDeleteSingleDayRest(restRec.id)}
-                              className="min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[11px] font-semibold text-[#E11D48] hover:bg-[#FFF1F2] transition-colors cursor-pointer shrink-0"
+                              className="genki-plan-control genki-plan-control-base min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[13px] font-semibold text-[#E11D48] hover:bg-[#FFF1F2] transition-colors cursor-pointer shrink-0"
                             >
                               Remove
                             </button>
@@ -5323,7 +5933,7 @@ export function MyPlanView({
 
                   <div className="flex flex-col gap-2.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-[#1C1C1E]">
+                      <span className="text-[13px] leading-[18px] font-bold text-[#1C1C1E]">
                         {editingActivityId
                           ? 'Edit Activity'
                           : dayDraftType === 'rest'
@@ -5336,7 +5946,7 @@ export function MyPlanView({
                         <button
                           type="button"
                           onClick={resetDayActivityDraft}
-                          className="text-[11px] font-semibold text-[#5E5BAE] hover:underline cursor-pointer"
+                          className="genki-plan-control genki-plan-control-base text-[13px] font-semibold text-[#5E5BAE] hover:underline cursor-pointer"
                         >
                           Cancel edit
                         </button>
@@ -5355,7 +5965,7 @@ export function MyPlanView({
                             setDayDraftDuration(15);
                           }
                         }}
-                        className={`py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer ${
+                        className={`genki-plan-control genki-plan-control-base py-1.5 rounded-[10px] text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
                           dayDraftType === 'active'
                             ? 'bg-[#5E5BAE] text-white shadow-2xs font-bold'
                             : 'text-[#8E8E93] hover:text-[#1C1C1E]'
@@ -5372,7 +5982,7 @@ export function MyPlanView({
                           setDayDraftType('rest');
                           setDayDraftNote('');
                         }}
-                        className={`py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer ${
+                        className={`genki-plan-control genki-plan-control-destructive py-1.5 rounded-[10px] text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
                           dayDraftType === 'rest'
                             ? 'bg-[#E11D48] text-white shadow-2xs font-bold'
                             : 'text-[#8E8E93] hover:text-[#1C1C1E]'
@@ -5388,7 +5998,7 @@ export function MyPlanView({
                           setEditingActivityId(null);
                           setDayDraftType('none');
                         }}
-                        className={`py-1.5 rounded-[10px] text-xs font-semibold transition-all cursor-pointer ${
+                        className={`genki-plan-control genki-plan-control-base py-1.5 rounded-[10px] text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
                           dayDraftType === 'none'
                             ? 'bg-white text-[#1C1C1E] shadow-2xs font-bold'
                             : 'text-[#8E8E93] hover:text-[#1C1C1E]'
@@ -5402,7 +6012,7 @@ export function MyPlanView({
                       <div className="flex flex-col gap-2 pt-1">
                         {!editingActivityId && (
                           <>
-                            <span className="text-[11px] font-medium text-[#8E8E93]">
+                            <span className="text-[13px] font-medium text-[#8E8E93]">
                               Quick Presets
                             </span>
                             <div className="grid grid-cols-2 gap-1.5">
@@ -5422,14 +6032,14 @@ export function MyPlanView({
                                     setDayDraftTitle(preset.title);
                                     setDayDraftDuration(preset.dur);
                                   }}
-                                  className={`p-2 rounded-[12px] text-left text-[11px] font-semibold border transition-all cursor-pointer ${
+                                  className={`genki-plan-control genki-plan-control-base p-2 rounded-[12px] text-left text-[13px] font-semibold border transition-all cursor-pointer ${
                                     dayDraftTitle === preset.title
                                       ? 'bg-[#F4EEFE] border-[#5E5BAE] text-[#5E5BAE] shadow-2xs'
                                       : 'bg-white border-black/[0.05] text-[#1C1C1E] hover:bg-[#FAFAFC]'
                                   }`}
                                 >
                                   <div className="truncate">{preset.title}</div>
-                                  <span className="text-[10px] text-[#8E8E93] block mt-0.5">
+                                  <span className="text-[13px] text-[#8E8E93] block mt-0.5">
                                     {preset.dur} min
                                   </span>
                                 </button>
@@ -5439,7 +6049,7 @@ export function MyPlanView({
                         )}
 
                         <div className="flex flex-col gap-1 mt-1">
-                          <label className="text-[11px] font-medium text-[#8E8E93]">
+                          <label className="genki-plan-label text-[13px] font-medium text-[#8E8E93]">
                             Category
                           </label>
                           <div className="grid grid-cols-3 gap-1">
@@ -5455,7 +6065,7 @@ export function MyPlanView({
                                 type="button"
                                 data-day-category={cat.value}
                                 onClick={() => setDayDraftCategory(cat.value)}
-                                className={`py-1.5 rounded-[10px] text-xs font-semibold border transition-all cursor-pointer ${
+                                className={`genki-plan-control genki-plan-control-base py-1.5 rounded-[10px] text-[13px] leading-[18px] font-semibold border transition-all cursor-pointer ${
                                   dayDraftCategory === cat.value
                                     ? 'bg-[#5E5BAE] text-white border-[#5E5BAE]'
                                     : 'bg-white text-[#1C1C1E] border-black/[0.05] hover:bg-[#FAFAFC]'
@@ -5468,7 +6078,7 @@ export function MyPlanView({
                         </div>
 
                         <div className="flex flex-col gap-1 mt-0.5">
-                          <label className="text-[11px] font-medium text-[#8E8E93]">
+                          <label className="genki-plan-label text-[13px] font-medium text-[#8E8E93]">
                             Duration
                           </label>
                           <div className="flex items-center gap-1">
@@ -5478,7 +6088,7 @@ export function MyPlanView({
                                 type="button"
                                 data-day-duration={dur}
                                 onClick={() => setDayDraftDuration(dur)}
-                                className={`flex-1 py-1.5 rounded-[10px] text-xs font-semibold border transition-all cursor-pointer ${
+                                className={`genki-plan-control genki-plan-control-base flex-1 py-1.5 rounded-[10px] text-[13px] leading-[18px] font-semibold border transition-all cursor-pointer ${
                                   dayDraftDuration === dur
                                     ? 'bg-[#5E5BAE] text-white border-[#5E5BAE]'
                                     : 'bg-white text-[#1C1C1E] border-black/[0.05] hover:bg-[#FAFAFC]'
@@ -5491,7 +6101,7 @@ export function MyPlanView({
                         </div>
 
                         <div className="flex flex-col gap-1 mt-0.5">
-                          <label className="text-[11px] font-medium text-[#8E8E93]">
+                          <label className="genki-plan-label text-[13px] font-medium text-[#8E8E93]">
                             Activity Title
                           </label>
                           <input
@@ -5507,14 +6117,14 @@ export function MyPlanView({
                               }
                             }}
                             placeholder="Select a preset above or type here..."
-                            className="w-full px-3 py-2 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-xs text-[#1C1C1E] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                            className="genki-plan-field w-full px-3 py-2 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[13px] leading-[18px] text-[#1C1C1E] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                           />
                         </div>
                       </div>
                     )}
 
                     {dayDraftType === 'rest' && (
-                      <div className="p-3 rounded-[16px] bg-[#FFE4E6]/50 border border-[#E11D48]/20 text-[11.5px] leading-relaxed text-[#1C1C1E]">
+                      <div className="p-3 rounded-[16px] bg-[#FFE4E6]/50 border border-[#E11D48]/20 text-[13px] leading-relaxed text-[#1C1C1E]">
                         <p>
                           <strong>Rest is recorded independently.</strong> It does not add to exercise sessions or active minutes.
                         </p>
@@ -5522,14 +6132,14 @@ export function MyPlanView({
                     )}
 
                     {dayDraftType === 'none' && (
-                      <div className="p-3 rounded-[16px] bg-[#F2F2F7]/80 border border-black/[0.04] text-[11.5px] leading-relaxed text-[#6E6E78]">
+                      <div className="p-3 rounded-[16px] bg-[#F2F2F7]/80 border border-black/[0.04] text-[13px] leading-relaxed text-[#6E6E78]">
                         Removes all recorded activities and rest entries for this day.
                       </div>
                     )}
 
                     {dayDraftType !== 'none' && (
                       <div className="flex flex-col gap-1 mt-0.5">
-                        <label className="text-[11px] font-medium text-[#8E8E93]">
+                        <label className="genki-plan-label text-[13px] font-medium text-[#8E8E93]">
                           Note (Optional)
                         </label>
                         <input
@@ -5538,14 +6148,14 @@ export function MyPlanView({
                           value={dayDraftNote}
                           onChange={(e) => setDayDraftNote(e.target.value)}
                           placeholder="e.g. Easy pace around the block"
-                          className="w-full px-3 py-2 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-xs text-[#1C1C1E] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                          className="genki-plan-field w-full px-3 py-2 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[13px] leading-[18px] text-[#1C1C1E] focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                       </div>
                     )}
                   </div>
 
                   {isSaveDisabled && (
-                    <p className="text-[11px] text-[#5E5BAE] font-medium text-center">
+                    <p className="text-[13px] text-[#5E5BAE] font-medium text-center">
                       Select a preset or enter an activity name to save
                     </p>
                   )}
@@ -5557,7 +6167,7 @@ export function MyPlanView({
                         setEditingActivityId(null);
                         setActiveDayModalDate(null);
                       }}
-                      className="flex-1 py-2.5 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-xs font-semibold text-[#1C1C1E] transition-colors cursor-pointer"
+                      className="genki-plan-control genki-plan-control-base flex-1 py-2.5 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[13px] leading-[18px] font-semibold text-[#1C1C1E] transition-colors cursor-pointer"
                     >
                       Cancel
                     </button>
@@ -5567,7 +6177,7 @@ export function MyPlanView({
                       id="history-day-save-btn"
                       disabled={isSaveDisabled}
                       onClick={handleSaveDayRecord}
-                      className={`flex-1 py-2.5 rounded-[14px] text-xs font-semibold shadow-sm transition-colors ${
+                      className={`genki-plan-control genki-plan-control-primary flex-1 py-2.5 rounded-[14px] text-[13px] leading-[18px] font-semibold shadow-sm transition-colors ${
                         isSaveDisabled
                           ? 'bg-[#5E5BAE]/40 text-white/70 cursor-not-allowed'
                           : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
