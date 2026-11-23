@@ -983,7 +983,7 @@ const GENKI_MOBILE_UI_STYLES = `
 .genki-mobile-input {font-size:16px;line-height:22px;min-height:44px;min-width:0;}
 #discover-feed-scroll > div > article {padding:18px;}
 #discover-detail-sheet .genki-mobile-section-title {margin:0;}
-#today-top-right-info p {white-space:normal;max-width:230px;}
+#today-header-greeting {font-size:14px;font-weight:400;line-height:20px;color:#70677F;opacity:1;max-width:190px;white-space:normal;text-align:right;}
 @media(prefers-reduced-motion:reduce) {.genki-mobile-control {transition:none;}}
 `;
 
@@ -1348,6 +1348,14 @@ export default function App() {
     'partly-cloudy': '/assets/weather/partly-cloudy.png',
     snow: '/assets/weather/snow.png',
     sleet: '/assets/weather/snow.png',
+  };
+
+  // Measured transparent insets inside each 512x512 weather PNG (alpha > 12) for optical alignment
+  const WEATHER_ASSET_INSETS: Record<string, { topRatio: number; rightRatio: number }> = {
+    '/assets/weather/thunderstorm.png': { topRatio: 90 / 512, rightRatio: 88 / 512 },
+    '/assets/weather/rain.png': { topRatio: 100 / 512, rightRatio: 88 / 512 },
+    '/assets/weather/partly-cloudy.png': { topRatio: 127 / 512, rightRatio: 88 / 512 },
+    '/assets/weather/snow.png': { topRatio: 101 / 512, rightRatio: 88 / 512 },
   };
 
   // Single unified weather state shared by both weather visual and temperature text
@@ -3601,11 +3609,7 @@ export default function App() {
         >
           <span
             id="today-brand-title"
-            className={
-              activeTab === 'Plan'
-                ? 'text-[32px] font-bold leading-[38px] tracking-[-0.024em] text-[#1C1C1E]'
-                : 'text-[28px] sm:text-[30px] font-bold tracking-[-0.024em] text-[#1C1C1E] leading-tight'
-            }
+            className="text-[32px] font-bold leading-[38px] tracking-[-0.024em] text-[#1C1C1E]"
           >
             {activeTab === 'Today' ? 'Genki' : activeTab}
           </span>
@@ -3623,7 +3627,7 @@ export default function App() {
           )}
         </header>
 
-        {/* 2b. Today Upper-Right Weather Asset & Right-Aligned Weather/Steps/Greeting (Kept mounted across tabs to avoid re-fetching) */}
+        {/* 2b. Today Header Right Group: Weather Asset + Greeting (Kept mounted across tabs to avoid re-fetching; absolute so Avatar/task coordinates remain unchanged) */}
         <div
           id="today-upper-right-ambient"
           aria-hidden={activeTab !== 'Today'}
@@ -3631,74 +3635,68 @@ export default function App() {
             activeTab === 'Today' ? 'block' : 'hidden'
           }`}
         >
-          {/* Extracted Transparent Weather Asset (112x112 standard, 96x96 short screen < 700px) */}
-          {weatherAssetSrc && (() => {
+          {(() => {
             const isShortViewport = frameSize.height < 700;
             const iconSize = isShortViewport ? 96 : 112;
+            // Fixed slot height based on tallest weather asset visible height (331/512) so switching states never shifts the greeting
+            const iconSlotHeight = isShortViewport ? 62.5 : 73;
+            const insets = weatherAssetSrc ? WEATHER_ASSET_INSETS[weatherAssetSrc] : null;
+            const imgTopOffset = insets ? Number((iconSize * insets.topRatio).toFixed(2)) : 0;
+            const imgRightOffset = insets ? Number((iconSize * insets.rightRatio).toFixed(2)) : 0;
+
             return (
               <div
-                id="today-weather-icon-wrap"
-                aria-hidden="true"
+                id="today-header-right"
                 style={{
-                  top: isShortViewport ? '14px' : '24px',
-                  right: '12px',
-                  width: `${iconSize}px`,
-                  height: `${iconSize}px`,
+                  top: '40px',
+                  right: '20px',
+                  paddingTop: '6.5px',
                 }}
-                className="absolute pointer-events-none select-none"
+                className="absolute flex flex-col items-end gap-2 pointer-events-none select-none"
               >
-                <img
-                  id="today-weather-icon-img"
-                  src={weatherAssetSrc}
-                  alt=""
-                  aria-hidden="true"
-                  width={iconSize}
-                  height={iconSize}
-                  decoding="async"
-                  draggable={false}
-                  style={{
-                    width: `${iconSize}px`,
-                    height: `${iconSize}px`,
-                    objectFit: 'contain',
-                    opacity: 0.88,
-                  }}
-                  className="block pointer-events-none select-none"
-                />
+                {weatherAssetSrc && (
+                  <div
+                    id="today-weather-icon-wrap"
+                    aria-hidden="true"
+                    style={{
+                      width: `${iconSize}px`,
+                      height: `${iconSlotHeight}px`,
+                    }}
+                    className="relative overflow-visible shrink-0 pointer-events-none select-none"
+                  >
+                    <img
+                      id="today-weather-icon-img"
+                      src={weatherAssetSrc}
+                      alt=""
+                      aria-hidden="true"
+                      width={iconSize}
+                      height={iconSize}
+                      decoding="async"
+                      draggable={false}
+                      style={{
+                        position: 'absolute',
+                        top: `${-imgTopOffset}px`,
+                        right: `${-imgRightOffset}px`,
+                        width: `${iconSize}px`,
+                        height: `${iconSize}px`,
+                        maxWidth: 'none',
+                        objectFit: 'contain',
+                        opacity: 0.88,
+                      }}
+                      className="block pointer-events-none select-none"
+                    />
+                  </div>
+                )}
+
+                <p
+                  id="today-header-greeting"
+                  className="m-0 text-[14px] font-normal leading-[20px] text-[#70677F] opacity-100 text-right max-w-[190px] whitespace-normal"
+                >
+                  Hope your morning feels easy.
+                </p>
               </div>
             );
           })()}
-
-          {/* Upper-Right Text Block: Below weather icon with >= 8px visible clearance; Line 1 = 18°C · 3,420 steps, Line 2 = Hope your morning feels easy. */}
-          <div
-            id="today-top-right-info"
-            style={{
-              top: frameSize.height < 700 ? '101px' : '126px',
-              right: '20px',
-            }}
-            className="absolute flex flex-col items-end text-right pointer-events-none"
-          >
-            {/* Line 1: Temperature & Steps unified in 13px / 18px */}
-            <div className="flex items-center justify-end whitespace-nowrap leading-[18px] text-[13px] font-medium text-[#6E6E78] tabular-nums tracking-[-0.01em]">
-              {todayWeather.available && todayWeather.temperatureC !== null && (
-                <>
-                  <span id="today-weather-temp">{todayWeather.temperatureC}°C</span>
-                  <span className="mx-1.5 text-[#3C3C43]/40 select-none" aria-hidden="true">
-                    ·
-                  </span>
-                </>
-              )}
-              <span>3,420 steps</span>
-            </div>
-
-            {/* Line 2: Greeting right-aligned below data row */}
-            <p
-              className={`genki-mobile-meta ${
-                frameSize.height < 700 ? 'mt-0.5' : 'mt-1.5'
-              } text-[13px] font-normal text-[#6C6C70]/90 leading-[18px] tracking-[-0.01em] whitespace-nowrap`}
-            >
-              Hope your morning feels easy.
-            </p>
-          </div>
         </div>
 
         {/* 3. Main Body Content: Today View */}
