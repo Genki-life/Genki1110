@@ -57,13 +57,33 @@ function getDefaultStorage(): StorageLike | null {
 // ============================================================================
 
 export type PhaseCommitmentStatus = 'active' | 'paused' | 'completed' | 'draft';
-export type PhaseCommitmentEventKind = 'started' | 'adjusted' | 'kept';
+export type PhaseCommitmentEventKind =
+  | 'started'
+  | 'adjusted'
+  | 'kept'
+  | 'exploring'
+  | 'completed'
+  | 'built'
+  | 'new_focus';
+
+export type GoalReviewFeeling = 'steady' | 'still_finding_fit' | 'ready_to_wrap';
+
+export interface GoalReviewReflectionRecord {
+  feeling?: GoalReviewFeeling;
+  outsidePracticeNote?: string;
+  source: 'user_self_report';
+  updatedAt: string;
+}
 
 export interface ConfirmedActionStrategy {
   habitId: string;
   label: string;
   regularAction: string;
   minimumAction?: string;
+  /** Optional explicit cue/timing (e.g. "After dinner"); editing bumps strategy version */
+  cueTiming?: string;
+  /** Optional explicitly confirmed alternative way (e.g. "Indoor 8 min mobility"); distinct from practiced */
+  alternativeAction?: string;
   /** Descriptive cadence/frequency explaining strategy; NEVER a scoring target */
   frequencyDescription: string;
   /** Guard flag affirming frequency is descriptive only, never used for grading */
@@ -84,6 +104,12 @@ export interface PhaseCommitmentRecord {
   strategySummary?: string | null;
   strategies: ConfirmedActionStrategy[];
   status: PhaseCommitmentStatus;
+  /** Only populated when user explicitly agreed to an observation window; NEVER fabricated */
+  observationWindow?: string | null;
+  /** ISO timestamp set ONLY when user explicitly confirms completion and persistence succeeds */
+  completedAt?: string | null;
+  /** Optional reflection & outside-app practice self-report from Review goal */
+  reviewReflection?: GoalReviewReflectionRecord | null;
   /** Last real saved commitment/rhythm event driving Nova's Plan header line */
   lastEventKind?: PhaseCommitmentEventKind;
   /** True ONLY when a real user goal review is pending; never auto-set from dates or counts */
@@ -210,6 +236,8 @@ export interface HabitPracticeRecord {
   actionVersion: string;
   /** Informational only; longer duration NEVER increases practice days */
   actualDurationMinutes?: number | null;
+  /** True when the originating record was edited or backfilled */
+  wasEdited?: boolean;
 }
 
 // ============================================================================
@@ -220,7 +248,10 @@ export type PlanLifecycleEventType =
   | 'rest'
   | 'pause'
   | 'resume'
-  | 'strategy_adjustment';
+  | 'strategy_adjustment'
+  | 'goal_review'
+  | 'goal_completed'
+  | 'new_commitment';
 
 export interface PlanLifecycleEvent {
   id: string;
@@ -337,6 +368,22 @@ export interface MigrationAuditEntry {
   skippedDemoCount: number;
 }
 
+export interface HiddenHabitConclusionRecord {
+  habitId: string;
+  statusCode: string;
+  habitVersion: string;
+  hiddenAt: string;
+}
+
+export interface SharedSuggestionDecisionRecord {
+  suggestionId: string;
+  status: 'accepted' | 'dismissed';
+  decidedAt: string;
+  habitId?: string;
+  source: 'journey' | 'weekly_review';
+  summary?: string;
+}
+
 export interface PlanFoundationStore {
   schemaVersion: typeof PLAN_FOUNDATION_SCHEMA_VERSION;
   /** Official user store is always false; isolated dev/test fixtures must set true */
@@ -345,11 +392,17 @@ export interface PlanFoundationStore {
   migratedAt: string | null;
   migrationHistory: MigrationAuditEntry[];
   commitment: PhaseCommitmentRecord | null;
+  /** Archived prior commitments preserved whenever the user chooses a new direction / new focus */
+  pastCommitments?: PhaseCommitmentRecord[];
   taskCompletions: TaskCompletionRecord[];
   exerciseSessions: ExerciseSessionRecord[];
   habitPractices: HabitPracticeRecord[];
   /** Optional explicit user self-report check-ins for habits (version- and config-scoped) */
   habitCheckIns?: HabitSelfReportCheckIn[];
+  /** User-chosen hidden status conclusions ("This doesn't fit -> Hide"); never deletes facts */
+  hiddenStatusConclusions?: Record<string, HiddenHabitConclusionRecord>;
+  /** Shared suggestion acceptance/dismissal state across Your journey and Weekly review */
+  sharedSuggestionDecisions?: Record<string, SharedSuggestionDecisionRecord>;
   lifecycleEvents: PlanLifecycleEvent[];
   weeklyReviews: Record<string, WeeklyReviewRecord>;
   coverage: DataCoverageMetadata;
@@ -366,10 +419,13 @@ export function createEmptyPlanFoundationStore(): PlanFoundationStore {
     migratedAt: null,
     migrationHistory: [],
     commitment: null,
+    pastCommitments: [],
     taskCompletions: [],
     exerciseSessions: [],
     habitPractices: [],
     habitCheckIns: [],
+    hiddenStatusConclusions: {},
+    sharedSuggestionDecisions: {},
     lifecycleEvents: [],
     weeklyReviews: {},
     coverage: {
@@ -483,6 +539,11 @@ function normalizeExistingStore(raw: unknown): PlanFoundationStore | null {
     obj.commitment && typeof obj.commitment === 'object'
       ? (obj.commitment as PhaseCommitmentRecord)
       : null;
+  base.pastCommitments = Array.isArray(obj.pastCommitments)
+    ? (obj.pastCommitments as PhaseCommitmentRecord[]).filter(
+        (c) => c && typeof c.id === 'string' && typeof c.summary === 'string'
+      )
+    : [];
   base.taskCompletions = Array.isArray(obj.taskCompletions)
     ? (obj.taskCompletions as TaskCompletionRecord[]).filter(
         (r) => r && typeof r.logicalTaskId === 'string' && isValidLocalDateKey(r.dateKey)
@@ -515,6 +576,24 @@ function normalizeExistingStore(raw: unknown): PlanFoundationStore | null {
           isValidLocalDateKey(c.dateKey)
       )
     : [];
+  if (
+    obj.hiddenStatusConclusions &&
+    typeof obj.hiddenStatusConclusions === 'object' &&
+    !Array.isArray(obj.hiddenStatusConclusions)
+  ) {
+    base.hiddenStatusConclusions = {
+      ...(obj.hiddenStatusConclusions as Record<string, HiddenHabitConclusionRecord>),
+    };
+  }
+  if (
+    obj.sharedSuggestionDecisions &&
+    typeof obj.sharedSuggestionDecisions === 'object' &&
+    !Array.isArray(obj.sharedSuggestionDecisions)
+  ) {
+    base.sharedSuggestionDecisions = {
+      ...(obj.sharedSuggestionDecisions as Record<string, SharedSuggestionDecisionRecord>),
+    };
+  }
   base.lifecycleEvents = Array.isArray(obj.lifecycleEvents)
     ? (obj.lifecycleEvents as PlanLifecycleEvent[]).filter(
         (r) => r && typeof r.id === 'string' && isValidLocalDateKey(r.dateKey)
@@ -609,6 +688,8 @@ export function migrateLegacyStorageToFoundation(
         exerciseSessions: [...existingStore.exerciseSessions],
         habitPractices: [...existingStore.habitPractices],
         habitCheckIns: [...(existingStore.habitCheckIns ?? [])],
+        hiddenStatusConclusions: { ...(existingStore.hiddenStatusConclusions ?? {}) },
+        sharedSuggestionDecisions: { ...(existingStore.sharedSuggestionDecisions ?? {}) },
         lifecycleEvents: [...existingStore.lifecycleEvents],
         weeklyReviews: { ...existingStore.weeklyReviews },
         coverage: {
@@ -1698,10 +1779,15 @@ export function updateExerciseSession(
   let nextHabitPractices = store.habitPractices.filter(
     (hp) => hp.sourceRecordId !== existing.id
   );
-  if (dateChanged && existing.sourceTaskCompletionId) {
+  if (existing.sourceTaskCompletionId) {
     nextHabitPractices = nextHabitPractices.map((hp) =>
       hp.sourceRecordId === existing.sourceTaskCompletionId
-        ? { ...hp, dateKey: nextDateKey, occurredAt: nextOccurredAt }
+        ? {
+            ...hp,
+            dateKey: dateChanged ? nextDateKey : hp.dateKey,
+            occurredAt: dateChanged ? nextOccurredAt : hp.occurredAt,
+            wasEdited: true,
+          }
         : hp
     );
   }
@@ -1716,6 +1802,7 @@ export function updateExerciseSession(
       actionTier: updatedSession.actionTier ?? 'regular',
       actionVersion: updatedSession.actionVersion ?? 'v1',
       actualDurationMinutes: updatedSession.actualDurationMinutes,
+      wasEdited: true,
     });
   }
 
@@ -1946,11 +2033,14 @@ export function upsertWeeklyReviewAnswer(
   const nowIso = input.timestamp ?? new Date().toISOString();
 
   const feeling: WeeklyReviewFeeling | undefined =
-    questionId === DEFAULT_WEEKLY_REVIEW_QUESTION_ID &&
-    (input.rawAnswer === 'too_much' ||
-      input.rawAnswer === 'about_right' ||
-      input.rawAnswer === 'ready_for_more')
-      ? input.rawAnswer
+    questionId === DEFAULT_WEEKLY_REVIEW_QUESTION_ID
+      ? input.rawAnswer === 'too_much' || input.rawAnswer === 'hard_to_fit_in'
+        ? 'too_much'
+        : input.rawAnswer === 'about_right'
+        ? 'about_right'
+        : input.rawAnswer === 'ready_for_more' || input.rawAnswer === 'room_for_more'
+        ? 'ready_for_more'
+        : undefined
       : undefined;
 
   const record: WeeklyReviewRecord = {
@@ -2152,14 +2242,26 @@ export function derivePlanHeaderNovaLine(
   if (!hasConfirmedPhaseCommitment(commitment)) {
     return 'When you’re ready, set a focus together.';
   }
+  if (commitment.status === 'completed') {
+    return 'You’ve completed this chapter. Choose what’s next when you’re ready.';
+  }
   if (commitment.reviewRequested === true) {
     return 'Shall we revisit your goal?';
+  }
+  if (commitment.lastEventKind === 'exploring') {
+    return 'Still exploring at your own pace.';
   }
   if (commitment.lastEventKind === 'adjusted') {
     return 'We’ll find a way that fits.';
   }
   if (commitment.lastEventKind === 'kept') {
     return 'Let’s keep this rhythm.';
+  }
+  if (commitment.lastEventKind === 'built') {
+    return 'Building gently from here.';
+  }
+  if (commitment.lastEventKind === 'new_focus') {
+    return 'A fresh focus, at your own pace.';
   }
   return 'You’ve chosen to begin again.';
 }
@@ -2173,7 +2275,7 @@ export function derivePlanHeaderDetailActionLabel(
   if (!hasConfirmedPhaseCommitment(commitment)) {
     return 'Set a focus';
   }
-  if (commitment.reviewRequested === true) {
+  if (commitment.status === 'completed' || commitment.reviewRequested === true) {
     return 'Review together';
   }
   return 'About this goal';
@@ -3580,10 +3682,15 @@ export function getPlanWeekSnapshot(
 export function computeHabitConfigFingerprint(strategy: {
   regularAction: string;
   minimumAction?: string;
+  cueTiming?: string;
+  alternativeAction?: string;
 }): string {
   const reg = strategy.regularAction.trim().toLowerCase().replace(/\s+/g, ' ');
   const min = (strategy.minimumAction ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-  return `${reg}||${min}`;
+  const cue = (strategy.cueTiming ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const alt = (strategy.alternativeAction ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!cue && !alt) return `${reg}||${min}`;
+  return `${reg}||${min}||${cue}||${alt}`;
 }
 
 export function getConfirmedHabits(store: PlanFoundationStore): ConfirmedActionStrategy[] {
@@ -3597,7 +3704,7 @@ export function getConfirmedHabits(store: PlanFoundationStore): ConfirmedActionS
 /**
  * Explicitly confirms or updates a user habit strategy inside commitment.strategies.
  * - Never silently creates a habit without explicit user confirmation.
- * - Modifying regularAction or minimumAction increments strategy.version (v1 -> v2)
+ * - Modifying regularAction, minimumAction, cueTiming, or alternativeAction increments strategy.version (v1 -> v2)
  *   so prior self-report check-ins stay historical and never masquerade as new-config feelings.
  * - Sets confirmable trackingStartDateKey only when explicitly provided and not yet set.
  */
@@ -3608,7 +3715,11 @@ export function confirmHabitStrategy(
     label: string;
     regularAction: string;
     minimumAction?: string;
+    cueTiming?: string;
+    alternativeAction?: string;
     frequencyDescription?: string;
+    adjustmentKind?: 'made_smaller' | 'cue_timing' | 'alternative_added' | 'custom';
+    adjustmentNote?: string;
     confirmTrackingStartDateKey?: string;
     timestamp?: string;
   }
@@ -3617,6 +3728,8 @@ export function confirmHabitStrategy(
   const cleanLabel = input.label.trim();
   const cleanRegular = input.regularAction.trim() || cleanLabel;
   const cleanMinimum = input.minimumAction?.trim() || undefined;
+  const cleanCue = input.cueTiming?.trim() || undefined;
+  const cleanAlt = input.alternativeAction?.trim() || undefined;
   const cleanFrequency = input.frequencyDescription?.trim() || 'At your own pace';
 
   const existingStrategies = store.commitment?.strategies ?? [];
@@ -3635,6 +3748,8 @@ export function confirmHabitStrategy(
     const nextFp = computeHabitConfigFingerprint({
       regularAction: cleanRegular,
       minimumAction: cleanMinimum,
+      cueTiming: cleanCue,
+      alternativeAction: cleanAlt,
     });
     if (prevFp !== nextFp) {
       const m = /^v(\d+)$/i.exec(prevStrategy.version);
@@ -3650,6 +3765,8 @@ export function confirmHabitStrategy(
     label: cleanLabel,
     regularAction: cleanRegular,
     ...(cleanMinimum ? { minimumAction: cleanMinimum } : {}),
+    ...(cleanCue ? { cueTiming: cleanCue } : {}),
+    ...(cleanAlt ? { alternativeAction: cleanAlt } : {}),
     frequencyDescription: cleanFrequency,
     frequencyIsDescriptiveOnly: true,
     version: nextVersion,
@@ -3684,7 +3801,28 @@ export function confirmHabitStrategy(
       occurredAt: nowIso,
       source: 'plan',
       habitId: targetHabitId,
-      title: `Updated ${cleanLabel}`,
+      title:
+        input.adjustmentKind === 'made_smaller'
+          ? 'Made it smaller'
+          : input.adjustmentKind === 'alternative_added'
+          ? 'Found another way'
+          : input.adjustmentKind === 'cue_timing'
+          ? 'Shifted cue timing'
+          : `Updated ${cleanLabel}`,
+      note: input.adjustmentNote,
+      payload: {
+        adjustmentKind: input.adjustmentKind ?? 'custom',
+        fromVersion: prevStrategy.version,
+        toVersion: nextVersion,
+        previousRegularAction: prevStrategy.regularAction,
+        nextRegularAction: cleanRegular,
+        previousMinimumAction: prevStrategy.minimumAction ?? null,
+        nextMinimumAction: cleanMinimum ?? null,
+        previousCueTiming: prevStrategy.cueTiming ?? null,
+        nextCueTiming: cleanCue ?? null,
+        previousAlternativeAction: prevStrategy.alternativeAction ?? null,
+        nextAlternativeAction: cleanAlt ?? null,
+      },
     }).store;
   }
 
@@ -3816,11 +3954,17 @@ export interface HabitRhythmPoint {
   nullReason?: HabitRhythmNullReason;
 }
 
+export type HabitRhythmWindowDays = 14 | 30 | 90;
+
 export interface HabitRhythmModel {
   habitId: string;
   habitLabel: string;
   habitVersion: string;
   configFingerprint: string;
+  /** Display window length in ended calendar days (14, 30, or 90). Metric is always rolling 7 days. */
+  windowDays: HabitRhythmWindowDays;
+  /** Raw days required to populate every point in windowDays (20, 36, or 96). */
+  requiredCoverageDays: number;
   statusCode: HabitRhythmStatusCode;
   statusLabel:
     | 'Rhythm unavailable'
@@ -3834,7 +3978,7 @@ export interface HabitRhythmModel {
   isExplicitlyPaused: boolean;
   pausedOnDateKey: string | null;
   resumedOnDateKey: string | null;
-  /** Always 30 ended local calendar days ending yesterday (today is strictly excluded) */
+  /** Ended local calendar days ending yesterday (today is strictly excluded) */
   points: HabitRhythmPoint[];
   /** Contiguous runs of non-null points (breaks cleanly across unknown/insufficient/failed gaps) */
   segments: HabitRhythmPoint[][];
@@ -3843,7 +3987,7 @@ export interface HabitRhythmModel {
   latestEndedDateKey: string;
   latestEndedShortLabel: string;
   latestValidPoint: HabitRhythmPoint | null;
-  /** True when any point inside the 30-day window after the first valid point is null (mid-series gap) */
+  /** True when any point inside the displayed window after the first valid point is null (mid-series gap) */
   hasCoverageGap: boolean;
   todayInProgress: {
     dateKey: string;
@@ -3912,8 +4056,10 @@ export function getHabitRhythmModel(
   store: PlanFoundationStore,
   habitId: string,
   referenceDate: Date = new Date(),
-  options?: { forceQueryFailed?: boolean }
+  options?: { forceQueryFailed?: boolean; windowDays?: HabitRhythmWindowDays }
 ): HabitRhythmModel {
+  const windowDays: HabitRhythmWindowDays = options?.windowDays ?? 30;
+  const requiredCoverageDays = windowDays + 6;
   const cleanHabitId = habitId.trim();
   const matchedStrategy = getConfirmedHabits(store).find((s) => s.habitId === cleanHabitId);
   const habitLabel = matchedStrategy?.label ?? cleanHabitId;
@@ -3933,8 +4079,9 @@ export function getHabitRhythmModel(
   const latestEndedDateKey = toLocalDateKey(latestEndedDate);
   const latestEndedShortLabel = formatShortLocalDateKey(latestEndedDateKey);
 
-  // Check if any failedLoadRanges impact the 36-day query window [latestEnded - 35 .. today]
-  const rawWindowStartKey = toLocalDateKey(addLocalDays(latestEndedDate, -35));
+  // Check if any failedLoadRanges impact the canonical 36-day or requested query window
+  const effectiveRawSpan = Math.max(36, requiredCoverageDays);
+  const rawWindowStartKey = toLocalDateKey(addLocalDays(latestEndedDate, -(effectiveRawSpan - 1)));
   const hasFailedLoadInWindow =
     Boolean(options?.forceQueryFailed) ||
     store.coverage.failedLoadRanges.some((fail) => {
@@ -3961,15 +4108,14 @@ export function getHabitRhythmModel(
   const distinctPracticeDates = Array.from(practiceDatesSet).sort((a, b) => a.localeCompare(b));
   const formattedPracticeDates = distinctPracticeDates.map(formatShortLocalDateKey);
 
-  // Build 30 ended local days [latestEnded - 29 .. latestEnded]
+  // Build windowDays ended local days [latestEnded - (windowDays - 1) .. latestEnded]
   const points: HabitRhythmPoint[] = [];
   const trackingStartKey =
     store.coverage.trackingStartDateKey && store.coverage.trackingStartSource !== 'unknown'
       ? store.coverage.trackingStartDateKey
       : null;
 
-  for (let i = 0; i < 30; i += 1) {
-    const tDate = addLocalDays(latestEndedDate, -(29 - i));
+  const evaluateEndedDayPoint = (tDate: Date, index: number): HabitRhythmPoint => {
     const tKey = toLocalDateKey(tDate);
     const wStartDate = addLocalDays(tDate, -6);
     const wStartKey = toLocalDateKey(wStartDate);
@@ -4008,14 +4154,19 @@ export function getHabitRhythmModel(
       value = daysWithPractice;
     }
 
-    points.push({
-      index: i,
+    return {
+      index,
       dateKey: tKey,
       shortDateLabel: formatShortLocalDateKey(tKey),
       windowStartDateKey: wStartKey,
       value,
       ...(nullReason ? { nullReason } : {}),
-    });
+    };
+  };
+
+  for (let i = 0; i < windowDays; i += 1) {
+    const tDate = addLocalDays(latestEndedDate, -(windowDays - 1 - i));
+    points.push(evaluateEndedDayPoint(tDate, i));
   }
 
   // Split points into contiguous non-null segments (never bridge across null!)
@@ -4037,6 +4188,19 @@ export function getHabitRhythmModel(
   const validPointCount = validPoints.length;
   const hasChartData = validPointCount > 0;
   const latestValidPoint = validPointCount > 0 ? validPoints[validPointCount - 1] : null;
+
+  // Canonical 30-day coverage check so switching 14 / 30 / 90 NEVER alters habit status!
+  let canonicalHasComplete7DayCoverage = hasChartData;
+  if (windowDays !== 30) {
+    canonicalHasComplete7DayCoverage = false;
+    for (let i = 0; i < 30; i += 1) {
+      const tDate = addLocalDays(latestEndedDate, -(29 - i));
+      if (evaluateEndedDayPoint(tDate, i).value !== null) {
+        canonicalHasComplete7DayCoverage = true;
+        break;
+      }
+    }
+  }
 
   const firstValidIdx = points.findIndex((p) => p.value !== null);
   const hasCoverageGap =
@@ -4151,7 +4315,7 @@ export function getHabitRhythmModel(
   } else if (isFindingWayBack) {
     statusCode = 'finding_way_back';
     statusLabel = 'Finding your way back';
-  } else if (distinctPracticeDates.length === 1 || validPointCount === 0) {
+  } else if (distinctPracticeDates.length === 1 || !canonicalHasComplete7DayCoverage) {
     statusCode = 'beginning';
     statusLabel = 'A beginning';
   } else if (needsRoom) {
@@ -4208,7 +4372,7 @@ export function getHabitRhythmModel(
   const firstPointLabel = points[0]?.shortDateLabel ?? '';
   const accessibleChartSummary = !hasChartData
     ? `${habitLabel}: ${statusLabel}. ${numericSummary}`
-    : `${habitLabel}: ${statusLabel}. Rolling 7-day days with movement from ${firstPointLabel} through ${
+    : `${habitLabel}: ${statusLabel}. Rolling 7-day days with movement (${windowDays}-day view) from ${firstPointLabel} through ${
         latestValidPoint?.shortDateLabel ?? latestEndedShortLabel
       }. Latest value: ${latestValidPoint?.value ?? 0} of 7 days.${
         hasCoverageGap ? ' Contains coverage gaps shown as breaks in the line.' : ''
@@ -4219,6 +4383,8 @@ export function getHabitRhythmModel(
     habitLabel,
     habitVersion,
     configFingerprint,
+    windowDays,
+    requiredCoverageDays,
     statusCode,
     statusLabel,
     hasQueryFailure: hasFailedLoadInWindow,
@@ -4247,5 +4413,1931 @@ export function getHabitRhythmModel(
     accessibleChartSummary,
   };
 }
+
+// ============================================================================
+// STAGE 5: YOUR JOURNEY DETAIL SELECTORS & SHARED EXPERIMENT ENGINE
+// ============================================================================
+
+export type JourneyDayStripStatus =
+  | 'practice'
+  | 'rest'
+  | 'paused'
+  | 'unrecorded'
+  | 'unknown';
+
+export interface JourneyPointSourceRecord {
+  id: string;
+  dateKey: string;
+  shortDateLabel: string;
+  title: string;
+  sourceLabel: string;
+  actionTier?: ActionTier;
+  actionVersion?: string;
+  kind: 'practice' | 'rest' | 'pause';
+}
+
+export interface JourneyDayStripItem {
+  dateKey: string;
+  weekdayShort: string;
+  dayNum: number;
+  shortDateLabel: string;
+  status: JourneyDayStripStatus;
+  accessibleLabel: string;
+  sourceRecords: JourneyPointSourceRecord[];
+}
+
+export interface HabitJourneyPointDetail {
+  asOfDateKey: string;
+  asOfShortLabel: string;
+  windowStartDateKey: string;
+  windowStartShortLabel: string;
+  windowRangeLabel: string;
+  /** Distinct practice days in [asOf - 6, asOf]; null when any day lacks known coverage */
+  distinctPracticeDayCount: number | null;
+  hasCoverageGap: boolean;
+  coverageGapDates: string[];
+  gapExplanation: string | null;
+  days: JourneyDayStripItem[];
+  windowSourceRecords: JourneyPointSourceRecord[];
+}
+
+const SHORT_WEEKDAYS_SUN0 = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+function formatShortDateRange(startKey: string, endKey: string): string {
+  const s = parseLocalDateKey(startKey);
+  const e = parseLocalDateKey(endKey);
+  if (!s || !e) return `${startKey}–${endKey}`;
+  if (s.getFullYear() !== e.getFullYear()) {
+    return `${PLAN_SHORT_MONTHS[s.getMonth()]} ${s.getDate()}, ${s.getFullYear()}–${PLAN_SHORT_MONTHS[e.getMonth()]} ${e.getDate()}, ${e.getFullYear()}`;
+  }
+  if (s.getMonth() === e.getMonth()) {
+    return `${PLAN_SHORT_MONTHS[s.getMonth()]} ${s.getDate()}–${e.getDate()}`;
+  }
+  return `${PLAN_SHORT_MONTHS[s.getMonth()]} ${s.getDate()}–${PLAN_SHORT_MONTHS[e.getMonth()]} ${e.getDate()}`;
+}
+
+function isDateInsideExplicitPause(
+  store: PlanFoundationStore,
+  habitId: string,
+  dateKey: string
+): boolean {
+  const events = store.lifecycleEvents
+    .filter(
+      (e) =>
+        (e.type === 'pause' || e.type === 'resume') &&
+        e.dateKey <= dateKey &&
+        (!e.habitId || e.habitId === habitId)
+    )
+    .sort((a, b) => {
+      if (a.dateKey !== b.dateKey) return a.dateKey.localeCompare(b.dateKey);
+      return a.occurredAt.localeCompare(b.occurredAt);
+    });
+  if (events.length === 0) return false;
+  return events[events.length - 1].type === 'pause';
+}
+
+function resolvePracticeRecordLabel(
+  store: PlanFoundationStore,
+  rec: HabitPracticeRecord
+): { title: string; sourceLabel: string } {
+  if (rec.sourceType === 'task_completion') {
+    const task = store.taskCompletions.find(
+      (t) => t.id === rec.sourceRecordId || t.logicalTaskId === rec.sourceLogicalTaskId
+    );
+    return {
+      title: task?.title ?? 'Today task',
+      sourceLabel: rec.actionTier === 'minimum' ? 'Today · minimum' : 'Today task',
+    };
+  }
+  if (rec.sourceType === 'exercise_session') {
+    const sess = store.exerciseSessions.find((s) => s.id === rec.sourceRecordId);
+    const src =
+      sess?.source === 'external_import'
+        ? 'Imported workout'
+        : sess?.source === 'manual'
+        ? 'Manual log'
+        : 'Exercise log';
+    return {
+      title: sess?.title ?? 'Logged workout',
+      sourceLabel: rec.actionTier === 'minimum' ? `${src} · minimum` : src,
+    };
+  }
+  return {
+    title: 'Habit practice',
+    sourceLabel: rec.actionTier === 'minimum' ? 'Manual log · minimum' : 'Manual log',
+  };
+}
+
+/**
+ * Returns fixed-panel point details & the 7-day date status strip for any ended day `asOfDateKey`.
+ * Strictly shares the same deduplication & coverage logic as getHabitRhythmModel.
+ */
+export function getHabitJourneyPointDetail(
+  store: PlanFoundationStore,
+  habitId: string,
+  asOfDateKey: string
+): HabitJourneyPointDetail {
+  const cleanHabitId = habitId.trim();
+  const asOfDate = parseLocalDateKey(asOfDateKey) ?? addLocalDays(new Date(), -1);
+  const canonicalAsOf = toLocalDateKey(asOfDate);
+  const windowStartDate = addLocalDays(asOfDate, -6);
+  const windowStartDateKey = toLocalDateKey(windowStartDate);
+
+  const habitRecords = store.habitPractices.filter(
+    (hp) =>
+      hp.habitId === cleanHabitId &&
+      hp.dateKey >= windowStartDateKey &&
+      hp.dateKey <= canonicalAsOf
+  );
+
+  const restDates = new Set(
+    store.lifecycleEvents
+      .filter(
+        (e) =>
+          e.type === 'rest' &&
+          e.dateKey >= windowStartDateKey &&
+          e.dateKey <= canonicalAsOf &&
+          (!e.habitId || e.habitId === cleanHabitId)
+      )
+      .map((e) => e.dateKey)
+  );
+
+  const days: JourneyDayStripItem[] = [];
+  const coverageGapDates: string[] = [];
+  const windowSourceRecords: JourneyPointSourceRecord[] = [];
+  let practiceDaysCount = 0;
+
+  for (let dOff = 0; dOff < 7; dOff += 1) {
+    const dt = addLocalDays(windowStartDate, dOff);
+    const dk = toLocalDateKey(dt);
+    const shortLbl = formatShortLocalDateKey(dk);
+    const weekdayShort = SHORT_WEEKDAYS_SUN0[dt.getDay()];
+    const dayPractices = habitRecords.filter((hp) => hp.dateKey === dk);
+    const covStatus = getHabitDayCoverageStatus(store.coverage, dk);
+    const isRest = restDates.has(dk);
+    const isPaused = isDateInsideExplicitPause(store, cleanHabitId, dk);
+
+    const daySources: JourneyPointSourceRecord[] = dayPractices.map((hp) => {
+      const resolved = resolvePracticeRecordLabel(store, hp);
+      return {
+        id: hp.id,
+        dateKey: dk,
+        shortDateLabel: shortLbl,
+        title: resolved.title,
+        sourceLabel: resolved.sourceLabel,
+        actionTier: hp.actionTier,
+        actionVersion: hp.actionVersion,
+        kind: 'practice',
+      };
+    });
+
+    if (dayPractices.length > 0) {
+      windowSourceRecords.push(...daySources);
+    }
+
+    if (covStatus !== 'covered') {
+      coverageGapDates.push(shortLbl);
+    }
+
+    let status: JourneyDayStripStatus;
+    let statusWords: string;
+    if (dayPractices.length > 0) {
+      status = 'practice';
+      statusWords = 'Practice recorded';
+      practiceDaysCount += 1;
+    } else if (isRest) {
+      status = 'rest';
+      statusWords = 'Intentional rest';
+      daySources.push({
+        id: `rest::${dk}`,
+        dateKey: dk,
+        shortDateLabel: shortLbl,
+        title: 'Intentional rest',
+        sourceLabel: 'Rest day',
+        kind: 'rest',
+      });
+    } else if (isPaused) {
+      status = 'paused';
+      statusWords = 'Paused';
+    } else if (covStatus !== 'covered') {
+      status = 'unknown';
+      statusWords = 'Coverage unknown';
+    } else {
+      status = 'unrecorded';
+      statusWords = 'Unrecorded';
+    }
+
+    days.push({
+      dateKey: dk,
+      weekdayShort,
+      dayNum: dt.getDate(),
+      shortDateLabel: shortLbl,
+      status,
+      accessibleLabel: `${weekdayShort} ${shortLbl}: ${statusWords}`,
+      sourceRecords: daySources,
+    });
+  }
+
+  const hasCoverageGap = coverageGapDates.length > 0;
+  const distinctPracticeDayCount = hasCoverageGap ? null : practiceDaysCount;
+  const gapExplanation = hasCoverageGap
+    ? coverageGapDates.length === 7
+      ? 'Full 7-day coverage is not available for this window, so no rolling value is plotted.'
+      : `Coverage is unknown on ${coverageGapDates.join(', ')}. Because a rolling 7-day point needs all 7 days covered, this point stays blank instead of filling zero.`
+    : null;
+
+  return {
+    asOfDateKey: canonicalAsOf,
+    asOfShortLabel: formatShortLocalDateKey(canonicalAsOf),
+    windowStartDateKey,
+    windowStartShortLabel: formatShortLocalDateKey(windowStartDateKey),
+    windowRangeLabel: formatShortDateRange(windowStartDateKey, canonicalAsOf),
+    distinctPracticeDayCount,
+    hasCoverageGap,
+    coverageGapDates,
+    gapExplanation,
+    days,
+    windowSourceRecords,
+  };
+}
+
+export interface HabitStatusExplanation {
+  statusCode: HabitRhythmStatusCode;
+  statusLabel: HabitRhythmModel['statusLabel'];
+  ruleSummary: string;
+  triggerRecords: string[];
+  selfReportSummary: string[];
+  missingInformation: string[];
+  isHiddenByUser: boolean;
+}
+
+/**
+ * Pure, strictly factual explanation for "Why this view?".
+ * Never uses vague AI language; exposes exact trigger records, self-report dates, rules, and missing data.
+ */
+export function getHabitStatusExplanation(
+  store: PlanFoundationStore,
+  model: HabitRhythmModel
+): HabitStatusExplanation {
+  const triggerRecords: string[] = [];
+  const selfReportSummary: string[] = [];
+  const missingInformation: string[] = [];
+
+  if (store.coverage.trackingStartDateKey && store.coverage.trackingStartSource !== 'unknown') {
+    triggerRecords.push(
+      `History coverage starts ${formatShortLocalDateKey(store.coverage.trackingStartDateKey)}.`
+    );
+  } else {
+    missingInformation.push('No confirmed tracking start date yet (earlier days are treated as unknown coverage).');
+  }
+
+  if (model.distinctPracticeDates.length > 0) {
+    const recent = model.formattedPracticeDates.slice(-4).join(', ');
+    triggerRecords.push(
+      `${model.distinctPracticeDates.length} distinct practice ${
+        model.distinctPracticeDates.length === 1 ? 'day' : 'days'
+      } linked to ${model.habitLabel} (latest: ${recent}).`
+    );
+  } else {
+    triggerRecords.push(`0 practice records linked to ${model.habitLabel} so far.`);
+  }
+
+  if (model.pausedOnDateKey) {
+    triggerRecords.push(`Explicitly paused on ${formatShortLocalDateKey(model.pausedOnDateKey)}.`);
+  }
+  if (model.resumedOnDateKey) {
+    triggerRecords.push(`Explicitly resumed on ${formatShortLocalDateKey(model.resumedOnDateKey)}.`);
+  }
+
+  const checkIns = (store.habitCheckIns ?? [])
+    .filter(
+      (c) =>
+        c.habitId === model.habitId &&
+        c.habitVersion === model.habitVersion &&
+        c.configFingerprint === model.configFingerprint
+    )
+    .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+
+  if (checkIns.length > 0) {
+    for (const ci of checkIns.slice(-3)) {
+      const feelingLabel =
+        ci.frictionLevel === 'hard_to_start'
+          ? 'Hard to start'
+          : ci.frictionLevel === 'manageable'
+          ? 'Manageable'
+          : ci.frictionLevel === 'easier'
+          ? 'Feels easier'
+          : ci.isReturnReview
+          ? 'Return review completed'
+          : ci.requestedAdjustment
+          ? 'Asked to adjust'
+          : 'Check-in recorded';
+      selfReportSummary.push(`${formatShortLocalDateKey(ci.dateKey)}: ${feelingLabel} (${ci.habitVersion}).`);
+    }
+  } else {
+    missingInformation.push(`No self-report check-ins recorded yet for setup ${model.habitVersion}.`);
+  }
+
+  if (model.hasCoverageGap) {
+    const nullCount = model.points.filter((p) => p.value === null).length;
+    missingInformation.push(
+      `${nullCount} ended ${nullCount === 1 ? 'day' : 'days'} in this ${model.windowDays}-day view lack full 7-day coverage.`
+    );
+  }
+  if (!model.hasChartData) {
+    missingInformation.push('Fewer than 7 consecutive covered ended days are available for a rolling 7-day point.');
+  }
+
+  const ruleMap: Record<HabitRhythmStatusCode, string> = {
+    unavailable: 'Shown when recent practice records cannot be loaded cleanly.',
+    paused: 'Shown whenever you explicitly paused this habit and have not resumed yet.',
+    ready: 'Shown when this habit is confirmed and has 0 linked practice days so far.',
+    finding_way_back:
+      'Shown after you explicitly resumed and practiced again, until your return check-in is complete.',
+    beginning:
+      'Shown when there is only 1 recorded practice day or fewer than 7 full covered days.',
+    make_room:
+      'Shown when you noted starting felt hard on your current setup or requested an adjustment.',
+    finding_rhythm:
+      'Shown when you have at least 2 recorded practice days and complete 7-day coverage, without an active pause or friction flag.',
+  };
+
+  const hiddenRec = store.hiddenStatusConclusions?.[model.habitId];
+  const isHiddenByUser = Boolean(
+    hiddenRec &&
+      hiddenRec.statusCode === model.statusCode &&
+      hiddenRec.habitVersion === model.habitVersion
+  );
+
+  return {
+    statusCode: model.statusCode,
+    statusLabel: model.statusLabel,
+    ruleSummary: ruleMap[model.statusCode],
+    triggerRecords,
+    selfReportSummary,
+    missingInformation,
+    isHiddenByUser,
+  };
+}
+
+export function hideHabitStatusConclusion(
+  store: PlanFoundationStore,
+  habitId: string,
+  statusCode: HabitRhythmStatusCode,
+  habitVersion: string,
+  timestamp: string = new Date().toISOString()
+): PlanFoundationStore {
+  return {
+    ...store,
+    hiddenStatusConclusions: {
+      ...(store.hiddenStatusConclusions ?? {}),
+      [habitId]: {
+        habitId,
+        statusCode,
+        habitVersion,
+        hiddenAt: timestamp,
+      },
+    },
+  };
+}
+
+export function clearHiddenHabitStatusConclusion(
+  store: PlanFoundationStore,
+  habitId: string
+): PlanFoundationStore {
+  const prev = { ...(store.hiddenStatusConclusions ?? {}) };
+  delete prev[habitId];
+  return {
+    ...store,
+    hiddenStatusConclusions: prev,
+  };
+}
+
+export function recordSharedSuggestionDecision(
+  store: PlanFoundationStore,
+  input: {
+    suggestionId: string;
+    status: 'accepted' | 'dismissed';
+    habitId?: string;
+    source: 'journey' | 'weekly_review';
+    summary?: string;
+    timestamp?: string;
+  }
+): PlanFoundationStore {
+  const decidedAt = input.timestamp ?? new Date().toISOString();
+  return {
+    ...store,
+    sharedSuggestionDecisions: {
+      ...(store.sharedSuggestionDecisions ?? {}),
+      [input.suggestionId]: {
+        suggestionId: input.suggestionId,
+        status: input.status,
+        decidedAt,
+        ...(input.habitId ? { habitId: input.habitId } : {}),
+        source: input.source,
+        ...(input.summary ? { summary: input.summary } : {}),
+      },
+    },
+  };
+}
+
+export type JourneyTimelineEventKind =
+  | 'began_again'
+  | 'first_small_step'
+  | 'made_it_smaller'
+  | 'found_another_way'
+  | 'took_a_pause'
+  | 'came_back'
+  | 'starting_felt_easier'
+  | 'chose_to_keep_rhythm';
+
+export interface JourneyTimelineEvent {
+  id: string;
+  kind: JourneyTimelineEventKind;
+  title: string;
+  dateKey: string;
+  shortDateLabel: string;
+  occurredAt: string;
+  sourceLabel: string;
+  versionLabel: string;
+  detail: string;
+  /** Distinguishes "Set up" vs "Practiced" on Found another way */
+  statusTag?: 'Set up' | 'Practiced';
+  /** True when event reflects a backfilled or edited record */
+  wasUpdatedAfterEdit?: boolean;
+}
+
+/**
+ * Derives ONLY real, verified journey milestones for a single confirmed habit.
+ * Never uses install dates, consecutive unrecorded days, menu options without practice, or fabricated 7/21-day graduations.
+ */
+export function getHabitJourneyTimeline(
+  store: PlanFoundationStore,
+  habitId: string,
+  referenceDate: Date = new Date()
+): JourneyTimelineEvent[] {
+  const cleanHabitId = habitId.trim();
+  const todayKey = toLocalDateKey(referenceDate);
+  const strategy = getConfirmedHabits(store).find((s) => s.habitId === cleanHabitId);
+  const events: JourneyTimelineEvent[] = [];
+
+  // 1. Began again: ONLY from explicitly confirmed user phase commitment (never install date)
+  if (store.commitment && store.commitment.status !== 'draft' && store.commitment.source === 'user') {
+    const cIso = store.commitment.createdAt || store.commitment.updatedAt;
+    const cDate = cIso ? toLocalDateKey(new Date(cIso)) : null;
+    if (cDate && cDate <= todayKey) {
+      events.push({
+        id: `jt::began::${store.commitment.id}`,
+        kind: 'began_again',
+        title: 'Began again',
+        dateKey: cDate,
+        shortDateLabel: formatShortLocalDateKey(cDate),
+        occurredAt: cIso,
+        sourceLabel: 'Confirmed focus',
+        versionLabel: `v${store.commitment.version}`,
+        detail: store.commitment.summary || strategy?.label || 'Confirmed your phase commitment.',
+      });
+    }
+  }
+
+  // Gather valid habit practices sorted chronologically
+  const habitPractices = store.habitPractices
+    .filter((hp) => hp.habitId === cleanHabitId && hp.dateKey <= todayKey)
+    .sort((a, b) => {
+      if (a.dateKey !== b.dateKey) return a.dateKey.localeCompare(b.dateKey);
+      return a.occurredAt.localeCompare(b.occurredAt);
+    });
+
+  // 2. First small step: chronologically earliest valid linked practice
+  if (habitPractices.length > 0) {
+    const first = habitPractices[0];
+    const resolved = resolvePracticeRecordLabel(store, first);
+    const occurredDay = first.occurredAt ? toLocalDateKey(new Date(first.occurredAt)) : first.dateKey;
+    const wasBackfilled = occurredDay > first.dateKey;
+    events.push({
+      id: `jt::first-step::${first.id}`,
+      kind: 'first_small_step',
+      title: 'First small step',
+      dateKey: first.dateKey,
+      shortDateLabel: formatShortLocalDateKey(first.dateKey),
+      occurredAt: first.occurredAt,
+      sourceLabel: resolved.sourceLabel,
+      versionLabel: first.actionVersion || 'v1',
+      detail: resolved.title,
+      wasUpdatedAfterEdit: Boolean(first.wasEdited) || wasBackfilled,
+    });
+  }
+
+  // 3. Explicit lifecycle events: Pause, Resume (Came back), Made it smaller, Found another way (Set up), Chose to keep this rhythm
+  const scopedLifecycle = store.lifecycleEvents
+    .filter((e) => e.dateKey <= todayKey && (!e.habitId || e.habitId === cleanHabitId))
+    .sort((a, b) => {
+      if (a.dateKey !== b.dateKey) return a.dateKey.localeCompare(b.dateKey);
+      return a.occurredAt.localeCompare(b.occurredAt);
+    });
+
+  for (const ev of scopedLifecycle) {
+    if (ev.type === 'pause') {
+      events.push({
+        id: `jt::pause::${ev.id}`,
+        kind: 'took_a_pause',
+        title: 'Took a pause',
+        dateKey: ev.dateKey,
+        shortDateLabel: formatShortLocalDateKey(ev.dateKey),
+        occurredAt: ev.occurredAt,
+        sourceLabel: ev.source === 'chat' ? 'Chat' : 'Plan',
+        versionLabel: strategy?.version ?? 'v1',
+        detail: ev.note || 'Paused this habit intentionally.',
+      });
+    } else if (ev.type === 'resume') {
+      const nextPractice = habitPractices.find(
+        (hp) => hp.dateKey > ev.dateKey || (hp.dateKey === ev.dateKey && hp.occurredAt >= ev.occurredAt)
+      );
+      events.push({
+        id: `jt::resume::${ev.id}`,
+        kind: 'came_back',
+        title: 'Came back',
+        dateKey: ev.dateKey,
+        shortDateLabel: formatShortLocalDateKey(ev.dateKey),
+        occurredAt: ev.occurredAt,
+        sourceLabel: ev.source === 'chat' ? 'Chat' : 'Plan',
+        versionLabel: strategy?.version ?? 'v1',
+        detail: nextPractice
+          ? `Resumed on ${formatShortLocalDateKey(ev.dateKey)} · practiced on ${formatShortLocalDateKey(nextPractice.dateKey)}.`
+          : 'Resumed this habit.',
+      });
+    } else if (ev.type === 'strategy_adjustment') {
+      const adjKind = typeof ev.payload?.adjustmentKind === 'string' ? ev.payload.adjustmentKind : '';
+      const toVer = typeof ev.payload?.toVersion === 'string' ? ev.payload.toVersion : strategy?.version ?? 'v1';
+      if (adjKind === 'made_smaller') {
+        events.push({
+          id: `jt::smaller::${ev.id}`,
+          kind: 'made_it_smaller',
+          title: 'Made it smaller',
+          dateKey: ev.dateKey,
+          shortDateLabel: formatShortLocalDateKey(ev.dateKey),
+          occurredAt: ev.occurredAt,
+          sourceLabel: 'Confirmed adjustment',
+          versionLabel: toVer,
+          detail: ev.note || (typeof ev.payload?.nextRegularAction === 'string' ? ev.payload.nextRegularAction : 'Adjusted action size.'),
+        });
+      } else if (adjKind === 'alternative_added') {
+        events.push({
+          id: `jt::alt-setup::${ev.id}`,
+          kind: 'found_another_way',
+          title: 'Found another way',
+          dateKey: ev.dateKey,
+          shortDateLabel: formatShortLocalDateKey(ev.dateKey),
+          occurredAt: ev.occurredAt,
+          sourceLabel: 'Confirmed option',
+          versionLabel: toVer,
+          statusTag: 'Set up',
+          detail:
+            ev.note ||
+            (typeof ev.payload?.nextAlternativeAction === 'string'
+              ? ev.payload.nextAlternativeAction
+              : 'Added an alternative way to practice.'),
+        });
+      } else if (adjKind === 'kept_rhythm') {
+        events.push({
+          id: `jt::kept::${ev.id}`,
+          kind: 'chose_to_keep_rhythm',
+          title: 'Chose to keep this rhythm',
+          dateKey: ev.dateKey,
+          shortDateLabel: formatShortLocalDateKey(ev.dateKey),
+          occurredAt: ev.occurredAt,
+          sourceLabel: 'Confirmed choice',
+          versionLabel: toVer,
+          detail: ev.note || 'Kept your current setup without adding load.',
+        });
+      }
+    }
+  }
+
+  // 4. Found another way (Practiced): ONLY when a real alternative / Plan B replacement or minimum action was actually practiced!
+  const practicedAlt = habitPractices.find((hp) => {
+    if (hp.actionTier === 'minimum') return true;
+    const task = store.taskCompletions.find(
+      (t) => t.id === hp.sourceRecordId || t.logicalTaskId === hp.sourceLogicalTaskId
+    );
+    return Boolean(task && task.replacedFromPlanIds.length > 0);
+  });
+  if (practicedAlt) {
+    const resolved = resolvePracticeRecordLabel(store, practicedAlt);
+    const occurredDay = practicedAlt.occurredAt
+      ? toLocalDateKey(new Date(practicedAlt.occurredAt))
+      : practicedAlt.dateKey;
+    events.push({
+      id: `jt::alt-practiced::${practicedAlt.id}`,
+      kind: 'found_another_way',
+      title: 'Found another way',
+      dateKey: practicedAlt.dateKey,
+      shortDateLabel: formatShortLocalDateKey(practicedAlt.dateKey),
+      occurredAt: practicedAlt.occurredAt,
+      sourceLabel: resolved.sourceLabel,
+      versionLabel: practicedAlt.actionVersion || 'v1',
+      statusTag: 'Practiced',
+      detail: resolved.title,
+      wasUpdatedAfterEdit: Boolean(practicedAlt.wasEdited) || occurredDay > practicedAlt.dateKey,
+    });
+  }
+
+  // 5. Starting felt easier: ONLY when 2 comparable explicit self-reports under SAME (habitId, habitVersion, configFingerprint, questionId) show improvement
+  const checkIns = (store.habitCheckIns ?? []).filter(
+    (c) => c.habitId === cleanHabitId && c.dateKey <= todayKey && c.frictionLevel !== undefined
+  );
+  const grouped = new Map<string, HabitSelfReportCheckIn[]>();
+  for (const ci of checkIns) {
+    const gk = `${ci.habitVersion}||${ci.configFingerprint}||${ci.questionId}`;
+    const arr = grouped.get(gk) ?? [];
+    arr.push(ci);
+    grouped.set(gk, arr);
+  }
+  for (const arr of grouped.values()) {
+    arr.sort((a, b) =>
+      a.dateKey !== b.dateKey
+        ? a.dateKey.localeCompare(b.dateKey)
+        : a.recordedAt.localeCompare(b.recordedAt)
+    );
+    if (arr.length < 2) continue;
+    const latest = arr[arr.length - 1];
+    if (!latest.frictionLevel || latest.frictionLevel === 'hard_to_start') continue;
+    const latestRank = FRICTION_RANK[latest.frictionLevel];
+    const earlier = arr
+      .slice(0, -1)
+      .find((c) => c.frictionLevel !== undefined && FRICTION_RANK[c.frictionLevel] < latestRank);
+    if (earlier) {
+      events.push({
+        id: `jt::easier::${latest.id}`,
+        kind: 'starting_felt_easier',
+        title: 'Starting felt easier',
+        dateKey: latest.dateKey,
+        shortDateLabel: formatShortLocalDateKey(latest.dateKey),
+        occurredAt: latest.recordedAt,
+        sourceLabel: 'Self-report check-in',
+        versionLabel: latest.habitVersion,
+        detail: `Compared with ${formatShortLocalDateKey(earlier.dateKey)} on the same setup (${latest.habitVersion}).`,
+      });
+    }
+  }
+
+  // Sort newest-first
+  return events.sort((a, b) => {
+    if (a.dateKey !== b.dateKey) return b.dateKey.localeCompare(a.dateKey);
+    return b.occurredAt.localeCompare(a.occurredAt);
+  });
+}
+
+export type JourneyNextStepKind =
+  | 'weekly_review_shared'
+  | 'keep_rhythm'
+  | 'make_smaller'
+  | 'shift_cue'
+  | 'add_alternative'
+  | 'pause'
+  | 'resume';
+
+export interface JourneyNextStepExperiment {
+  /** Shared identity across Your journey and Weekly review */
+  suggestionId: string;
+  kind: JourneyNextStepKind;
+  title: string;
+  basis: string;
+  beforeLabel: string;
+  afterLabel: string;
+  /** Editable suggested value when changing regularAction / cueTiming / alternativeAction */
+  suggestedFieldValue?: string;
+  primaryCtaLabel: string;
+  secondaryCtaLabel: string;
+  /** True if this exact suggestion was already accepted or dismissed */
+  decisionStatus: 'pending' | 'accepted' | 'dismissed';
+}
+
+/**
+ * Returns AT MOST ONE evidence-backed optional next step for Your journey.
+ * - Shares suggestion identity & decision status with Weekly review (zero conflicting advice).
+ * - Returns null when no concrete evidence exists (never fabricates reasons).
+ * - "Keep this rhythm" is treated as a first-class valid option; never defaults to raising volume.
+ */
+export function getHabitJourneyNextStep(
+  store: PlanFoundationStore,
+  strategy: ConfirmedActionStrategy,
+  model: HabitRhythmModel,
+  options?: {
+    sharedWeeklyProposal?: {
+      id: string;
+      resolutionKey: string;
+      headline: string;
+      reason: string;
+      previousValue: string | number;
+      nextValue: string | number;
+      changeLabel: string;
+    } | null;
+    sharedWeeklyExperiment?: JourneyNextStepExperiment | null;
+    resolvedAdjustmentKeys?: string[];
+  }
+): JourneyNextStepExperiment | null {
+  if (model.statusCode === 'unavailable') return null;
+
+  const decisions = store.sharedSuggestionDecisions ?? {};
+  const resolvedSet = new Set(options?.resolvedAdjustmentKeys ?? []);
+
+  const getStatus = (id: string, altKey?: string): 'pending' | 'accepted' | 'dismissed' => {
+    const rec = decisions[id] ?? (altKey ? decisions[altKey] : undefined);
+    if (rec) return rec.status;
+    if (resolvedSet.has(id) || (altKey && resolvedSet.has(altKey))) return 'accepted';
+    return 'pending';
+  };
+
+  // 0. If Weekly review produced an active concrete suggestion (pending or accepted), share that exact identity!
+  if (options?.sharedWeeklyExperiment && options.sharedWeeklyExperiment.decisionStatus !== 'dismissed') {
+    const exp = options.sharedWeeklyExperiment;
+    const status = getStatus(exp.suggestionId);
+    if (status !== 'dismissed') {
+      return {
+        ...exp,
+        decisionStatus: status,
+      };
+    }
+  }
+
+  // 1. If legacy Weekly review schedule proposal exists, share that exact suggestion!
+  if (options?.sharedWeeklyProposal) {
+    const p = options.sharedWeeklyProposal;
+    const status = getStatus(p.id, p.resolutionKey);
+    if (status !== 'dismissed') {
+      return {
+        suggestionId: p.id,
+        kind: 'weekly_review_shared',
+        title: p.headline,
+        basis: p.reason,
+        beforeLabel: String(p.previousValue),
+        afterLabel: String(p.nextValue),
+        primaryCtaLabel: 'Review adjustment',
+        secondaryCtaLabel: 'Not for me',
+        decisionStatus: status,
+      };
+    }
+  }
+
+  // 2. Explicitly paused -> optional Resume when ready
+  if (model.statusCode === 'paused') {
+    const id = `journey::resume::${strategy.habitId}::${model.pausedOnDateKey ?? 'current'}`;
+    const status = getStatus(id);
+    if (status === 'dismissed') return null;
+    return {
+      suggestionId: id,
+      kind: 'resume',
+      title: 'Resume when ready',
+      basis: model.pausedOnDateKey
+        ? `You paused on ${formatShortLocalDateKey(model.pausedOnDateKey)}. Resume only when it feels right.`
+        : 'This habit is currently paused.',
+      beforeLabel: 'Status: Paused',
+      afterLabel: `Status: Active (${strategy.regularAction})`,
+      primaryCtaLabel: 'Review resume',
+      secondaryCtaLabel: 'Not for me',
+      decisionStatus: status,
+    };
+  }
+
+  // 3. Make room (explicit Hard to start or adjustment request) -> Make the action smaller
+  if (model.statusCode === 'make_room') {
+    const id = `journey::smaller::${strategy.habitId}::${strategy.version}`;
+    const status = getStatus(id);
+    if (status === 'dismissed') return null;
+    const smallerDefault = strategy.minimumAction
+      ? strategy.minimumAction
+      : `5-min ${strategy.label.toLowerCase()}`;
+    return {
+      suggestionId: id,
+      kind: 'make_smaller',
+      title: 'Make the action smaller',
+      basis:
+        model.factualBasis ?? 'You noted starting felt hard on your current setup.',
+      beforeLabel: strategy.regularAction,
+      afterLabel: smallerDefault,
+      suggestedFieldValue: smallerDefault,
+      primaryCtaLabel: 'Review smaller version',
+      secondaryCtaLabel: 'Not for me',
+      decisionStatus: status,
+    };
+  }
+
+  // 4. Finding a rhythm without an alternative way yet -> offer Add another way OR Keep this rhythm
+  if (model.statusCode === 'finding_rhythm') {
+    if (!strategy.alternativeAction && model.latestValidPoint && (model.latestValidPoint.value ?? 0) <= 3) {
+      const id = `journey::alternative::${strategy.habitId}::${strategy.version}`;
+      const status = getStatus(id);
+      if (status !== 'dismissed') {
+        const defaultAlt = strategy.minimumAction || '5 min indoor stretch or short loop';
+        return {
+          suggestionId: id,
+          kind: 'add_alternative',
+          title: 'Add a backup way',
+          basis: `You recorded ${model.latestValidPoint.value} ${
+            model.latestValidPoint.value === 1 ? 'day' : 'days'
+          } in the 7 days through ${model.latestValidPoint.shortDateLabel}. A low-friction backup can help on tighter days.`,
+          beforeLabel: 'No backup option set',
+          afterLabel: defaultAlt,
+          suggestedFieldValue: defaultAlt,
+          primaryCtaLabel: 'Review backup option',
+          secondaryCtaLabel: 'Not for me',
+          decisionStatus: status,
+        };
+      }
+    }
+
+    // Keep this rhythm is a first-class valid option — never defaults to adding volume
+    const keepId = `journey::keep::${strategy.habitId}::${strategy.version}`;
+    const keepStatus = getStatus(keepId);
+    if (keepStatus === 'dismissed') return null;
+    return {
+      suggestionId: keepId,
+      kind: 'keep_rhythm',
+      title: 'Keep this rhythm',
+      basis: model.numericSummary,
+      beforeLabel: `${strategy.regularAction} (${strategy.version})`,
+      afterLabel: 'Keep current setup as is — no extra volume added',
+      primaryCtaLabel: 'Keep this rhythm',
+      secondaryCtaLabel: 'Not for me',
+      decisionStatus: keepStatus,
+    };
+  }
+
+  // 5. Finding your way back -> Keep this rhythm gently
+  if (model.statusCode === 'finding_way_back') {
+    const keepId = `journey::keep-return::${strategy.habitId}::${model.resumedOnDateKey ?? strategy.version}`;
+    const keepStatus = getStatus(keepId);
+    if (keepStatus === 'dismissed') return null;
+    return {
+      suggestionId: keepId,
+      kind: 'keep_rhythm',
+      title: 'Keep this rhythm',
+      basis: model.resumedOnDateKey
+        ? `You resumed on ${formatShortLocalDateKey(model.resumedOnDateKey)} and already stepped back in.`
+        : 'You recently resumed this habit.',
+      beforeLabel: strategy.regularAction,
+      afterLabel: 'Stay with this gentle pace while settling back in',
+      primaryCtaLabel: 'Keep this rhythm',
+      secondaryCtaLabel: 'Not for me',
+      decisionStatus: keepStatus,
+    };
+  }
+
+  // Ready / Beginning without explicit friction: no fabricated experiment!
+  return null;
+}
+
+// ============================================================================
+// STAGE 6: WEEKLY REVIEW MODEL & SHARED SUGGESTION ENGINE
+// ============================================================================
+
+export const WEEKLY_REVIEW_FIT_QUESTION_ID = DEFAULT_WEEKLY_REVIEW_QUESTION_ID;
+export const WEEKLY_REVIEW_HARD_FOLLOWUP_QUESTION_ID = 'weekly_hard_followup';
+export const WEEKLY_REVIEW_SELF_REPORT_QUESTION_ID = 'weekly_self_report';
+
+export type WeeklyReviewFitAnswer =
+  | 'hard_to_fit_in'
+  | 'about_right'
+  | 'room_for_more';
+
+export type WeeklyHardFollowUpAnswer =
+  | 'too_long'
+  | 'timing_off'
+  | 'need_backup'
+  | 'busy_week';
+
+export interface WeeklyReviewSelfReportState {
+  status: 'none' | 'note' | 'skipped';
+  note: string;
+  source: 'user_self_report';
+  updatedAt: string | null;
+}
+
+export interface WeeklyReviewModel {
+  hasReviewableWeek: boolean;
+  weekStartKey: string;
+  weekEndKey: string;
+  rangeLabel: string;
+  /** Strictly evidence-backed single-sentence fact for the reviewed completed week */
+  factLine: string;
+  movementDaysCount: number;
+  doneTaskCount: number;
+  restDaysCount: number;
+  hasMovementRecords: boolean;
+  isCoverageKnown: boolean;
+  /** Saved answer to "How did movement fit into your week?" */
+  fitAnswer: WeeklyReviewFitAnswer | null;
+  fitAnswerLabel: string | null;
+  fitSavedAt: string | null;
+  fitUpdatedAt: string | null;
+  fitRecord: WeeklyReviewRecord | null;
+  /** Optional single follow-up when "Hard to fit in" is chosen */
+  followUpAnswer: WeeklyHardFollowUpAnswer | null;
+  followUpLabel: string | null;
+  /** Shared pending or accepted suggestion (exact same identity as Your journey!) */
+  pendingSuggestion: JourneyNextStepExperiment | null;
+  /** Immutable confirmed decisions for this week (preserved even when editing old feedback) */
+  confirmedDecisions: WeeklyReviewDecision[];
+  /** Optional starting-feel answer ("How did starting feel?") reused across Weekly review & Your journey */
+  startingFeelAnswer: HabitStartFrictionLevel | null;
+  startingFeelLabel: string | null;
+  startingFeelSourceLabel: string | null;
+  /** Optional user self-report when there are no movement records in the reviewed week */
+  selfReport: WeeklyReviewSelfReportState;
+}
+
+export function normalizeWeeklyReviewFitAnswer(
+  raw: string | null | undefined
+): WeeklyReviewFitAnswer | null {
+  if (!raw) return null;
+  if (raw === 'hard_to_fit_in' || raw === 'too_much') return 'hard_to_fit_in';
+  if (raw === 'about_right') return 'about_right';
+  if (raw === 'room_for_more' || raw === 'ready_for_more') return 'room_for_more';
+  return null;
+}
+
+export function formatWeeklyReviewFitLabel(answer: WeeklyReviewFitAnswer): string {
+  switch (answer) {
+    case 'hard_to_fit_in':
+      return 'Hard to fit in';
+    case 'about_right':
+      return 'About right';
+    case 'room_for_more':
+      return 'Room for more';
+  }
+}
+
+export function formatWeeklyHardFollowUpLabel(answer: WeeklyHardFollowUpAnswer): string {
+  switch (answer) {
+    case 'too_long':
+      return 'Too long to start';
+    case 'timing_off':
+      return 'Timing didn’t line up';
+    case 'need_backup':
+      return 'Needed a backup option';
+    case 'busy_week':
+      return 'Just a busy week';
+  }
+}
+
+export function formatWeeklyStartingFeelLabel(level: HabitStartFrictionLevel): string {
+  switch (level) {
+    case 'hard_to_start':
+      return 'Hard to start';
+    case 'manageable':
+      return 'Manageable';
+    case 'easier':
+      return 'Felt natural';
+  }
+}
+
+/**
+ * Appends an immutable confirmed decision to a week's WeeklyReviewRecord while keeping
+ * existing decisions intact.
+ */
+export function appendWeeklyReviewDecision(
+  store: PlanFoundationStore,
+  input: {
+    weekStartKey: string;
+    questionId?: string;
+    decision: WeeklyReviewDecision;
+  }
+): PlanFoundationStore {
+  const qId = input.questionId ?? WEEKLY_REVIEW_FIT_QUESTION_ID;
+  const key = makeWeeklyReviewKey(input.weekStartKey, qId);
+  const existing = store.weeklyReviews[key];
+  if (!existing) return store;
+
+  const withoutDup = existing.confirmedDecisions.filter(
+    (d) =>
+      d.id !== input.decision.id &&
+      (!input.decision.suggestionId || d.suggestionId !== input.decision.suggestionId)
+  );
+  const updatedRecord: WeeklyReviewRecord = {
+    ...existing,
+    confirmedDecisions: [...withoutDup, input.decision],
+    updatedAt: input.decision.decidedAt,
+  };
+  return {
+    ...store,
+    weeklyReviews: {
+      ...store.weeklyReviews,
+      [key]: updatedRecord,
+    },
+  };
+}
+
+/**
+ * Computes the complete Weekly review view-model for the most recent COMPLETED local Monday-Sunday week.
+ * - Strictly isolated from the `This week` switcher!
+ * - Reuses PlanFoundationStore weeklyReviews, sharedSuggestionDecisions, and habitCheckIns.
+ */
+export function getWeeklyReviewModel(
+  store: PlanFoundationStore,
+  referenceDate: Date = new Date(),
+  activeHabit: ConfirmedActionStrategy | null = null
+): WeeklyReviewModel {
+  const currentWeek = getLocalWeekBounds(referenceDate);
+  const reviewWeekStart = addLocalDays(currentWeek.weekStart, -7);
+  const reviewBounds = getLocalWeekBounds(reviewWeekStart);
+  const { weekStartKey, weekEndKey } = reviewBounds;
+  const rangeLabel = formatPlanWeekRangeLabel(weekStartKey, referenceDate);
+
+  // Determine whether user has a reviewable completed week yet
+  const trackingStart = store.coverage.trackingStartDateKey;
+  const hasCoverageInOrBeforeReviewWeek = Boolean(
+    trackingStart &&
+      store.coverage.trackingStartSource !== 'unknown' &&
+      trackingStart <= weekEndKey
+  );
+  const hasAnyRecordInOrBeforeReviewWeek =
+    store.taskCompletions.some((t) => t.status === 'done' && t.dateKey <= weekEndKey) ||
+    store.exerciseSessions.some((s) => s.dateKey <= weekEndKey) ||
+    store.habitPractices.some((hp) => hp.dateKey <= weekEndKey) ||
+    store.lifecycleEvents.some((e) => e.dateKey <= weekEndKey) ||
+    Object.values(store.weeklyReviews).some((r) => r.weekStartKey <= weekStartKey);
+
+  const hasReviewableWeek = hasCoverageInOrBeforeReviewWeek || hasAnyRecordInOrBeforeReviewWeek;
+
+  // Factual movement summary for the reviewed completed week
+  const doneRes = getWeekDoneTaskCount(store, weekStartKey);
+  const movementDates = new Set<string>();
+  for (const tc of doneRes.completedTasks) {
+    movementDates.add(tc.dateKey);
+  }
+  for (const es of store.exerciseSessions) {
+    if (isDateKeyInWeek(es.dateKey, weekStartKey, weekEndKey)) {
+      movementDates.add(es.dateKey);
+    }
+  }
+  for (const hp of store.habitPractices) {
+    if (isDateKeyInWeek(hp.dateKey, weekStartKey, weekEndKey)) {
+      movementDates.add(hp.dateKey);
+    }
+  }
+  const restDates = new Set<string>();
+  for (const ev of store.lifecycleEvents) {
+    if (ev.type === 'rest' && isDateKeyInWeek(ev.dateKey, weekStartKey, weekEndKey)) {
+      restDates.add(ev.dateKey);
+    }
+  }
+
+  const movementDaysCount = movementDates.size;
+  const doneTaskCount = doneRes.doneTaskCount;
+  const restDaysCount = restDates.size;
+  const hasMovementRecords = movementDaysCount > 0;
+
+  // Read saved records for this review week
+  const fitRecord = getWeeklyReviewAnswer(store, weekStartKey, WEEKLY_REVIEW_FIT_QUESTION_ID);
+  const fitAnswer = normalizeWeeklyReviewFitAnswer(fitRecord?.rawAnswer ?? fitRecord?.feeling ?? null);
+  const fitAnswerLabel = fitAnswer ? formatWeeklyReviewFitLabel(fitAnswer) : null;
+
+  const followUpRecord = getWeeklyReviewAnswer(
+    store,
+    weekStartKey,
+    WEEKLY_REVIEW_HARD_FOLLOWUP_QUESTION_ID
+  );
+  const rawFollowUp = followUpRecord?.rawAnswer;
+  const followUpAnswer: WeeklyHardFollowUpAnswer | null =
+    rawFollowUp === 'too_long' ||
+    rawFollowUp === 'timing_off' ||
+    rawFollowUp === 'need_backup' ||
+    rawFollowUp === 'busy_week'
+      ? rawFollowUp
+      : null;
+  const followUpLabel = followUpAnswer ? formatWeeklyHardFollowUpLabel(followUpAnswer) : null;
+
+  const selfReportRecord = getWeeklyReviewAnswer(
+    store,
+    weekStartKey,
+    WEEKLY_REVIEW_SELF_REPORT_QUESTION_ID
+  );
+  let selfReport: WeeklyReviewSelfReportState = {
+    status: 'none',
+    note: '',
+    source: 'user_self_report',
+    updatedAt: null,
+  };
+  if (selfReportRecord) {
+    if (selfReportRecord.rawAnswer === '__skipped__') {
+      selfReport = {
+        status: 'skipped',
+        note: '',
+        source: 'user_self_report',
+        updatedAt: selfReportRecord.updatedAt,
+      };
+    } else if (selfReportRecord.rawAnswer.trim()) {
+      selfReport = {
+        status: 'note',
+        note: selfReportRecord.rawAnswer.trim(),
+        source: 'user_self_report',
+        updatedAt: selfReportRecord.updatedAt,
+      };
+    }
+  }
+
+  // Strictly evidence-backed single fact line (never fabricated!)
+  let factLine: string;
+  if (movementDaysCount > 0) {
+    const dayWord = movementDaysCount === 1 ? 'day' : 'days';
+    if (doneTaskCount > 0 && doneTaskCount !== movementDaysCount) {
+      const taskWord = doneTaskCount === 1 ? 'task' : 'tasks';
+      factLine = `${movementDaysCount} ${dayWord} with movement last week (${doneTaskCount} ${taskWord} completed).`;
+    } else {
+      factLine = `${movementDaysCount} ${dayWord} with movement last week.`;
+    }
+  } else if (restDaysCount > 0) {
+    const restWord = restDaysCount === 1 ? 'rest day' : 'rest days';
+    factLine = `No movement logged last week · ${restDaysCount} intentional ${restWord}.`;
+  } else if (selfReport.status === 'note') {
+    factLine = 'No tracked movement last week · your note is saved below.';
+  } else if (hasCoverageInOrBeforeReviewWeek) {
+    factLine = 'No movement recorded last week.';
+  } else {
+    factLine = 'No movement records available for last week.';
+  }
+
+  // Optional starting-feel answer: reuse SAME context from weeklyReviews OR habitCheckIns (Your journey sync!)
+  const startingFeelRecord = getWeeklyReviewAnswer(
+    store,
+    weekStartKey,
+    DEFAULT_HABIT_EASE_QUESTION_ID
+  );
+  let startingFeelAnswer: HabitStartFrictionLevel | null = null;
+  let startingFeelSourceLabel: string | null = null;
+
+  if (
+    startingFeelRecord &&
+    (startingFeelRecord.rawAnswer === 'hard_to_start' ||
+      startingFeelRecord.rawAnswer === 'manageable' ||
+      startingFeelRecord.rawAnswer === 'easier')
+  ) {
+    startingFeelAnswer = startingFeelRecord.rawAnswer;
+    startingFeelSourceLabel = 'Saved in Weekly review';
+  } else if (activeHabit) {
+    const fp = computeHabitConfigFingerprint(activeHabit);
+    const matchingCheckIns = (store.habitCheckIns ?? [])
+      .filter(
+        (c) =>
+          c.habitId === activeHabit.habitId &&
+          c.habitVersion === activeHabit.version &&
+          c.configFingerprint === fp &&
+          c.questionId === DEFAULT_HABIT_EASE_QUESTION_ID &&
+          c.frictionLevel !== undefined
+      )
+      .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+    if (matchingCheckIns.length > 0 && matchingCheckIns[0].frictionLevel) {
+      startingFeelAnswer = matchingCheckIns[0].frictionLevel;
+      startingFeelSourceLabel = `Reused from ${formatShortLocalDateKey(matchingCheckIns[0].dateKey)} (${activeHabit.version})`;
+    }
+  }
+
+  // Shared concrete pending/accepted suggestion (exact same suggestionId & sharedSuggestionDecisions as Your journey!)
+  const versionScope = activeHabit
+    ? `${activeHabit.habitId}::${activeHabit.version}`
+    : `commitment::v${store.commitment?.version ?? 1}`;
+  const decisions = store.sharedSuggestionDecisions ?? {};
+
+  const buildSuggestion = (): JourneyNextStepExperiment | null => {
+    if (!hasReviewableWeek || !fitAnswer) return null;
+
+    if (fitAnswer === 'hard_to_fit_in') {
+      if (!followUpAnswer) return null;
+      const suggestionId = `wr::${weekStartKey}::${versionScope}::${followUpAnswer}`;
+      const existingDecision = decisions[suggestionId];
+      const decisionStatus: 'pending' | 'accepted' | 'dismissed' =
+        existingDecision?.status ?? 'pending';
+      if (decisionStatus === 'dismissed') return null;
+
+      if (followUpAnswer === 'too_long') {
+        const currentAction =
+          activeHabit?.regularAction ??
+          store.commitment?.strategySummary ??
+          store.commitment?.summary ??
+          'Current movement plan';
+        const smallerDefault = activeHabit?.minimumAction
+          ? activeHabit.minimumAction
+          : `5-min ${activeHabit?.label?.toLowerCase() ?? 'gentle movement'}`;
+        return {
+          suggestionId,
+          kind: 'make_smaller',
+          title: 'Make the action smaller',
+          basis: `You noted last week was hard to fit in because it felt too long to start.`,
+          beforeLabel: currentAction,
+          afterLabel: smallerDefault,
+          suggestedFieldValue: smallerDefault,
+          primaryCtaLabel: 'Review adjustment',
+          secondaryCtaLabel: 'Not for me',
+          decisionStatus,
+        };
+      }
+
+      if (followUpAnswer === 'timing_off') {
+        const currentCue = activeHabit?.cueTiming || 'No specific cue time set';
+        const nextCue = 'Right after a lighter moment in your day';
+        return {
+          suggestionId,
+          kind: 'shift_cue',
+          title: 'Shift when you start',
+          basis: 'You noted timing didn’t line up last week.',
+          beforeLabel: currentCue,
+          afterLabel: nextCue,
+          suggestedFieldValue: nextCue,
+          primaryCtaLabel: 'Review adjustment',
+          secondaryCtaLabel: 'Not for me',
+          decisionStatus,
+        };
+      }
+
+      if (followUpAnswer === 'need_backup') {
+        const currentBackup = activeHabit?.alternativeAction || 'No backup option set';
+        const nextBackup = activeHabit?.minimumAction || '5 min indoor stretch or short loop';
+        return {
+          suggestionId,
+          kind: 'add_alternative',
+          title: 'Add a backup way',
+          basis: 'You noted a lower-friction backup option would have helped last week.',
+          beforeLabel: currentBackup,
+          afterLabel: nextBackup,
+          suggestedFieldValue: nextBackup,
+          primaryCtaLabel: 'Review adjustment',
+          secondaryCtaLabel: 'Not for me',
+          decisionStatus,
+        };
+      }
+
+      // busy_week -> Keep this rhythm is an explicit valid decision
+      const currentSetup =
+        activeHabit?.regularAction ??
+        store.commitment?.strategySummary ??
+        'Your current setup';
+      return {
+        suggestionId,
+        kind: 'keep_rhythm',
+        title: 'Keep this rhythm',
+        basis: 'A busy week happens — keeping your setup as is avoids unnecessary changes.',
+        beforeLabel: currentSetup,
+        afterLabel: 'Keep current setup unchanged',
+        primaryCtaLabel: 'Keep this rhythm',
+        secondaryCtaLabel: 'Not for me',
+        decisionStatus,
+      };
+    }
+
+    if (fitAnswer === 'about_right') {
+      const suggestionId = `wr::${weekStartKey}::${versionScope}::keep_rhythm`;
+      const existingDecision = decisions[suggestionId];
+      const decisionStatus: 'pending' | 'accepted' | 'dismissed' =
+        existingDecision?.status ?? 'pending';
+      if (decisionStatus === 'dismissed') return null;
+      const currentSetup =
+        activeHabit?.regularAction ??
+        store.commitment?.strategySummary ??
+        'Your current setup';
+      return {
+        suggestionId,
+        kind: 'keep_rhythm',
+        title: 'Keep this rhythm',
+        basis: 'Last week felt about right — staying steady is a complete choice.',
+        beforeLabel: currentSetup,
+        afterLabel: 'Keep current setup as is — no extra volume added',
+        primaryCtaLabel: 'Keep this rhythm',
+        secondaryCtaLabel: 'Not for me',
+        decisionStatus,
+      };
+    }
+
+    // Room for more: ONLY records willingness; NEVER pushes an automatic increase!
+    return null;
+  };
+
+  const pendingSuggestion = buildSuggestion();
+  const confirmedDecisions = fitRecord?.confirmedDecisions ?? [];
+
+  return {
+    hasReviewableWeek,
+    weekStartKey,
+    weekEndKey,
+    rangeLabel,
+    factLine,
+    movementDaysCount,
+    doneTaskCount,
+    restDaysCount,
+    hasMovementRecords,
+    isCoverageKnown: hasCoverageInOrBeforeReviewWeek,
+    fitAnswer,
+    fitAnswerLabel,
+    fitSavedAt: fitRecord?.savedAt ?? null,
+    fitUpdatedAt: fitRecord?.updatedAt ?? null,
+    fitRecord,
+    followUpAnswer,
+    followUpLabel,
+    pendingSuggestion,
+    confirmedDecisions,
+    startingFeelAnswer,
+    startingFeelLabel: startingFeelAnswer ? formatWeeklyStartingFeelLabel(startingFeelAnswer) : null,
+    startingFeelSourceLabel,
+    selfReport,
+  };
+}
+
+// ============================================================================
+// STAGE 7: ABOUT THIS GOAL / REVIEW TOGETHER / ADJUST / COMPLETION LIFECYCLE
+// ============================================================================
+
+export interface GoalReviewFeedbackQuote {
+  id: string;
+  dateLabel: string;
+  sourceLabel: 'Weekly review' | 'Your journey';
+  summary: string;
+}
+
+export interface GoalReviewEvidence {
+  recentFeedback: GoalReviewFeedbackQuote[];
+  activeDaysCount: number;
+  latestMovementDateLabel: string | null;
+  startedDateLabel: string | null;
+}
+
+export function formatGoalReviewFeelingLabel(feeling: GoalReviewFeeling): string {
+  switch (feeling) {
+    case 'steady':
+      return 'Feels steady';
+    case 'still_finding_fit':
+      return 'Still finding a fit';
+    case 'ready_to_wrap':
+      return 'Ready to wrap up';
+  }
+}
+
+/**
+ * Collects real, factual recent feedback and dates for the current goal/habit
+ * from Weekly review and Your journey check-ins.
+ * Strictly informational — NEVER determines or auto-triggers goal completion.
+ */
+export function getGoalReviewEvidence(
+  store: PlanFoundationStore,
+  commitment: PhaseCommitmentRecord | null,
+  activeHabit: ConfirmedActionStrategy | null,
+  referenceDate: Date = new Date()
+): GoalReviewEvidence {
+  if (!commitment) {
+    return {
+      recentFeedback: [],
+      activeDaysCount: 0,
+      latestMovementDateLabel: null,
+      startedDateLabel: null,
+    };
+  }
+
+  const quotes: Array<GoalReviewFeedbackQuote & { sortKey: string }> = [];
+  const commitmentCreatedDateKey = commitment.createdAt.slice(0, 10);
+
+  // 1. Recent Weekly review answers (fit + starting feel) scoped to this goal/habit
+  for (const rec of Object.values(store.weeklyReviews)) {
+    if (rec.questionId === WEEKLY_REVIEW_FIT_QUESTION_ID) {
+      const normalized = normalizeWeeklyReviewFitAnswer(rec.rawAnswer ?? rec.feeling ?? null);
+      if (!normalized) continue;
+      const range = formatPlanWeekRangeLabel(rec.weekStartKey, referenceDate);
+      quotes.push({
+        id: `wr-fit-${rec.id}`,
+        dateLabel: range,
+        sourceLabel: 'Weekly review',
+        summary: `Movement fit: ${formatWeeklyReviewFitLabel(normalized)}`,
+        sortKey: rec.updatedAt || rec.weekStartKey,
+      });
+    } else if (rec.questionId === DEFAULT_HABIT_EASE_QUESTION_ID) {
+      if (
+        rec.rawAnswer === 'hard_to_start' ||
+        rec.rawAnswer === 'manageable' ||
+        rec.rawAnswer === 'easier'
+      ) {
+        const range = formatPlanWeekRangeLabel(rec.weekStartKey, referenceDate);
+        quotes.push({
+          id: `wr-ease-${rec.id}`,
+          dateLabel: range,
+          sourceLabel: 'Weekly review',
+          summary: `Starting felt: ${formatWeeklyStartingFeelLabel(rec.rawAnswer)}`,
+          sortKey: rec.updatedAt || rec.weekStartKey,
+        });
+      }
+    }
+  }
+
+  // 2. Recent Your journey check-ins for the linked habit
+  if (activeHabit) {
+    for (const ci of store.habitCheckIns ?? []) {
+      if (ci.habitId !== activeHabit.habitId || !ci.frictionLevel) continue;
+      quotes.push({
+        id: `hj-ci-${ci.id}`,
+        dateLabel: formatShortLocalDateKey(ci.dateKey),
+        sourceLabel: 'Your journey',
+        summary: `Starting felt: ${formatWeeklyStartingFeelLabel(ci.frictionLevel)} (${ci.habitVersion})`,
+        sortKey: ci.recordedAt || ci.dateKey,
+      });
+    }
+  }
+
+  // Deduplicate and take up to 4 most recent real feedback items
+  quotes.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+  const recentFeedback: GoalReviewFeedbackQuote[] = quotes
+    .slice(0, 4)
+    .map(({ id, dateLabel, sourceLabel, summary }) => ({
+      id,
+      dateLabel,
+      sourceLabel,
+      summary,
+    }));
+
+  // 3. Real movement dates (never used to auto-complete!)
+  const movementDates = new Set<string>();
+  if (activeHabit) {
+    for (const hp of store.habitPractices) {
+      if (hp.habitId === activeHabit.habitId) {
+        movementDates.add(hp.dateKey);
+      }
+    }
+  } else {
+    for (const tc of store.taskCompletions) {
+      if (tc.status === 'done' && tc.dateKey >= commitmentCreatedDateKey) {
+        movementDates.add(tc.dateKey);
+      }
+    }
+    for (const es of store.exerciseSessions) {
+      if (es.dateKey >= commitmentCreatedDateKey) {
+        movementDates.add(es.dateKey);
+      }
+    }
+  }
+
+  const sortedDates = Array.from(movementDates).sort();
+  const latestMovementDateLabel =
+    sortedDates.length > 0
+      ? formatShortLocalDateKey(sortedDates[sortedDates.length - 1])
+      : null;
+
+  const startedDateLabel = isValidLocalDateKey(commitmentCreatedDateKey)
+    ? formatShortLocalDateKey(commitmentCreatedDateKey)
+    : null;
+
+  return {
+    recentFeedback,
+    activeDaysCount: movementDates.size,
+    latestMovementDateLabel,
+    startedDateLabel,
+  };
+}
+
+export interface AdjustGoalCommitmentInput {
+  mode: 'adjust_strategy' | 'new_direction';
+  summary: string;
+  originalIntent?: string | null;
+  strategySummary?: string | null;
+  regularAction?: string;
+  minimumAction?: string;
+  frequencyDescription?: string;
+  observationWindow?: string | null;
+  activeHabit?: ConfirmedActionStrategy | null;
+  dateKey: string;
+  timestamp?: string;
+}
+
+/**
+ * Applies a confirmed Adjust goal change:
+ * - 'adjust_strategy': preserves habit & commitment version lineage and updates strategy cleanly.
+ * - 'new_direction': archives previous commitment into store.pastCommitments and creates a new commitment.
+ * Strictly preserves all old commitments, history records, and accepted tasks.
+ */
+export function adjustGoalCommitment(
+  store: PlanFoundationStore,
+  input: AdjustGoalCommitmentInput
+): { store: PlanFoundationStore; commitment: PhaseCommitmentRecord } {
+  const nowIso = input.timestamp ?? new Date().toISOString();
+  const prev = store.commitment;
+  const trimmedSummary = input.summary.trim() || prev?.summary || 'Move gently';
+  const trimmedStrategy = input.strategySummary?.trim() || null;
+  const trimmedWindow =
+    'observationWindow' in input
+      ? input.observationWindow && input.observationWindow.trim()
+        ? input.observationWindow.trim()
+        : null
+      : prev?.observationWindow ?? null;
+
+  if (input.mode === 'new_direction') {
+    const pastCommitments = [
+      ...(store.pastCommitments ?? []),
+      ...(prev ? [{ ...prev }] : []),
+    ];
+
+    const newStrategies: ConfirmedActionStrategy[] = [];
+    if (input.regularAction && input.regularAction.trim()) {
+      const nextHabitId = `habit::${Date.now().toString(36)}`;
+      newStrategies.push({
+        habitId: nextHabitId,
+        label: trimmedSummary,
+        regularAction: input.regularAction.trim(),
+        ...(input.minimumAction && input.minimumAction.trim()
+          ? { minimumAction: input.minimumAction.trim() }
+          : {}),
+        frequencyDescription: input.frequencyDescription?.trim() || 'At your own pace',
+        frequencyIsDescriptiveOnly: true,
+        version: 'v1',
+        confirmedAt: nowIso,
+      });
+    }
+
+    const nextCommitment: PhaseCommitmentRecord = {
+      id: `commitment::${Date.now()}`,
+      version: 1,
+      phaseId: prev?.phaseId ?? 'start_small',
+      phaseName: prev?.phaseName ?? 'Start small',
+      originalIntent:
+        input.originalIntent !== undefined
+          ? input.originalIntent?.trim() || null
+          : trimmedSummary,
+      summary: trimmedSummary,
+      strategySummary:
+        trimmedStrategy ||
+        (newStrategies[0]
+          ? `${newStrategies[0].regularAction}${
+              newStrategies[0].frequencyDescription
+                ? ` · ${newStrategies[0].frequencyDescription}`
+                : ''
+            }`
+          : null),
+      strategies: newStrategies,
+      status: 'active',
+      observationWindow: trimmedWindow,
+      completedAt: null,
+      reviewReflection: null,
+      lastEventKind: 'new_focus',
+      reviewRequested: false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      source: 'user',
+    };
+
+    const withNew: PlanFoundationStore = {
+      ...store,
+      commitment: nextCommitment,
+      pastCommitments,
+    };
+
+    const withEvent = recordLifecycleEvent(withNew, {
+      type: 'new_commitment',
+      dateKey: input.dateKey,
+      occurredAt: nowIso,
+      source: 'plan',
+      habitId: newStrategies[0]?.habitId,
+      title: 'Started a new focus',
+      note: prev
+        ? `Shifted from "${prev.summary}" to "${nextCommitment.summary}". Previous goal and history preserved.`
+        : `Set new focus: "${nextCommitment.summary}".`,
+      commitmentVersion: 1,
+    }).store;
+
+    return { store: withEvent, commitment: nextCommitment };
+  }
+
+  // Same habit / strategy adjustment: preserve version history!
+  let nextStore = store;
+  const activeHabit = input.activeHabit ?? prev?.strategies?.[0] ?? null;
+
+  if (
+    activeHabit &&
+    ((input.regularAction && input.regularAction.trim() !== activeHabit.regularAction) ||
+      (input.minimumAction !== undefined &&
+        (input.minimumAction.trim() || undefined) !== activeHabit.minimumAction) ||
+      (input.frequencyDescription &&
+        input.frequencyDescription.trim() !== activeHabit.frequencyDescription))
+  ) {
+    const habitRes = confirmHabitStrategy(nextStore, {
+      habitId: activeHabit.habitId,
+      label: activeHabit.label,
+      regularAction: input.regularAction?.trim() || activeHabit.regularAction,
+      minimumAction:
+        input.minimumAction !== undefined
+          ? input.minimumAction.trim() || undefined
+          : activeHabit.minimumAction,
+      cueTiming: activeHabit.cueTiming,
+      alternativeAction: activeHabit.alternativeAction,
+      frequencyDescription:
+        input.frequencyDescription?.trim() || activeHabit.frequencyDescription,
+      adjustmentKind: 'made_smaller',
+      adjustmentNote: `Adjusted goal strategy: ${
+        input.regularAction?.trim() || activeHabit.regularAction
+      }`,
+      confirmTrackingStartDateKey: input.dateKey,
+      timestamp: nowIso,
+    });
+    nextStore = habitRes.store;
+  }
+
+  const latestPrev = nextStore.commitment;
+  const upserted = upsertPhaseCommitment(nextStore, {
+    phaseId: latestPrev?.phaseId ?? 'start_small',
+    phaseName: latestPrev?.phaseName ?? 'Start small',
+    originalIntent:
+      input.originalIntent !== undefined
+        ? input.originalIntent?.trim() || null
+        : latestPrev?.originalIntent ?? null,
+    summary: trimmedSummary,
+    strategySummary:
+      trimmedStrategy ??
+      latestPrev?.strategySummary ??
+      null,
+    strategies: latestPrev?.strategies ?? [],
+    status: latestPrev?.status === 'completed' ? 'active' : latestPrev?.status ?? 'active',
+    lastEventKind: 'adjusted',
+    reviewRequested: false,
+    confirmTrackingStartDateKey: input.dateKey,
+    timestamp: nowIso,
+  });
+
+  const finalCommitment: PhaseCommitmentRecord = {
+    ...upserted.commitment,
+    observationWindow: trimmedWindow,
+  };
+
+  let finalStore: PlanFoundationStore = {
+    ...upserted.store,
+    commitment: finalCommitment,
+  };
+
+  finalStore = recordLifecycleEvent(finalStore, {
+    type: 'strategy_adjustment',
+    dateKey: input.dateKey,
+    occurredAt: nowIso,
+    source: 'plan',
+    habitId: activeHabit?.habitId,
+    title: 'Adjusted goal strategy',
+    note: trimmedStrategy || trimmedSummary,
+    commitmentVersion: finalCommitment.version,
+  }).store;
+
+  return { store: finalStore, commitment: finalCommitment };
+}
+
+/**
+ * Records user choice to "Keep exploring" during Review goal.
+ * Strictly keeps commitment status 'active' (in progress), updates Nova event, and saves optional self-report.
+ */
+export function recordGoalKeepExploring(
+  store: PlanFoundationStore,
+  input: {
+    feeling?: GoalReviewFeeling;
+    outsidePracticeNote?: string;
+    dateKey: string;
+    timestamp?: string;
+  }
+): PlanFoundationStore {
+  if (!hasConfirmedPhaseCommitment(store.commitment)) return store;
+  const nowIso = input.timestamp ?? new Date().toISOString();
+  const trimmedNote = input.outsidePracticeNote?.trim() || undefined;
+  const hasReflection = Boolean(input.feeling || trimmedNote);
+
+  const nextCommitment: PhaseCommitmentRecord = {
+    ...store.commitment,
+    status: 'active',
+    reviewRequested: false,
+    lastEventKind: 'exploring',
+    ...(hasReflection
+      ? {
+          reviewReflection: {
+            ...(input.feeling ? { feeling: input.feeling } : {}),
+            ...(trimmedNote ? { outsidePracticeNote: trimmedNote } : {}),
+            source: 'user_self_report',
+            updatedAt: nowIso,
+          },
+        }
+      : {}),
+    updatedAt: nowIso,
+  };
+
+  const withUpdated: PlanFoundationStore = {
+    ...store,
+    commitment: nextCommitment,
+  };
+
+  return recordLifecycleEvent(withUpdated, {
+    type: 'goal_review',
+    dateKey: input.dateKey,
+    occurredAt: nowIso,
+    source: 'plan',
+    habitId: nextCommitment.strategies[0]?.habitId,
+    title: 'Reviewed goal · Keep exploring',
+    note: trimmedNote
+      ? `Self-report: ${trimmedNote}`
+      : input.feeling
+      ? `Feeling: ${formatGoalReviewFeelingLabel(input.feeling)}`
+      : 'Staying with this goal for now.',
+    commitmentVersion: nextCommitment.version,
+    payload: {
+      outcome: 'keep_exploring',
+      ...(input.feeling ? { feeling: input.feeling } : {}),
+      ...(trimmedNote ? { outsidePracticeNote: trimmedNote, source: 'user_self_report' } : {}),
+    },
+  }).store;
+}
+
+/**
+ * Explicitly marks the current phase commitment as COMPLETED.
+ * ONLY invoked after the user enters "Mark this goal complete?" and clicks "Confirm completion",
+ * and ONLY committed when persistence succeeds.
+ */
+export function confirmGoalCompletion(
+  store: PlanFoundationStore,
+  input: {
+    feeling?: GoalReviewFeeling;
+    outsidePracticeNote?: string;
+    dateKey: string;
+    timestamp?: string;
+  }
+): PlanFoundationStore {
+  if (!hasConfirmedPhaseCommitment(store.commitment)) return store;
+  const nowIso = input.timestamp ?? new Date().toISOString();
+  const trimmedNote = input.outsidePracticeNote?.trim() || undefined;
+
+  const nextCommitment: PhaseCommitmentRecord = {
+    ...store.commitment,
+    status: 'completed',
+    completedAt: nowIso,
+    reviewRequested: false,
+    lastEventKind: 'completed',
+    ...(input.feeling || trimmedNote
+      ? {
+          reviewReflection: {
+            ...(input.feeling ? { feeling: input.feeling } : {}),
+            ...(trimmedNote ? { outsidePracticeNote: trimmedNote } : {}),
+            source: 'user_self_report',
+            updatedAt: nowIso,
+          },
+        }
+      : {}),
+    updatedAt: nowIso,
+  };
+
+  const withCompleted: PlanFoundationStore = {
+    ...store,
+    commitment: nextCommitment,
+  };
+
+  return recordLifecycleEvent(withCompleted, {
+    type: 'goal_completed',
+    dateKey: input.dateKey,
+    occurredAt: nowIso,
+    source: 'plan',
+    habitId: nextCommitment.strategies[0]?.habitId,
+    title: 'Marked goal complete',
+    note: trimmedNote
+      ? `Completed "${nextCommitment.summary}". Self-report: ${trimmedNote}`
+      : `Confirmed completion of "${nextCommitment.summary}".`,
+    commitmentVersion: nextCommitment.version,
+    payload: {
+      outcome: 'confirmed_completion',
+      ...(input.feeling ? { feeling: input.feeling } : {}),
+      ...(trimmedNote ? { outsidePracticeNote: trimmedNote, source: 'user_self_report' } : {}),
+    },
+  }).store;
+}
+
+export type CompletedGoalNextStepChoice = 'keep_rhythm' | 'build_a_little' | 'new_focus';
+
+/**
+ * Applies the user's explicit post-completion next step choice:
+ * - 'keep_rhythm': retains confirmed action amount unchanged, returns status to 'active' with lastEventKind 'kept'.
+ * - 'build_a_little': applies user-confirmed gentle expansion (bumping version) with lastEventKind 'built'.
+ * - 'new_focus': archives the completed commitment into pastCommitments and creates a fresh commitment.
+ */
+export function applyCompletedGoalNextStep(
+  store: PlanFoundationStore,
+  input: {
+    choice: CompletedGoalNextStepChoice;
+    activeHabit?: ConfirmedActionStrategy | null;
+    nextStrategySummary?: string;
+    nextRegularAction?: string;
+    nextMinimumAction?: string;
+    nextFrequencyDescription?: string;
+    newFocusSummary?: string;
+    newFocusOriginalIntent?: string;
+    dateKey: string;
+    timestamp?: string;
+  }
+): PlanFoundationStore {
+  if (!hasConfirmedPhaseCommitment(store.commitment)) return store;
+  const nowIso = input.timestamp ?? new Date().toISOString();
+  const prev = store.commitment;
+
+  if (input.choice === 'keep_rhythm') {
+    const nextCommitment: PhaseCommitmentRecord = {
+      ...prev,
+      status: 'active',
+      completedAt: null,
+      reviewRequested: false,
+      lastEventKind: 'kept',
+      updatedAt: nowIso,
+    };
+    const withKept: PlanFoundationStore = {
+      ...store,
+      commitment: nextCommitment,
+    };
+    return recordLifecycleEvent(withKept, {
+      type: 'strategy_adjustment',
+      dateKey: input.dateKey,
+      occurredAt: nowIso,
+      source: 'plan',
+      habitId: input.activeHabit?.habitId ?? prev.strategies[0]?.habitId,
+      title: 'Kept this rhythm',
+      note: 'Continuing with the same confirmed action amount.',
+      commitmentVersion: nextCommitment.version,
+      payload: { adjustmentKind: 'kept_rhythm' },
+    }).store;
+  }
+
+  if (input.choice === 'build_a_little') {
+    let nextStore = store;
+    const habit = input.activeHabit ?? prev.strategies[0] ?? null;
+    const nextAction = input.nextRegularAction?.trim() || habit?.regularAction || '';
+    const nextFreq = input.nextFrequencyDescription?.trim() || habit?.frequencyDescription || '';
+
+    if (habit && nextAction) {
+      nextStore = confirmHabitStrategy(nextStore, {
+        habitId: habit.habitId,
+        label: habit.label,
+        regularAction: nextAction,
+        minimumAction:
+          input.nextMinimumAction !== undefined
+            ? input.nextMinimumAction.trim() || undefined
+            : habit.minimumAction,
+        cueTiming: habit.cueTiming,
+        alternativeAction: habit.alternativeAction,
+        frequencyDescription: nextFreq || habit.frequencyDescription,
+        adjustmentKind: 'made_smaller',
+        adjustmentNote: `Built gently: ${habit.regularAction} → ${nextAction}`,
+        confirmTrackingStartDateKey: input.dateKey,
+        timestamp: nowIso,
+      }).store;
+    }
+
+    const latest = nextStore.commitment ?? prev;
+    const nextStrategyText =
+      input.nextStrategySummary?.trim() ||
+      (nextAction && nextFreq ? `${nextAction} · ${nextFreq}` : nextAction || latest.strategySummary || null);
+
+    const upserted = upsertPhaseCommitment(nextStore, {
+      phaseId: latest.phaseId,
+      phaseName: latest.phaseName,
+      originalIntent: latest.originalIntent,
+      summary: latest.summary,
+      strategySummary: nextStrategyText,
+      strategies: latest.strategies,
+      status: 'active',
+      lastEventKind: 'built',
+      reviewRequested: false,
+      confirmTrackingStartDateKey: input.dateKey,
+      timestamp: nowIso,
+    });
+
+    const clearedCompleted: PhaseCommitmentRecord = {
+      ...upserted.commitment,
+      observationWindow: latest.observationWindow ?? null,
+      completedAt: null,
+    };
+
+    return recordLifecycleEvent(
+      { ...upserted.store, commitment: clearedCompleted },
+      {
+        type: 'strategy_adjustment',
+        dateKey: input.dateKey,
+        occurredAt: nowIso,
+        source: 'plan',
+        habitId: habit?.habitId,
+        title: 'Built a little from completed goal',
+        note: nextStrategyText || latest.summary,
+        commitmentVersion: clearedCompleted.version,
+        payload: { adjustmentKind: 'build_a_little' },
+      }
+    ).store;
+  }
+
+  // new_focus: archive completed commitment and create a fresh commitment
+  const nextFocusSummary = input.newFocusSummary?.trim() || 'A fresh movement focus';
+  return adjustGoalCommitment(store, {
+    mode: 'new_direction',
+    summary: nextFocusSummary,
+    originalIntent: input.newFocusOriginalIntent?.trim() || nextFocusSummary,
+    strategySummary: input.nextStrategySummary?.trim() || null,
+    regularAction: input.nextRegularAction?.trim() || undefined,
+    minimumAction: input.nextMinimumAction?.trim() || undefined,
+    frequencyDescription: input.nextFrequencyDescription?.trim() || undefined,
+    observationWindow: null,
+    dateKey: input.dateKey,
+    timestamp: nowIso,
+  }).store;
+}
+
+
+
 
 

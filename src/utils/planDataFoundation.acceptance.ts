@@ -4,6 +4,7 @@ import {
   PLAN_FOUNDATION_STORAGE_KEY,
   StorageLike,
   addExerciseSession,
+  clearHiddenHabitStatusConclusion,
   completeTaskCard,
   computeHabitConfigFingerprint,
   confirmHabitStrategy,
@@ -14,8 +15,12 @@ import {
   formatDynamicWeekTitle,
   formatPlanWeekRangeLabel,
   getConfirmedHabits,
+  getHabitJourneyNextStep,
+  getHabitJourneyPointDetail,
+  getHabitJourneyTimeline,
   getHabitRhythmModel,
   getHabitRolling7DayPractice,
+  getHabitStatusExplanation,
   getPlanWeekNavigationBounds,
   getPlanWeekSnapshot,
   getWeekDoneTaskCount,
@@ -25,12 +30,14 @@ import {
   getWeeklyReviewAnswer,
   hasConfirmedPhaseCommitment,
   hasStartingFeelsEasierEvidence,
+  hideHabitStatusConclusion,
   loadPlanFoundationStore,
   migrateLegacyStorageToFoundation,
   recordAlternativePlanReplacement,
   recordCommitmentRhythmEvent,
   recordHabitCheckIn,
   recordLifecycleEvent,
+  recordSharedSuggestionDecision,
   removeExerciseSession,
   resolveWorkoutActivityType,
   savePlanFoundationStore,
@@ -1264,6 +1271,343 @@ export function runPlanDataFoundationAcceptanceSuite(): { passed: number } {
       recordedAt: '2026-11-22T18:00:00.000Z',
     }).store;
     assertEqual(getHabitRhythmModel(store, 'habit::stretch', refNov23).statusCode, 'finding_rhythm', 'Return review completion exits Finding your way back');
+  });
+
+  // 17. Your journey: 14 / 30 / 90 display windows, insufficient-data preservation, and 5-state point detail strip
+  runTest('17. Your journey 14/30/90 windows reuse exact rolling 7-day metric, keep unsupported points null, and render 5-state date strip', () => {
+    const refNov23 = new Date(2026, 10, 23); // Today = Nov 23, ended latest = Nov 22
+    let store = createEmptyPlanFoundationStore();
+    // Tracking starts Nov 1 (22 ended days through Nov 22 -> full 14d requires 20d, partial 30d requires 36d, partial 90d requires 96d)
+    store = setConfirmableTrackingStartDate(store, '2026-11-01', 'commitment_created');
+    store = confirmHabitStrategy(store, {
+      habitId: 'habit::walk',
+      label: 'Evening walk',
+      regularAction: '20 min walk',
+      minimumAction: '5 min walk',
+    }).store;
+
+    // Populate practice, rest, pause/resume, unrecorded, and unknown-coverage gap inside one inspectable 7-day window!
+    // Practice on Nov 18 & Nov 20 (Nov 20 has 2 records -> deduplicates to 1 day)
+    store = completeTaskCard(store, {
+      logicalTaskId: 't::2026-11-18::w',
+      dateKey: '2026-11-18',
+      planId: 'walk',
+      title: 'Evening walk',
+      linkedHabitIds: ['habit::walk'],
+      actionTier: 'regular',
+      exerciseSegments: [{ exerciseType: 'walk', title: 'Walk', linkedHabitId: 'habit::walk' }],
+    }).store;
+    store = completeTaskCard(store, {
+      logicalTaskId: 't::2026-11-20::w1',
+      dateKey: '2026-11-20',
+      planId: 'walk',
+      title: 'Evening walk',
+      linkedHabitIds: ['habit::walk'],
+      actionTier: 'regular',
+      exerciseSegments: [{ exerciseType: 'walk', title: 'Walk', linkedHabitId: 'habit::walk' }],
+    }).store;
+    store = completeTaskCard(store, {
+      logicalTaskId: 't::2026-11-20::w2',
+      dateKey: '2026-11-20',
+      planId: 'walk-min',
+      title: '5 min loop',
+      linkedHabitIds: ['habit::walk'],
+      actionTier: 'minimum',
+      exerciseSegments: [{ exerciseType: 'walk', title: 'Short walk', linkedHabitId: 'habit::walk' }],
+    }).store;
+    // Today (Nov 23) practice -> MUST stay excluded from ended-day curve
+    store = completeTaskCard(store, {
+      logicalTaskId: 't::2026-11-23::today',
+      dateKey: '2026-11-23',
+      planId: 'walk',
+      title: 'Today walk',
+      linkedHabitIds: ['habit::walk'],
+      actionTier: 'regular',
+      exerciseSegments: [{ exerciseType: 'walk', title: 'Walk', linkedHabitId: 'habit::walk' }],
+    }).store;
+    // Rest on Nov 19
+    store = recordLifecycleEvent(store, {
+      type: 'rest',
+      dateKey: '2026-11-19',
+      source: 'today',
+      habitId: 'habit::walk',
+    }).store;
+    // Explicit pause on Nov 16, resumed Nov 17
+    store = recordLifecycleEvent(store, {
+      type: 'pause',
+      dateKey: '2026-11-16',
+      occurredAt: '2026-11-16T08:00:00.000Z',
+      source: 'plan',
+      habitId: 'habit::walk',
+    }).store;
+    const resEv = recordLifecycleEvent(store, {
+      type: 'resume',
+      dateKey: '2026-11-17',
+      occurredAt: '2026-11-17T08:00:00.000Z',
+      source: 'plan',
+      habitId: 'habit::walk',
+    });
+    store = resEv.store;
+    store = recordHabitCheckIn(store, {
+      habitId: 'habit::walk',
+      isReturnReview: true,
+      relatedResumeEventId: resEv.event.id,
+      dateKey: '2026-11-18',
+      recordedAt: '2026-11-18T20:00:00.000Z',
+    }).store;
+
+    const m14 = getHabitRhythmModel(store, 'habit::walk', refNov23, { windowDays: 14 });
+    const m30 = getHabitRhythmModel(store, 'habit::walk', refNov23, { windowDays: 30 });
+    const m90 = getHabitRhythmModel(store, 'habit::walk', refNov23, { windowDays: 90 });
+
+    assertEqual(m14.points.length, 14, '14-day window has 14 ended points');
+    assertEqual(m14.requiredCoverageDays, 20, '14-day full window needs 20 raw days');
+    assertEqual(m14.validPointCount, 14, '22 covered days supports all 14 points in 14d window');
+
+    assertEqual(m30.points.length, 30, '30-day window has 30 ended points');
+    assertEqual(m30.requiredCoverageDays, 36, '30-day full window needs 36 raw days');
+    assertEqual(m30.validPointCount, 16, 'Nov 7..Nov 22 = 16 supported points in 30d window (earlier 14 stay null)');
+
+    assertEqual(m90.points.length, 90, '90-day window has 90 ended points');
+    assertEqual(m90.requiredCoverageDays, 96, '90-day full window needs 96 raw days');
+    assertEqual(m90.validPointCount, 16, '90d window never fabricates unsupported points');
+
+    // Status & latest value remain 100% identical across all three windows!
+    assertEqual(m14.statusCode, m30.statusCode, 'Status consistent between 14d and 30d');
+    assertEqual(m30.statusCode, m90.statusCode, 'Status consistent between 30d and 90d');
+    assertEqual(m14.latestValidPoint?.value, 2, 'Latest Nov 22 rolling 7d = 2 distinct days (Nov 18 + Nov 20)');
+    assertEqual(m30.latestValidPoint?.value, 2, '30d latest value identical');
+    assertEqual(m90.latestValidPoint?.value, 2, '90d latest value identical');
+
+    // Inspect Nov 22 point detail -> [Nov 16..Nov 22] contains paused (Nov 16), unrecorded (Nov 17, 21, 22), practice (Nov 18, 20), rest (Nov 19)
+    const nov22Detail = getHabitJourneyPointDetail(store, 'habit::walk', '2026-11-22');
+    assertEqual(nov22Detail.distinctPracticeDayCount, 2, 'Nov 22 point detail deduplicates to 2 practice days');
+    assertEqual(nov22Detail.hasCoverageGap, false, 'Nov 16..22 fully covered');
+    assertEqual(nov22Detail.windowSourceRecords.length, 3, 'All 3 raw practice source records preserved in detail');
+    assertEqual(nov22Detail.days.find((d) => d.dateKey === '2026-11-16')?.status, 'paused', 'Nov 16 is paused');
+    assertEqual(nov22Detail.days.find((d) => d.dateKey === '2026-11-17')?.status, 'unrecorded', 'Nov 17 is unrecorded');
+    assertEqual(nov22Detail.days.find((d) => d.dateKey === '2026-11-18')?.status, 'practice', 'Nov 18 is practice');
+    assertEqual(nov22Detail.days.find((d) => d.dateKey === '2026-11-19')?.status, 'rest', 'Nov 19 is rest');
+    assertEqual(nov22Detail.days.find((d) => d.dateKey === '2026-11-20')?.status, 'practice', 'Nov 20 is practice');
+
+    // Inspect Nov 5 point detail -> [Oct 30..Nov 5] overlaps unknown pre-tracking dates (Oct 30, Oct 31)
+    const nov5Detail = getHabitJourneyPointDetail(store, 'habit::walk', '2026-11-05');
+    assertEqual(nov5Detail.distinctPracticeDayCount, null, 'Coverage gap point returns null count (no zero-fill)');
+    assertEqual(nov5Detail.hasCoverageGap, true, 'Coverage gap flagged');
+    assertEqual(nov5Detail.days.find((d) => d.dateKey === '2026-10-30')?.status, 'unknown', 'Pre-tracking date shows unknown (?)');
+    assert(Boolean(nov5Detail.gapExplanation && nov5Detail.gapExplanation.includes('Oct 30')), 'Gap explanation cites unknown dates');
+  });
+
+  // 18. Your journey: factual Why this view?, hide conclusion without deleting facts, and real-only timeline (Set up vs Practiced, no fake milestones)
+  runTest('18. Your journey explains & hides status without deleting facts and emits only real timeline events (Set up vs Practiced)', () => {
+    const refNov23 = new Date(2026, 10, 23);
+    let store = createEmptyPlanFoundationStore();
+    store = setConfirmableTrackingStartDate(store, '2026-10-15', 'commitment_created');
+    store = confirmHabitStrategy(store, {
+      habitId: 'habit::walk',
+      label: 'Evening walk',
+      regularAction: '20 min walk',
+      minimumAction: '5 min walk',
+      timestamp: '2026-11-01T09:00:00.000Z',
+    }).store;
+
+    // Add 1 regular practice backfilled (occurredAt Nov 15, dateKey Nov 10 -> Updated indicator!)
+    store = completeTaskCard(store, {
+      logicalTaskId: 't::2026-11-10::backfill',
+      dateKey: '2026-11-10',
+      completedAt: '2026-11-15T12:00:00.000Z',
+      planId: 'walk',
+      title: 'Evening walk',
+      linkedHabitIds: ['habit::walk'],
+      actionTier: 'regular',
+      exerciseSegments: [{ exerciseType: 'walk', title: 'Walk', linkedHabitId: 'habit::walk' }],
+    }).store;
+
+    // Add a backup option via confirmHabitStrategy -> creates Found another way (Set up), NOT Practiced!
+    store = confirmHabitStrategy(store, {
+      habitId: 'habit::walk',
+      label: 'Evening walk',
+      regularAction: '20 min walk',
+      minimumAction: '5 min walk',
+      alternativeAction: '5 min indoor stretch',
+      adjustmentKind: 'alternative_added',
+      adjustmentNote: 'Backup way: 5 min indoor stretch',
+      timestamp: '2026-11-12T10:00:00.000Z',
+    }).store;
+
+    const timelineBeforeAltPractice = getHabitJourneyTimeline(store, 'habit::walk', refNov23);
+    assert(timelineBeforeAltPractice.some((e) => e.kind === 'began_again'), 'Began again emitted from user commitment');
+    const firstStepEv = timelineBeforeAltPractice.find((e) => e.kind === 'first_small_step')!;
+    assertEqual(firstStepEv.dateKey, '2026-11-10', 'First small step uses actual practice date');
+    assertEqual(firstStepEv.wasUpdatedAfterEdit, true, 'Backfilled first step carries Updated indicator');
+    const setupAltEv = timelineBeforeAltPractice.find(
+      (e) => e.kind === 'found_another_way' && e.statusTag === 'Set up'
+    );
+    assert(Boolean(setupAltEv), 'Setting up a backup emits Found another way (Set up)');
+    assert(
+      !timelineBeforeAltPractice.some(
+        (e) => e.kind === 'found_another_way' && e.statusTag === 'Practiced'
+      ),
+      'Setting up a backup NEVER fabricates Found another way (Practiced)'
+    );
+    assert(
+      !timelineBeforeAltPractice.some((e) => e.kind === 'took_a_pause'),
+      'Consecutive unrecorded days NEVER fabricate Took a pause'
+    );
+    assert(
+      !timelineBeforeAltPractice.some((e) => e.title.toLowerCase().includes('21') || e.title.toLowerCase().includes('7-day')),
+      'No fabricated 7-day or 21-day graduation milestones'
+    );
+
+    // Actually practice a minimum/alternative action -> NOW emits Found another way (Practiced)!
+    store = completeTaskCard(store, {
+      logicalTaskId: 't::2026-11-18::min',
+      dateKey: '2026-11-18',
+      completedAt: '2026-11-18T18:00:00.000Z',
+      planId: 'walk-min',
+      title: '5 min indoor stretch',
+      linkedHabitIds: ['habit::walk'],
+      actionTier: 'minimum',
+      exerciseSegments: [{ exerciseType: 'stretch', title: 'Indoor stretch', linkedHabitId: 'habit::walk' }],
+    }).store;
+    const timelineAfterAltPractice = getHabitJourneyTimeline(store, 'habit::walk', refNov23);
+    assert(
+      timelineAfterAltPractice.some(
+        (e) => e.kind === 'found_another_way' && e.statusTag === 'Practiced'
+      ),
+      'Real minimum/alternative practice emits Found another way (Practiced)'
+    );
+
+    // Why this view? + Hide status conclusion NEVER deletes practices or alters commitment!
+    const model = getHabitRhythmModel(store, 'habit::walk', refNov23);
+    const expBefore = getHabitStatusExplanation(store, model);
+    assertEqual(expBefore.isHiddenByUser, false, 'Status initially visible');
+    assert(expBefore.triggerRecords.length >= 2, 'Factual trigger records listed');
+
+    const practicesBefore = store.habitPractices.length;
+    const commitmentBefore = store.commitment?.summary;
+    store = hideHabitStatusConclusion(store, 'habit::walk', model.statusCode, model.habitVersion);
+    const expHidden = getHabitStatusExplanation(store, model);
+    assertEqual(expHidden.isHiddenByUser, true, 'Status conclusion hidden by user');
+    assertEqual(store.habitPractices.length, practicesBefore, 'Hiding status deletes ZERO practice facts');
+    assertEqual(store.commitment?.summary, commitmentBefore, 'Hiding status modifies ZERO commitment goals');
+
+    store = clearHiddenHabitStatusConclusion(store, 'habit::walk');
+    assertEqual(getHabitStatusExplanation(store, model).isHiddenByUser, false, 'Status note can be restored cleanly');
+  });
+
+  // 19. Your journey: shared next-step identity with Weekly review, no fabricated steps, Keep this rhythm valid, version bump on adjust
+  runTest('19. Your journey next step shares identity & decisions with Weekly review, omits unsupported steps, and bumps version on adjustment', () => {
+    const refNov23 = new Date(2026, 10, 23);
+    let store = createEmptyPlanFoundationStore();
+    store = setConfirmableTrackingStartDate(store, '2026-10-15', 'commitment_created');
+    const created = confirmHabitStrategy(store, {
+      habitId: 'habit::walk',
+      label: 'Evening walk',
+      regularAction: '20 min walk',
+    });
+    store = created.store;
+
+    // 0 practices (status === 'ready') & no Weekly review proposal -> returns null (never fabricates a next step!)
+    const readyModel = getHabitRhythmModel(store, 'habit::walk', refNov23);
+    assertEqual(
+      getHabitJourneyNextStep(store, created.strategy, readyModel),
+      null,
+      'No concrete evidence -> omits next step instead of fabricating one'
+    );
+
+    // Shared Weekly review proposal appears identically in Your journey
+    const sharedProposal = {
+      id: 'adj::2026-11-30::walk::durationLabel',
+      resolutionKey: '2026-11-30::too_much::walk::durationLabel',
+      headline: 'Try shorter walks next week',
+      reason: 'Last week felt like too much.',
+      previousValue: '20 min',
+      nextValue: '10 min',
+      changeLabel: 'Walk: 20 min → 10 min',
+    };
+    const withShared = getHabitJourneyNextStep(store, created.strategy, readyModel, {
+      sharedWeeklyProposal: sharedProposal,
+    });
+    assertEqual(withShared?.suggestionId, sharedProposal.id, 'Shares exact suggestionId with Weekly review');
+    assertEqual(withShared?.kind, 'weekly_review_shared', 'Uses shared weekly_review_shared kind');
+    assertEqual(withShared?.decisionStatus, 'pending', 'Pending before user decides');
+
+    // Accepting in Weekly review immediately reflects as accepted in Your journey!
+    const acceptedStore = recordSharedSuggestionDecision(store, {
+      suggestionId: sharedProposal.id,
+      status: 'accepted',
+      habitId: 'habit::walk',
+      source: 'weekly_review',
+    });
+    const afterAccept = getHabitJourneyNextStep(acceptedStore, created.strategy, readyModel, {
+      sharedWeeklyProposal: sharedProposal,
+    });
+    assertEqual(afterAccept?.decisionStatus, 'accepted', 'Decision accepted in Weekly review syncs to Your journey');
+
+    // Dismissing in Your journey immediately hides it (without altering strategy)!
+    const dismissedStore = recordSharedSuggestionDecision(store, {
+      suggestionId: sharedProposal.id,
+      status: 'dismissed',
+      habitId: 'habit::walk',
+      source: 'journey',
+    });
+    assertEqual(
+      getHabitJourneyNextStep(dismissedStore, created.strategy, readyModel, {
+        sharedWeeklyProposal: sharedProposal,
+      }),
+      null,
+      'Dismissed shared suggestion disappears cleanly'
+    );
+
+    // With 5 practice days in last 7d + existing alternativeAction -> offers "Keep this rhythm" (never defaults to increasing load!)
+    store = confirmHabitStrategy(store, {
+      habitId: 'habit::walk',
+      label: 'Evening walk',
+      regularAction: '20 min walk',
+      alternativeAction: '5 min indoor stretch',
+    }).store;
+    for (const dk of ['2026-11-16', '2026-11-17', '2026-11-19', '2026-11-20', '2026-11-22']) {
+      store = completeTaskCard(store, {
+        logicalTaskId: `t::${dk}::w`,
+        dateKey: dk,
+        planId: 'walk',
+        title: 'Evening walk',
+        linkedHabitIds: ['habit::walk'],
+        actionTier: 'regular',
+        exerciseSegments: [{ exerciseType: 'walk', title: 'Walk', linkedHabitId: 'habit::walk' }],
+      }).store;
+    }
+    const activeHabit = getConfirmedHabits(store)[0];
+    const steadyModel = getHabitRhythmModel(store, 'habit::walk', refNov23);
+    const keepStep = getHabitJourneyNextStep(store, activeHabit, steadyModel);
+    assertEqual(keepStep?.kind, 'keep_rhythm', 'Healthy rhythm offers Keep this rhythm rather than raising load');
+
+    // Hard to start -> offers Make the action smaller -> Confirming bumps habit version and appends Made it smaller timeline event!
+    store = recordHabitCheckIn(store, {
+      habitId: 'habit::walk',
+      frictionLevel: 'hard_to_start',
+      dateKey: '2026-11-22',
+    }).store;
+    const hardModel = getHabitRhythmModel(store, 'habit::walk', refNov23);
+    const smallerStep = getHabitJourneyNextStep(store, activeHabit, hardModel);
+    assertEqual(smallerStep?.kind, 'make_smaller', 'Hard to start offers Make the action smaller');
+
+    const adjusted = confirmHabitStrategy(store, {
+      habitId: 'habit::walk',
+      label: activeHabit.label,
+      regularAction: '10 min walk',
+      alternativeAction: activeHabit.alternativeAction,
+      adjustmentKind: 'made_smaller',
+      adjustmentNote: '20 min walk → 10 min walk',
+      timestamp: '2026-11-23T09:00:00.000Z',
+    });
+    assert(adjusted.strategy.version !== activeHabit.version, 'Confirming smaller action bumps habit version');
+    const timelineAfterSmaller = getHabitJourneyTimeline(adjusted.store, 'habit::walk', refNov23);
+    assert(
+      timelineAfterSmaller.some((e) => e.kind === 'made_it_smaller'),
+      'Confirming smaller action appends Made it smaller event to Journey timeline'
+    );
   });
 
   console.log(`\nALL ${passed} ACCEPTANCE TESTS PASSED.`);

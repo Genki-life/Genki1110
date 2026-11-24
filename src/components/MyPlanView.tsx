@@ -66,10 +66,35 @@ import {
   LEGACY_DIRECTION_STORAGE_KEYS,
 } from '../utils/prototypeDemoSeed';
 import { PlanRhythmChart } from './PlanRhythmChart';
+import { YourJourneyView, type JourneyActionResult } from './YourJourneyView';
 import {
+  WEEKLY_FIT_OPTIONS,
+  WEEKLY_HARD_FOLLOWUP_OPTIONS,
+  WeeklyReviewDetailView,
+} from './WeeklyReviewDetailView';
+import {
+  GoalDetailView,
+  type GoalDetailSubMode,
+  type GoalNextStepSubmitInput,
+} from './GoalDetailView';
+import {
+  AdjustGoalCommitmentInput,
   ConfirmedActionStrategy,
-  DEFAULT_WEEKLY_REVIEW_QUESTION_ID,
+  DEFAULT_HABIT_EASE_QUESTION_ID,
+  GoalReviewFeeling,
+  HabitStartFrictionLevel,
+  JourneyNextStepExperiment,
   PlanFoundationStore,
+  WEEKLY_REVIEW_FIT_QUESTION_ID,
+  WEEKLY_REVIEW_HARD_FOLLOWUP_QUESTION_ID,
+  WEEKLY_REVIEW_SELF_REPORT_QUESTION_ID,
+  WeeklyHardFollowUpAnswer,
+  WeeklyReviewFitAnswer,
+  adjustGoalCommitment,
+  appendWeeklyReviewDecision,
+  applyCompletedGoalNextStep,
+  clearHiddenHabitStatusConclusion,
+  confirmGoalCompletion,
   confirmHabitStrategy,
   createEmptyPlanFoundationStore,
   deriveCommitmentStrategyLine,
@@ -79,12 +104,18 @@ import {
   getHabitRhythmModel,
   getPlanWeekSnapshot,
   getWeekDoneTaskCount,
+  getWeeklyReviewModel,
   hasConfirmedPhaseCommitment,
+  hideHabitStatusConclusion,
   loadPlanFoundationStore,
   mapExerciseTypeToLegacyCategory,
   projectLegacyWeeklyReviewFeedbacks,
   recordCommitmentRhythmEvent,
+  recordGoalKeepExploring,
+  recordHabitCheckIn,
   recordLifecycleEvent,
+  recordSharedSuggestionDecision,
+  savePlanFoundationStore,
   shiftLocalWeekStartKey,
   upsertPhaseCommitment,
   upsertWeeklyReviewAnswer,
@@ -112,7 +143,14 @@ export type MemoryItem = PreferenceItem;
 // ============================================================================
 
 type RhythmTimeframe = '7d' | 'month';
-type SecondaryModuleType = 'journey' | 'history' | 'preferences' | 'health' | null;
+type SecondaryModuleType =
+  | 'journey'
+  | 'weekly_review'
+  | 'goal'
+  | 'history'
+  | 'preferences'
+  | 'health'
+  | null;
 
 // --- A. Unified Activity Record Model ---
 // Supports Active (with distinct sessionsCount & durationMinutes), Mindful Rest, or No Record
@@ -780,20 +818,9 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-phase-title {font-size:15px;font-weight:600;line-height:22px;}
 .genki-plan-phase-current {font-size:12px;font-weight:500;line-height:17px;color:#7770B6;flex-shrink:0;}
 .genki-plan-phase-desc {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
-.genki-plan-review-chart {width:100%;height:120px;display:grid;align-items:stretch;}
-.genki-plan-review-col {display:flex;flex-direction:column;align-items:center;min-width:0;height:120px;}
-.genki-plan-review-plot {width:100%;height:88px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;}
-.genki-plan-review-value {font-size:13px;font-weight:500;line-height:18px;color:#514879;font-variant-numeric:tabular-nums;margin-bottom:4px;}
-.genki-plan-review-value-unknown {color:#9A93A8;margin-bottom:2px;}
-.genki-plan-review-bar {width:28px;border-radius:5px 5px 0 0;transition:height 220ms ease;}
-.genki-plan-review-bar-current {background:#8B82BD;}
-.genki-plan-review-bar-other {background:rgba(139,130,189,0.28);}
-.genki-plan-review-bar-zero {width:28px;height:2px;border-radius:1px;}
-.genki-plan-review-bar-zero-current {background:rgba(139,130,189,0.45);}
-.genki-plan-review-bar-zero-other {background:rgba(139,130,189,0.22);}
-.genki-plan-review-label {margin-top:12px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:400;line-height:16px;color:#706A7C;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.genki-plan-review-fact {font-size:15px;font-weight:400;line-height:22px;color:#524C63;overflow-wrap:break-word;}
 .genki-plan-review-summary {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;}
-.genki-plan-feedback-question {font-size:15px;font-weight:600;line-height:22px;color:#302D3D;}
+.genki-plan-feedback-question {font-size:16px;font-weight:600;line-height:22px;color:#302D3D;}
 .genki-plan-sheet-heading {font-size:22px;font-weight:600;line-height:28px;letter-spacing:-.02em;color:#1C1C1E;}
 .genki-plan-subheading {font-size:17px;font-weight:600;line-height:23px;color:#1C1C1E;}
 .genki-plan-unified-container {width:100%;padding:20px;border-radius:28px;background:rgba(255,255,255,0.76);border:1px solid rgba(255,255,255,0.70);box-shadow:0 4px 20px rgba(74,66,98,0.04);display:flex;flex-direction:column;gap:0;}
@@ -805,7 +832,7 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-screen button:focus-visible,.genki-plan-control:focus-visible,.genki-plan-field:focus-visible,.genki-plan-text-action:focus-visible,.genki-plan-header-detail-btn:focus-visible,.genki-plan-rhythm-journey-btn:focus-visible,.genki-plan-rhythm-switch-btn:focus-visible,.genki-plan-rhythm-retry-btn:focus-visible,.genki-plan-week-row:focus-visible,.genki-plan-workout-row:focus-visible,.genki-plan-week-nav-btn:focus-visible,.genki-plan-week-back-btn:focus-visible,.genki-plan-view-all-btn:focus-visible,.genki-plan-phase-row:focus-visible {outline:2px solid #7770B6;outline-offset:2px;}
 .genki-plan-control:disabled {opacity:.45;cursor:not-allowed;}
 .genki-plan-control:not(:disabled):active {opacity:.75;}
-.genki-plan-text-action {min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:flex-end;cursor:pointer;touch-action:manipulation;transition:color 150ms ease,opacity 150ms ease;}
+.genki-plan-text-action {min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:flex-end;cursor:pointer;touch-action:manipulation;transition:color 140ms ease,opacity 140ms ease;}
 .genki-plan-text-action:hover {color:#4B4895;}
 .genki-plan-text-action:active {opacity:.72;}
 .genki-plan-week-row {width:100%;min-height:46px;padding:12px 0;background:transparent;border:0;border-radius:0;display:flex;flex-direction:column;justify-content:center;text-align:left;cursor:pointer;touch-action:manipulation;transition:opacity 150ms ease;}
@@ -823,12 +850,13 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-control-icon {width:44px;height:44px;min-width:44px;min-height:44px;padding:0;flex-shrink:0;border-radius:999px;background:#F2F2F7;display:inline-flex;align-items:center;justify-content:center;}
 .genki-plan-control-icon svg {width:20px;height:20px;}
 .genki-plan-feedback-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
-.genki-plan-control-feedback {width:100%;min-width:0;min-height:48px;padding:8px 6px;border-radius:12px;border:1px solid transparent;background:#F1EFF6;color:#615B73;font-size:14px;font-weight:500;line-height:18px;display:flex;align-items:center;justify-content:center;text-align:center;white-space:normal;}
+@media (max-width: 359px) {.genki-plan-feedback-grid {grid-template-columns:1fr;}}
+.genki-plan-control-feedback {width:100%;min-width:0;min-height:56px;padding:10px 8px;border-radius:12px;border:1px solid transparent;background:#F1EFF6;color:#615B73;font-size:14px;font-weight:500;line-height:18px;display:flex;align-items:center;justify-content:center;text-align:center;white-space:normal;overflow-wrap:break-word;}
 .genki-plan-control-feedback:hover {background:#EAE6F4;}
 .genki-plan-control-feedback[aria-pressed="true"] {border-color:#BEB4DE;background:#E5E0F3;color:#514879;}
 .genki-plan-screen [aria-label="Additional plan sections"] > button {min-height:56px;}
 .genki-plan-screen [id$="progress"] {font-variant-numeric:tabular-nums;}
-@media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-header-detail-btn,.genki-plan-rhythm-journey-btn,.genki-plan-rhythm-switch-btn,.genki-plan-rhythm-retry-btn,.genki-plan-week-row,.genki-plan-workout-row,.genki-plan-week-nav-btn,.genki-plan-week-back-btn,.genki-plan-view-all-btn,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill,.genki-plan-review-bar {transition:none;} .genki-plan-week-content-fade {animation:none;}}
+@media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-header-detail-btn,.genki-plan-rhythm-journey-btn,.genki-plan-rhythm-switch-btn,.genki-plan-rhythm-retry-btn,.genki-plan-week-row,.genki-plan-workout-row,.genki-plan-week-nav-btn,.genki-plan-week-back-btn,.genki-plan-view-all-btn,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill {transition:none;} .genki-plan-week-content-fade {animation:none;}}
 `;
 
 export function MyPlanView({
@@ -945,8 +973,58 @@ export function MyPlanView({
   // 2. Your Rhythm Filter State
   const [rhythmFilter, setRhythmFilter] = useState<RhythmTimeframe>('7d');
 
-  // 3. Secondary Sheet Navigation ('activity' | 'rhythm' | 'direction' | 'memory' | 'health' | null)
+  // 3. Secondary Sheet Navigation ('journey' | 'weekly_review' | 'goal' | 'history' | 'preferences' | 'health' | null)
   const [selectedModule, setSelectedModule] = useState<SecondaryModuleType>(null);
+  const [goalSheetInitialMode, setGoalSheetInitialMode] = useState<GoalDetailSubMode>('overview');
+  const [goalSheetActiveMode, setGoalSheetActiveMode] = useState<GoalDetailSubMode>('overview');
+  const [historyReturnModule, setHistoryReturnModule] = useState<'plan' | 'journey' | 'weekly_review'>('plan');
+  const planScrollRef = useRef<HTMLDivElement | null>(null);
+  const savedPlanScrollTopRef = useRef<number>(0);
+
+  const openSecondaryModule = useCallback(
+    (
+      mod: Exclude<SecondaryModuleType, null>,
+      returnTarget: 'plan' | 'journey' | 'weekly_review' = 'plan'
+    ) => {
+      if (selectedModule === null && planScrollRef.current) {
+        savedPlanScrollTopRef.current = planScrollRef.current.scrollTop;
+      }
+      if (mod === 'history') {
+        setHistoryReturnModule(returnTarget);
+      } else {
+        setHistoryReturnModule('plan');
+      }
+      setSelectedModule(mod);
+    },
+    [selectedModule]
+  );
+
+  const closeSecondaryModuleToPlan = useCallback(() => {
+    setHistoryReturnModule('plan');
+    setSelectedModule(null);
+    const targetTop = savedPlanScrollTopRef.current;
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        if (planScrollRef.current) {
+          planScrollRef.current.scrollTop = targetTop;
+        }
+      });
+    }
+  }, []);
+
+  const handleSecondarySheetBack = useCallback(() => {
+    if (selectedModule === 'history' && historyReturnModule === 'journey') {
+      setHistoryReturnModule('plan');
+      setSelectedModule('journey');
+      return;
+    }
+    if (selectedModule === 'history' && historyReturnModule === 'weekly_review') {
+      setHistoryReturnModule('plan');
+      setSelectedModule('weekly_review');
+      return;
+    }
+    closeSecondaryModuleToPlan();
+  }, [selectedModule, historyReturnModule, closeSecondaryModuleToPlan]);
 
   // 4. Methodology Info Popup State (Inside Your Rhythm Secondary Sheet)
   const [isMethodologyOpen, setIsMethodologyOpen] = useState<boolean>(false);
@@ -1038,7 +1116,7 @@ export function MyPlanView({
     }
   }, [memoryChatMessages, isMemoryChatOpen]);
 
-  // VisualViewport keyboard avoidance for all bottom-sheet forms
+  // VisualViewport keyboard avoidance for all bottom-sheet forms, Journey & Weekly review inputs
   useEffect(() => {
     if (
       (!isFocusAdjustOpen &&
@@ -1046,7 +1124,10 @@ export function MyPlanView({
         !isPrefFormOpen &&
         !isWeekAdjustOpen &&
         !isMemoryChatOpen &&
-        !activeDayModalDate) ||
+        !activeDayModalDate &&
+        selectedModule !== 'journey' &&
+        selectedModule !== 'weekly_review' &&
+        selectedModule !== 'goal') ||
       typeof window === 'undefined'
     ) {
       setFocusKeyboardInset(0);
@@ -1074,6 +1155,7 @@ export function MyPlanView({
     isWeekAdjustOpen,
     isMemoryChatOpen,
     activeDayModalDate,
+    selectedModule,
   ]);
 
   // Short-screen detection (< 700px height) for Nova Avatar box (80×80 vs 96×96)
@@ -1416,11 +1498,17 @@ export function MyPlanView({
       if (onUpdatePlanStore) {
         let savedHabitId: string | null = null;
         onUpdatePlanStore((prev) => {
+          const existingStrategy = editingHabitId
+            ? getConfirmedHabits(prev).find((h) => h.habitId === editingHabitId)
+            : undefined;
           const res = confirmHabitStrategy(prev, {
             habitId: editingHabitId ?? undefined,
             label,
             regularAction: regular,
             minimumAction: minimum || undefined,
+            cueTiming: existingStrategy?.cueTiming,
+            alternativeAction: existingStrategy?.alternativeAction,
+            frequencyDescription: existingStrategy?.frequencyDescription,
             confirmTrackingStartDateKey: deviceToday.dateStr,
           });
           savedHabitId = res.strategy.habitId;
@@ -1507,150 +1595,44 @@ export function MyPlanView({
     ]
   );
 
-  // Up to 4 most recent completed weeks (strictly excluding currentWeekBounds), chronologically ordered.
-  // Only weeks supported by real historical records are rendered; confirmed 0 shows 0; unknown gaps show —.
-  const weeklyReviewChartModel = useMemo(() => {
-    const currentStartKey = currentWeekBounds.weekStartKey;
-    let earliestHistoryWeekKey: string | null = null;
+  // Stage 6 Weekly review model: strictly defaults to most recent COMPLETED local Mon-Sun week
+  // and is completely isolated from the This week switcher!
+  const weeklyReviewModel = useMemo(
+    () => getWeeklyReviewModel(effectivePlanStore, referenceTodayDate, activeRhythmHabit),
+    [effectivePlanStore, referenceTodayDate, activeRhythmHabit]
+  );
 
-    const considerDateKey = (dateKey: string) => {
-      if (!dateKey || dateKey >= currentStartKey) return;
-      const dt = parseLocalDateKey(dateKey);
-      if (!dt) return;
-      const wStartKey = getLocalWeekBounds(dt).weekStartKey;
-      if (wStartKey < currentStartKey && (!earliestHistoryWeekKey || wStartKey < earliestHistoryWeekKey)) {
-        earliestHistoryWeekKey = wStartKey;
-      }
-    };
+  // Primary Weekly review inline error / retry & Before->After diff state
+  const [weeklyReviewSaveError, setWeeklyReviewSaveError] = useState<string | null>(null);
+  const [weeklyReviewFailedAnswer, setWeeklyReviewFailedAnswer] =
+    useState<WeeklyReviewFitAnswer | null>(null);
+  const [weeklyFollowUpSaveError, setWeeklyFollowUpSaveError] = useState<string | null>(null);
+  const [weeklyFollowUpFailedAnswer, setWeeklyFollowUpFailedAnswer] =
+    useState<WeeklyHardFollowUpAnswer | null>(null);
+  const [weeklyPrimaryConfirming, setWeeklyPrimaryConfirming] = useState<boolean>(false);
+  const [weeklyPrimaryAfterDraft, setWeeklyPrimaryAfterDraft] = useState<string>('');
+  const [weeklyPrimarySuggestionError, setWeeklyPrimarySuggestionError] = useState<string | null>(
+    null
+  );
+  const [weeklyPrimaryFailedAction, setWeeklyPrimaryFailedAction] = useState<
+    'confirm' | 'dismiss' | null
+  >(null);
 
-    for (const r of activityRecords) {
-      if (r.category !== 'rest') considerDateKey(r.dateKey);
-    }
-    for (const r of restRecords) {
-      considerDateKey(r.dateKey);
-    }
-    for (const wkKey of Object.keys(weeklySchedulesByWeek)) {
-      considerDateKey(wkKey);
-    }
-    for (const wkKey of Object.keys(weeklyReviewFeedbacks)) {
-      considerDateKey(wkKey);
-    }
-
-    if (!earliestHistoryWeekKey) {
-      return {
-        hasHistory: false,
-        weeks: [] as {
-          weekStartKey: string;
-          rangeLabel: string;
-          startLabel: string;
-          isReviewWeek: boolean;
-          status: 'known' | 'unknown';
-          count: number | null;
-          barHeightPx: number;
-          ariaLabel: string;
-        }[],
-        maxKnownCount: 0,
-        reviewWeekStatus: 'unknown' as 'known' | 'unknown',
-      };
-    }
-
-    const candidateWeeks = [-3, -2, -1, 0].map((weekOffset) => {
-      const refDate = addLocalDays(lastCompletedWeekBounds.weekStart, weekOffset * 7);
-      const bounds = getLocalWeekBounds(refDate);
-      const isReviewWeek = weekOffset === 0;
-      const completions = getDeduplicatedWeekCompletions(bounds.weekStartKey, bounds.weekEndKey);
-      const hasRestInWeek = restRecords.some((r) =>
-        isDateKeyInWeek(r.dateKey, bounds.weekStartKey, bounds.weekEndKey)
-      );
-      const hasScheduleInWeek = Boolean(weeklySchedulesByWeek[bounds.weekStartKey]);
-      const hasReviewInWeek = Boolean(weeklyReviewFeedbacks[bounds.weekStartKey]);
-
-      const count = completions.length;
-      const isConfirmed = count > 0 || hasRestInWeek || hasScheduleInWeek || hasReviewInWeek;
-
-      return {
-        bounds,
-        isReviewWeek,
-        status: (isConfirmed ? 'known' : 'unknown') as 'known' | 'unknown',
-        count: isConfirmed ? count : null,
-      };
-    });
-
-    // Retain only weeks at or after the earliest week supported by historical records (chronological order)
-    const retained = candidateWeeks.filter(
-      (item) => item.bounds.weekStartKey >= earliestHistoryWeekKey!
+  useEffect(() => {
+    setWeeklyPrimaryConfirming(false);
+    setWeeklyPrimarySuggestionError(null);
+    setWeeklyPrimaryFailedAction(null);
+    setWeeklyPrimaryAfterDraft(
+      weeklyReviewModel.pendingSuggestion?.suggestedFieldValue ??
+        weeklyReviewModel.pendingSuggestion?.afterLabel ??
+        ''
     );
+  }, [weeklyReviewModel.pendingSuggestion?.suggestionId]);
 
-    const maxKnownCount = retained.reduce(
-      (max, item) => (item.status === 'known' && item.count !== null && item.count > max ? item.count : max),
-      0
-    );
-
-    const MAX_BAR_HEIGHT_PX = 66; // 88px plot area - 18px value label - 4px gap = 66px
-    const weeks = retained.map((item) => {
-      let barHeightPx = 0;
-      if (item.status === 'known' && item.count !== null && item.count > 0 && maxKnownCount > 0) {
-        barHeightPx = Math.max(6, Math.round((item.count / maxKnownCount) * MAX_BAR_HEIGHT_PX));
-      }
-
-      const startLabel = formatShortMonthDay(item.bounds.weekStart);
-      const suffix = item.isReviewWeek ? ' (review week)' : '';
-      const ariaLabel =
-        item.status === 'known' && item.count !== null
-          ? `${item.bounds.rangeLabel}: ${item.count} ${
-              item.count === 1 ? 'activity' : 'activities'
-            } completed${suffix}`
-          : `${item.bounds.rangeLabel}: No records available${suffix}`;
-
-      return {
-        weekStartKey: item.bounds.weekStartKey,
-        rangeLabel: item.bounds.rangeLabel,
-        startLabel,
-        isReviewWeek: item.isReviewWeek,
-        status: item.status,
-        count: item.count,
-        barHeightPx,
-        ariaLabel,
-      };
-    });
-
-    const reviewWeekItem = candidateWeeks[candidateWeeks.length - 1];
-
-    return {
-      hasHistory: weeks.length > 0,
-      weeks,
-      maxKnownCount,
-      reviewWeekStatus: reviewWeekItem.status,
-    };
-  }, [
-    activityRecords,
-    restRecords,
-    weeklySchedulesByWeek,
-    weeklyReviewFeedbacks,
-    currentWeekBounds.weekStartKey,
-    lastCompletedWeekBounds.weekStart,
-    getDeduplicatedWeekCompletions,
-  ]);
-
-  const lastWeekCompactSummaryText = useMemo(() => {
-    const count = lastWeekCompletions.length;
-    if (count > 0) {
-      return `${count} ${count === 1 ? 'activity' : 'activities'} completed.`;
-    }
-    if (weeklyReviewChartModel.reviewWeekStatus === 'known') {
-      return '0 activities completed.';
-    }
-    return 'No activities recorded last week.';
-  }, [lastWeekCompletions.length, weeklyReviewChartModel.reviewWeekStatus]);
-
+  // Keep legacy adjustment proposal state available only for legacy schedule sheet cleanup
   const lastWeekFeedback =
     weeklyReviewFeedbacks[lastCompletedWeekBounds.weekStartKey] ?? null;
-
-  const selectedWeeklyReviewFeeling = lastWeekFeedback?.feeling ?? null;
-
-  // Base schedule for Next week adjustment: prefer Next week's own schedule, else current week's cadence (never mutating This week)
   const adjustmentTargetBaseSchedule = nextWeekSchedule ?? weeklySchedule;
-
   const activeAdjustmentProposal = useMemo(
     () =>
       buildWeeklyAdjustmentProposal(
@@ -1662,169 +1644,776 @@ export function MyPlanView({
     [adjustmentTargetBaseSchedule, lastWeekFeedback, nextWeekBounds, resolvedAdjustmentKeys]
   );
 
-  const [weeklyReviewSaveError, setWeeklyReviewSaveError] = useState<string | null>(null);
+  // Unused legacy handlers kept removed; Weekly review + Your journey now share one unified engine below.
+  void lastWeekCompletions;
 
-  const weeklyReviewResponseText = selectedWeeklyReviewFeeling
-    ? ({
-        too_much: 'Thanks for telling me. We can take it easier.',
-        about_right: 'Good to know. This pace feels worth keeping.',
-        ready_for_more: 'We can explore a little more when you’re ready.',
-      } as const)[selectedWeeklyReviewFeeling]
-    : null;
+  // Atomic persistence helper for Your journey actions so save failures keep UI clean with Retry
+  const tryCommitPlanStoreUpdate = useCallback(
+    (updater: (prev: PlanFoundationStore) => PlanFoundationStore): boolean => {
+      const next = updater(effectivePlanStore);
+      if (next === effectivePlanStore) return true;
+      const didSave = savePlanFoundationStore(next);
+      if (!didSave) return false;
+      if (onUpdatePlanStore) {
+        onUpdatePlanStore(() => next);
+      }
+      return true;
+    },
+    [effectivePlanStore, onUpdatePlanStore]
+  );
 
-  const handleSelectWeeklyReviewFeeling = (feeling: WeeklyReviewFeeling) => {
-    const weekStartKey = lastCompletedWeekBounds.weekStartKey;
-    const nowIso = new Date().toISOString();
-    const nextFeedbacks: Record<string, WeeklyReviewFeedback> = {
-      ...weeklyReviewFeedbacks,
-      [weekStartKey]: {
-        weekStartKey,
-        feeling,
-        updatedAt: nowIso,
-      },
-    };
-    const didSave = saveWeeklyReviewFeedbacks(nextFeedbacks);
-    if (!didSave) {
-      setWeeklyReviewSaveError('Couldn’t save your feedback. Please try again.');
-      return;
-    }
-    if (onUpdatePlanStore) {
-      onUpdatePlanStore((prev) =>
-        upsertWeeklyReviewAnswer(prev, {
-          weekStartKey,
-          questionId: DEFAULT_WEEKLY_REVIEW_QUESTION_ID,
-          rawAnswer: feeling,
-          timestamp: nowIso,
-        }).store
+  const handleJourneySaveFeelingCheckIn = useCallback(
+    (frictionLevel: HabitStartFrictionLevel): JourneyActionResult => {
+      if (!activeRhythmHabit) return { ok: false, error: 'No active habit selected.' };
+      const ok = tryCommitPlanStoreUpdate(
+        (prev) =>
+          recordHabitCheckIn(prev, {
+            habitId: activeRhythmHabit.habitId,
+            frictionLevel,
+            dateKey: deviceToday.dateStr,
+          }).store
       );
-    }
-    setWeeklyReviewSaveError(null);
-    setWeeklyReviewFeedbacks(nextFeedbacks);
-  };
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t save your check-in right now. Please try again.' };
+      }
+      return { ok: true };
+    },
+    [activeRhythmHabit, deviceToday.dateStr, tryCommitPlanStoreUpdate]
+  );
 
-  const handleAcceptAdjustment = () => {
-    if (!activeAdjustmentProposal || !adjustmentTargetBaseSchedule) return;
-    const targetWeekKey = activeAdjustmentProposal.targetWeekStartKey;
-    const baseForTargetWeek =
-      weeklySchedulesByWeek[targetWeekKey] ?? adjustmentTargetBaseSchedule;
-    const updatedTargetSchedule = applyWeeklyAdjustmentProposal(
-      baseForTargetWeek,
-      activeAdjustmentProposal
+  const handleJourneyHideStatusConclusion = useCallback((): JourneyActionResult => {
+    if (!activeRhythmHabit || !rhythmModel) return { ok: false };
+    const ok = tryCommitPlanStoreUpdate((prev) =>
+      hideHabitStatusConclusion(
+        prev,
+        activeRhythmHabit.habitId,
+        rhythmModel.statusCode,
+        activeRhythmHabit.version
+      )
     );
+    if (!ok) {
+      return { ok: false, error: 'Couldn’t update your view preference right now.' };
+    }
+    return { ok: true };
+  }, [activeRhythmHabit, rhythmModel, tryCommitPlanStoreUpdate]);
 
-    const nextByWeek: WeeklySchedulesByWeek = {
-      ...weeklySchedulesByWeek,
-      [targetWeekKey]: updatedTargetSchedule,
-    };
-    setWeeklySchedulesByWeek(nextByWeek);
-    saveWeeklySchedulesByWeek(nextByWeek);
+  const handleJourneyShowStatusConclusion = useCallback((): JourneyActionResult => {
+    if (!activeRhythmHabit) return { ok: false };
+    const ok = tryCommitPlanStoreUpdate((prev) =>
+      clearHiddenHabitStatusConclusion(prev, activeRhythmHabit.habitId)
+    );
+    if (!ok) {
+      return { ok: false, error: 'Couldn’t update your view preference right now.' };
+    }
+    return { ok: true };
+  }, [activeRhythmHabit, tryCommitPlanStoreUpdate]);
 
-    if (onUpdatePlanStore) {
-      onUpdatePlanStore((prev) => {
-        const withEvent = recordLifecycleEvent(prev, {
+  // Atomic Stage 6 Weekly review handlers (persists first; save failure leaves state clean with Retry)
+  const handleWeeklyFitSelect = useCallback(
+    (answer: WeeklyReviewFitAnswer): JourneyActionResult => {
+      const weekStartKey = weeklyReviewModel.weekStartKey;
+      const nowIso = new Date().toISOString();
+      const ok = tryCommitPlanStoreUpdate(
+        (prev) =>
+          upsertWeeklyReviewAnswer(prev, {
+            weekStartKey,
+            questionId: WEEKLY_REVIEW_FIT_QUESTION_ID,
+            rawAnswer: answer,
+            commitmentVersion: prev.commitment?.version ?? null,
+            habitVersion: activeRhythmHabit?.version ?? null,
+            timestamp: nowIso,
+          }).store
+      );
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t save your feedback. Please try again.' };
+      }
+      const legacyFeeling: WeeklyReviewFeeling =
+        answer === 'hard_to_fit_in'
+          ? 'too_much'
+          : answer === 'room_for_more'
+          ? 'ready_for_more'
+          : 'about_right';
+      const nextFeedbacks: Record<string, WeeklyReviewFeedback> = {
+        ...weeklyReviewFeedbacks,
+        [weekStartKey]: {
+          weekStartKey,
+          feeling: legacyFeeling,
+          updatedAt: nowIso,
+        },
+      };
+      setWeeklyReviewFeedbacks(nextFeedbacks);
+      saveWeeklyReviewFeedbacks(nextFeedbacks);
+      return { ok: true };
+    },
+    [
+      weeklyReviewModel.weekStartKey,
+      activeRhythmHabit?.version,
+      weeklyReviewFeedbacks,
+      tryCommitPlanStoreUpdate,
+    ]
+  );
+
+  const handleWeeklyFollowUpSelect = useCallback(
+    (answer: WeeklyHardFollowUpAnswer): JourneyActionResult => {
+      const weekStartKey = weeklyReviewModel.weekStartKey;
+      const nowIso = new Date().toISOString();
+      const ok = tryCommitPlanStoreUpdate(
+        (prev) =>
+          upsertWeeklyReviewAnswer(prev, {
+            weekStartKey,
+            questionId: WEEKLY_REVIEW_HARD_FOLLOWUP_QUESTION_ID,
+            rawAnswer: answer,
+            commitmentVersion: prev.commitment?.version ?? null,
+            habitVersion: activeRhythmHabit?.version ?? null,
+            timestamp: nowIso,
+          }).store
+      );
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t save your answer. Please try again.' };
+      }
+      return { ok: true };
+    },
+    [weeklyReviewModel.weekStartKey, activeRhythmHabit?.version, tryCommitPlanStoreUpdate]
+  );
+
+  const handleWeeklyStartingFeelSelect = useCallback(
+    (level: HabitStartFrictionLevel): JourneyActionResult => {
+      const weekStartKey = weeklyReviewModel.weekStartKey;
+      const nowIso = new Date().toISOString();
+      const ok = tryCommitPlanStoreUpdate((prev) => {
+        let next = upsertWeeklyReviewAnswer(prev, {
+          weekStartKey,
+          questionId: DEFAULT_HABIT_EASE_QUESTION_ID,
+          rawAnswer: level,
+          commitmentVersion: prev.commitment?.version ?? null,
+          habitVersion: activeRhythmHabit?.version ?? null,
+          timestamp: nowIso,
+        }).store;
+        if (activeRhythmHabit) {
+          next = recordHabitCheckIn(next, {
+            habitId: activeRhythmHabit.habitId,
+            frictionLevel: level,
+            dateKey: deviceToday.dateStr,
+            questionId: DEFAULT_HABIT_EASE_QUESTION_ID,
+            recordedAt: nowIso,
+          }).store;
+        }
+        return next;
+      });
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t save your check-in. Please try again.' };
+      }
+      return { ok: true };
+    },
+    [
+      weeklyReviewModel.weekStartKey,
+      activeRhythmHabit,
+      deviceToday.dateStr,
+      tryCommitPlanStoreUpdate,
+    ]
+  );
+
+  const handleWeeklySelfReportSave = useCallback(
+    (noteOrSkipped: string): JourneyActionResult => {
+      const weekStartKey = weeklyReviewModel.weekStartKey;
+      const nowIso = new Date().toISOString();
+      const ok = tryCommitPlanStoreUpdate(
+        (prev) =>
+          upsertWeeklyReviewAnswer(prev, {
+            weekStartKey,
+            questionId: WEEKLY_REVIEW_SELF_REPORT_QUESTION_ID,
+            rawAnswer: noteOrSkipped,
+            commitmentVersion: prev.commitment?.version ?? null,
+            habitVersion: activeRhythmHabit?.version ?? null,
+            timestamp: nowIso,
+          }).store
+      );
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t save your note. Please try again.' };
+      }
+      return { ok: true };
+    },
+    [weeklyReviewModel.weekStartKey, activeRhythmHabit?.version, tryCommitPlanStoreUpdate]
+  );
+
+  const handleConfirmSharedSuggestion = useCallback(
+    (
+      step: JourneyNextStepExperiment,
+      editedValue?: string,
+      source: 'journey' | 'weekly_review' = 'journey'
+    ): JourneyActionResult => {
+      const nowIso = new Date().toISOString();
+      const isWeeklySuggestion = step.suggestionId.startsWith('wr::');
+
+      const attachWeeklyDecision = (
+        storeAfterUpdate: PlanFoundationStore,
+        summary: string,
+        resultingPlanVersion?: string
+      ): PlanFoundationStore => {
+        if (!isWeeklySuggestion) return storeAfterUpdate;
+        return appendWeeklyReviewDecision(storeAfterUpdate, {
+          weekStartKey: weeklyReviewModel.weekStartKey,
+          questionId: WEEKLY_REVIEW_FIT_QUESTION_ID,
+          decision: {
+            id: `wdec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            suggestionId: step.suggestionId,
+            decision: 'accepted',
+            summary,
+            decidedAt: nowIso,
+            ...(resultingPlanVersion ? { payload: { resultingPlanVersion } } : {}),
+          },
+        });
+      };
+
+      if (step.kind === 'weekly_review_shared' && activeAdjustmentProposal && adjustmentTargetBaseSchedule) {
+        const targetWeekKey = activeAdjustmentProposal.targetWeekStartKey;
+        const baseForTargetWeek =
+          weeklySchedulesByWeek[targetWeekKey] ?? adjustmentTargetBaseSchedule;
+        const updatedTargetSchedule = applyWeeklyAdjustmentProposal(
+          baseForTargetWeek,
+          activeAdjustmentProposal
+        );
+        const nextByWeek: WeeklySchedulesByWeek = {
+          ...weeklySchedulesByWeek,
+          [targetWeekKey]: updatedTargetSchedule,
+        };
+        const ok = tryCommitPlanStoreUpdate((prev) => {
+          const withEvent = recordLifecycleEvent(prev, {
+            type: 'strategy_adjustment',
+            dateKey: deviceToday.dateStr,
+            source: 'plan',
+            habitId: activeRhythmHabit?.habitId,
+            title: activeAdjustmentProposal.headline,
+            note: activeAdjustmentProposal.changeLabel,
+            relatedWeekStartKey: targetWeekKey,
+            payload: {
+              proposalId: activeAdjustmentProposal.id,
+              targetActivity: activeAdjustmentProposal.targetActivity,
+              targetField: activeAdjustmentProposal.targetField,
+              previousValue: activeAdjustmentProposal.previousValue,
+              nextValue: activeAdjustmentProposal.nextValue,
+            },
+          }).store;
+          const withShared = recordSharedSuggestionDecision(withEvent, {
+            suggestionId: activeAdjustmentProposal.id,
+            status: 'accepted',
+            habitId: activeRhythmHabit?.habitId,
+            source,
+            summary: activeAdjustmentProposal.changeLabel,
+          });
+          return recordCommitmentRhythmEvent(withShared, 'adjusted');
+        });
+        if (!ok) {
+          return {
+            ok: false,
+            error: 'Couldn’t save this adjustment right now. Your plan wasn’t changed.',
+          };
+        }
+        setWeeklySchedulesByWeek(nextByWeek);
+        saveWeeklySchedulesByWeek(nextByWeek);
+        const nextResolved = Array.from(
+          new Set([
+            ...resolvedAdjustmentKeys,
+            activeAdjustmentProposal.resolutionKey,
+            activeAdjustmentProposal.id,
+          ])
+        );
+        setResolvedAdjustmentKeys(nextResolved);
+        saveResolvedAdjustmentKeys(nextResolved);
+        setLastAppliedAdjustment({
+          proposal: activeAdjustmentProposal,
+          targetWeekStartKey: targetWeekKey,
+          targetActivity: activeAdjustmentProposal.targetActivity,
+          targetField: activeAdjustmentProposal.targetField,
+          previousValue: activeAdjustmentProposal.previousValue,
+          appliedValue: activeAdjustmentProposal.nextValue,
+        });
+        showPlanToast('Adjustment saved');
+        return { ok: true };
+      }
+
+      const ok = tryCommitPlanStoreUpdate((prev) => {
+        // 1. Habit-backed concrete updates (only updates version & journey event inside atomic commit)
+        if (activeRhythmHabit) {
+          if (step.kind === 'make_smaller') {
+            const nextRegular = (editedValue ?? step.afterLabel).trim();
+            const res = confirmHabitStrategy(prev, {
+              habitId: activeRhythmHabit.habitId,
+              label: activeRhythmHabit.label,
+              regularAction: nextRegular,
+              minimumAction: activeRhythmHabit.minimumAction,
+              cueTiming: activeRhythmHabit.cueTiming,
+              alternativeAction: activeRhythmHabit.alternativeAction,
+              frequencyDescription: activeRhythmHabit.frequencyDescription,
+              adjustmentKind: 'made_smaller',
+              adjustmentNote: `${activeRhythmHabit.regularAction} → ${nextRegular}`,
+              confirmTrackingStartDateKey: deviceToday.dateStr,
+            });
+            const withShared = recordSharedSuggestionDecision(res.store, {
+              suggestionId: step.suggestionId,
+              status: 'accepted',
+              habitId: activeRhythmHabit.habitId,
+              source,
+              summary: nextRegular,
+            });
+            return attachWeeklyDecision(
+              withShared,
+              `${step.title}: ${nextRegular}`,
+              res.strategy.version
+            );
+          }
+
+          if (step.kind === 'add_alternative') {
+            const nextAlt = (editedValue ?? step.afterLabel).trim();
+            const res = confirmHabitStrategy(prev, {
+              habitId: activeRhythmHabit.habitId,
+              label: activeRhythmHabit.label,
+              regularAction: activeRhythmHabit.regularAction,
+              minimumAction: activeRhythmHabit.minimumAction,
+              cueTiming: activeRhythmHabit.cueTiming,
+              alternativeAction: nextAlt,
+              frequencyDescription: activeRhythmHabit.frequencyDescription,
+              adjustmentKind: 'alternative_added',
+              adjustmentNote: `Backup way: ${nextAlt}`,
+              confirmTrackingStartDateKey: deviceToday.dateStr,
+            });
+            const withShared = recordSharedSuggestionDecision(res.store, {
+              suggestionId: step.suggestionId,
+              status: 'accepted',
+              habitId: activeRhythmHabit.habitId,
+              source,
+              summary: nextAlt,
+            });
+            return attachWeeklyDecision(
+              withShared,
+              `${step.title}: ${nextAlt}`,
+              res.strategy.version
+            );
+          }
+
+          if (step.kind === 'shift_cue') {
+            const nextCue = (editedValue ?? step.afterLabel).trim();
+            const res = confirmHabitStrategy(prev, {
+              habitId: activeRhythmHabit.habitId,
+              label: activeRhythmHabit.label,
+              regularAction: activeRhythmHabit.regularAction,
+              minimumAction: activeRhythmHabit.minimumAction,
+              cueTiming: nextCue,
+              alternativeAction: activeRhythmHabit.alternativeAction,
+              frequencyDescription: activeRhythmHabit.frequencyDescription,
+              adjustmentKind: 'cue_timing',
+              adjustmentNote: `Cue: ${nextCue}`,
+              confirmTrackingStartDateKey: deviceToday.dateStr,
+            });
+            const withShared = recordSharedSuggestionDecision(res.store, {
+              suggestionId: step.suggestionId,
+              status: 'accepted',
+              habitId: activeRhythmHabit.habitId,
+              source,
+              summary: nextCue,
+            });
+            return attachWeeklyDecision(
+              withShared,
+              `${step.title}: ${nextCue}`,
+              res.strategy.version
+            );
+          }
+
+          if (step.kind === 'resume') {
+            const withResume = recordLifecycleEvent(prev, {
+              type: 'resume',
+              dateKey: deviceToday.dateStr,
+              source: 'plan',
+              habitId: activeRhythmHabit.habitId,
+              title: 'Came back',
+              note: 'Resumed from Your journey.',
+            }).store;
+            return recordSharedSuggestionDecision(withResume, {
+              suggestionId: step.suggestionId,
+              status: 'accepted',
+              habitId: activeRhythmHabit.habitId,
+              source,
+              summary: 'Resumed',
+            });
+          }
+
+          if (step.kind === 'pause') {
+            const withPause = recordLifecycleEvent(prev, {
+              type: 'pause',
+              dateKey: deviceToday.dateStr,
+              source: 'plan',
+              habitId: activeRhythmHabit.habitId,
+              title: 'Took a pause',
+              note: 'Paused intentionally from Your journey.',
+            }).store;
+            return recordSharedSuggestionDecision(withPause, {
+              suggestionId: step.suggestionId,
+              status: 'accepted',
+              habitId: activeRhythmHabit.habitId,
+              source,
+              summary: 'Paused',
+            });
+          }
+
+          // keep_rhythm (explicit valid decision)
+          const withKeep = recordLifecycleEvent(prev, {
+            type: 'strategy_adjustment',
+            dateKey: deviceToday.dateStr,
+            source: 'plan',
+            habitId: activeRhythmHabit.habitId,
+            title: 'Chose to keep this rhythm',
+            note: `Keeping ${activeRhythmHabit.regularAction} without adding load.`,
+            payload: {
+              adjustmentKind: 'kept_rhythm',
+              toVersion: activeRhythmHabit.version,
+            },
+          }).store;
+          const withCommitment = recordCommitmentRhythmEvent(withKeep, 'kept');
+          const withShared = recordSharedSuggestionDecision(withCommitment, {
+            suggestionId: step.suggestionId,
+            status: 'accepted',
+            habitId: activeRhythmHabit.habitId,
+            source,
+            summary: 'Kept current rhythm',
+          });
+          return attachWeeklyDecision(withShared, 'Keep this rhythm', activeRhythmHabit.version);
+        }
+
+        // 2. Commitment-level fallback when no specific habit is confirmed yet
+        if (step.kind === 'keep_rhythm') {
+          const withKeep = recordLifecycleEvent(prev, {
+            type: 'strategy_adjustment',
+            dateKey: deviceToday.dateStr,
+            source: 'plan',
+            title: 'Chose to keep this rhythm',
+            note: 'Keeping current movement plan without adding load.',
+            payload: { adjustmentKind: 'kept_rhythm' },
+          }).store;
+          const withCommitment = recordCommitmentRhythmEvent(withKeep, 'kept');
+          const withShared = recordSharedSuggestionDecision(withCommitment, {
+            suggestionId: step.suggestionId,
+            status: 'accepted',
+            source,
+            summary: 'Kept current rhythm',
+          });
+          const versionLabel = prev.commitment ? `v${prev.commitment.version}` : undefined;
+          return attachWeeklyDecision(withShared, 'Keep this rhythm', versionLabel);
+        }
+
+        const nextValue = (editedValue ?? step.afterLabel).trim();
+        let updatedStore = prev;
+        let resultingVersion: string | undefined;
+        if (prev.commitment) {
+          const commitmentRes = upsertPhaseCommitment(prev, {
+            phaseId: prev.commitment.phaseId,
+            phaseName: prev.commitment.phaseName,
+            originalIntent: prev.commitment.originalIntent,
+            summary: prev.commitment.summary,
+            strategySummary:
+              step.kind === 'make_smaller'
+                ? nextValue
+                : `${prev.commitment.strategySummary ?? prev.commitment.summary} (${step.title}: ${nextValue})`,
+            strategies: prev.commitment.strategies,
+            status: prev.commitment.status,
+          });
+          updatedStore = commitmentRes.store;
+          resultingVersion = `v${commitmentRes.commitment.version}`;
+        }
+        const withEvent = recordLifecycleEvent(updatedStore, {
           type: 'strategy_adjustment',
           dateKey: deviceToday.dateStr,
           source: 'plan',
-          title: activeAdjustmentProposal.headline,
-          note: activeAdjustmentProposal.changeLabel,
-          relatedWeekStartKey: targetWeekKey,
-          payload: {
-            proposalId: activeAdjustmentProposal.id,
-            targetActivity: activeAdjustmentProposal.targetActivity,
-            targetField: activeAdjustmentProposal.targetField,
-            previousValue: activeAdjustmentProposal.previousValue,
-            nextValue: activeAdjustmentProposal.nextValue,
-          },
+          title: step.title,
+          note: `${step.beforeLabel} → ${nextValue}`,
+          payload: { adjustmentKind: step.kind, resultingVersion },
         }).store;
-        return recordCommitmentRhythmEvent(withEvent, 'adjusted');
+        const withRhythmEvent = recordCommitmentRhythmEvent(withEvent, 'adjusted');
+        const withShared = recordSharedSuggestionDecision(withRhythmEvent, {
+          suggestionId: step.suggestionId,
+          status: 'accepted',
+          source,
+          summary: nextValue,
+        });
+        return attachWeeklyDecision(withShared, `${step.title}: ${nextValue}`, resultingVersion);
       });
-    }
 
-    const nextResolved = Array.from(
-      new Set([
-        ...resolvedAdjustmentKeys,
-        activeAdjustmentProposal.resolutionKey,
-        activeAdjustmentProposal.id,
-      ])
-    );
-    setResolvedAdjustmentKeys(nextResolved);
-    saveResolvedAdjustmentKeys(nextResolved);
-    setLastAppliedAdjustment({
-      proposal: activeAdjustmentProposal,
-      targetWeekStartKey: targetWeekKey,
-      targetActivity: activeAdjustmentProposal.targetActivity,
-      targetField: activeAdjustmentProposal.targetField,
-      previousValue: activeAdjustmentProposal.previousValue,
-      appliedValue: activeAdjustmentProposal.nextValue,
-    });
-  };
+      if (!ok) {
+        return {
+          ok: false,
+          error: 'Couldn’t save this update right now. Your plan wasn’t changed.',
+        };
+      }
+      showPlanToast(step.kind === 'keep_rhythm' ? 'Rhythm kept' : 'Plan updated');
+      return { ok: true };
+    },
+    [
+      activeRhythmHabit,
+      activeAdjustmentProposal,
+      adjustmentTargetBaseSchedule,
+      weeklySchedulesByWeek,
+      resolvedAdjustmentKeys,
+      weeklyReviewModel.weekStartKey,
+      deviceToday.dateStr,
+      tryCommitPlanStoreUpdate,
+    ]
+  );
 
-  const handleUndoAdjustment = () => {
-    if (!lastAppliedAdjustment) return;
-    const {
-      proposal,
-      targetWeekStartKey,
-      targetActivity,
-      targetField,
-      previousValue,
-      appliedValue,
-    } = lastAppliedAdjustment;
+  const handleDismissSharedSuggestion = useCallback(
+    (
+      step: JourneyNextStepExperiment,
+      source: 'journey' | 'weekly_review' = 'journey'
+    ): JourneyActionResult => {
+      const ok = tryCommitPlanStoreUpdate((prev) => {
+        const next = recordSharedSuggestionDecision(prev, {
+          suggestionId: step.suggestionId,
+          status: 'dismissed',
+          habitId: activeRhythmHabit?.habitId,
+          source,
+          summary: step.title,
+        });
+        return step.kind === 'weekly_review_shared'
+          ? recordCommitmentRhythmEvent(next, 'kept')
+          : next;
+      });
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t save your preference right now.' };
+      }
+      if (step.kind === 'weekly_review_shared' && activeAdjustmentProposal) {
+        const nextResolved = Array.from(
+          new Set([
+            ...resolvedAdjustmentKeys,
+            activeAdjustmentProposal.resolutionKey,
+            activeAdjustmentProposal.id,
+          ])
+        );
+        setResolvedAdjustmentKeys(nextResolved);
+        saveResolvedAdjustmentKeys(nextResolved);
+        setLastAppliedAdjustment(null);
+      }
+      return { ok: true };
+    },
+    [activeRhythmHabit?.habitId, activeAdjustmentProposal, resolvedAdjustmentKeys, tryCommitPlanStoreUpdate]
+  );
 
-    const latestTargetSchedule = weeklySchedulesByWeek[targetWeekStartKey];
-    if (!latestTargetSchedule) {
-      setLastAppliedAdjustment(null);
+  const handleJourneyConfirmNextStep = useCallback(
+    (step: JourneyNextStepExperiment, editedValue?: string): JourneyActionResult =>
+      handleConfirmSharedSuggestion(step, editedValue, 'journey'),
+    [handleConfirmSharedSuggestion]
+  );
+
+  const handleJourneyDismissNextStep = useCallback(
+    (step: JourneyNextStepExperiment): JourneyActionResult =>
+      handleDismissSharedSuggestion(step, 'journey'),
+    [handleDismissSharedSuggestion]
+  );
+
+  const handleWeeklyConfirmSuggestion = useCallback(
+    (step: JourneyNextStepExperiment, editedValue?: string): JourneyActionResult =>
+      handleConfirmSharedSuggestion(step, editedValue, 'weekly_review'),
+    [handleConfirmSharedSuggestion]
+  );
+
+  const handleWeeklyDismissSuggestion = useCallback(
+    (step: JourneyNextStepExperiment): JourneyActionResult =>
+      handleDismissSharedSuggestion(step, 'weekly_review'),
+    [handleDismissSharedSuggestion]
+  );
+
+  // Atomic Stage 7 Goal detail / Review together / Adjust goal / Completion lifecycle handlers
+  const handleGoalAdjust = useCallback(
+    (
+      input: Omit<AdjustGoalCommitmentInput, 'dateKey' | 'timestamp' | 'activeHabit'>
+    ): JourneyActionResult => {
+      let nextCommitmentSummary: string | null = null;
+      let nextCommitmentStrategy: string | null = null;
+      const ok = tryCommitPlanStoreUpdate((prev) => {
+        const res = adjustGoalCommitment(prev, {
+          ...input,
+          activeHabit: activeRhythmHabit,
+          dateKey: deviceToday.dateStr,
+        });
+        nextCommitmentSummary = res.commitment.summary;
+        nextCommitmentStrategy = res.commitment.strategySummary ?? null;
+        return res.store;
+      });
+      if (!ok) {
+        return {
+          ok: false,
+          error: 'Couldn’t save your changes right now. Your current goal stays unchanged.',
+        };
+      }
+      if (nextCommitmentSummary) {
+        const syncedDirection: DirectionState = {
+          ...direction,
+          goalTitle: nextCommitmentSummary,
+          description: nextCommitmentStrategy ?? '',
+          executionApproach: nextCommitmentStrategy ?? '',
+          status: 'active',
+          source: 'user',
+          isSample: false,
+        };
+        setDirection(syncedDirection);
+        persistFocusToStorage(syncedDirection);
+      }
+      showPlanToast(input.mode === 'new_direction' ? 'New focus started' : 'Goal updated');
+      return { ok: true };
+    },
+    [activeRhythmHabit, deviceToday.dateStr, direction, tryCommitPlanStoreUpdate]
+  );
+
+  const handleGoalKeepExploring = useCallback(
+    (input: {
+      feeling?: GoalReviewFeeling;
+      outsidePracticeNote?: string;
+    }): JourneyActionResult => {
+      const ok = tryCommitPlanStoreUpdate((prev) =>
+        recordGoalKeepExploring(prev, {
+          ...input,
+          dateKey: deviceToday.dateStr,
+        })
+      );
+      if (!ok) {
+        return {
+          ok: false,
+          error: 'Couldn’t save your review right now. Please try again.',
+        };
+      }
+      showPlanToast('Staying with this goal');
+      return { ok: true };
+    },
+    [deviceToday.dateStr, tryCommitPlanStoreUpdate]
+  );
+
+  const handleGoalConfirmCompletion = useCallback(
+    (input: {
+      feeling?: GoalReviewFeeling;
+      outsidePracticeNote?: string;
+    }): JourneyActionResult => {
+      const ok = tryCommitPlanStoreUpdate((prev) =>
+        confirmGoalCompletion(prev, {
+          ...input,
+          dateKey: deviceToday.dateStr,
+        })
+      );
+      if (!ok) {
+        return {
+          ok: false,
+          error: 'Couldn’t save completion right now. Your goal is still in progress.',
+        };
+      }
+      showPlanToast('Goal completed');
+      return { ok: true };
+    },
+    [deviceToday.dateStr, tryCommitPlanStoreUpdate]
+  );
+
+  const handleGoalApplyNextStep = useCallback(
+    (input: GoalNextStepSubmitInput): JourneyActionResult => {
+      let syncedSummary: string | null = null;
+      let syncedStrategy: string | null = null;
+      const ok = tryCommitPlanStoreUpdate((prev) => {
+        const nextStore = applyCompletedGoalNextStep(prev, {
+          ...input,
+          activeHabit: activeRhythmHabit,
+          dateKey: deviceToday.dateStr,
+        });
+        syncedSummary = nextStore.commitment?.summary ?? null;
+        syncedStrategy = nextStore.commitment?.strategySummary ?? null;
+        return nextStore;
+      });
+      if (!ok) {
+        return {
+          ok: false,
+          error: 'Couldn’t save your next step right now. Your completed goal stays saved.',
+        };
+      }
+      if (syncedSummary) {
+        const syncedDirection: DirectionState = {
+          ...direction,
+          goalTitle: syncedSummary,
+          description: syncedStrategy ?? '',
+          executionApproach: syncedStrategy ?? '',
+          status: 'active',
+          source: 'user',
+          isSample: false,
+        };
+        setDirection(syncedDirection);
+        persistFocusToStorage(syncedDirection);
+      }
+      showPlanToast(
+        input.choice === 'keep_rhythm'
+          ? 'Rhythm kept'
+          : input.choice === 'build_a_little'
+          ? 'Plan updated'
+          : 'New focus started'
+      );
+      return { ok: true };
+    },
+    [activeRhythmHabit, deviceToday.dateStr, direction, tryCommitPlanStoreUpdate]
+  );
+
+  const triggerPrimaryFitSelect = (answer: WeeklyReviewFitAnswer) => {
+    const res = handleWeeklyFitSelect(answer);
+    if (!res.ok) {
+      setWeeklyReviewSaveError(res.error ?? 'Couldn’t save your feedback. Please try again.');
+      setWeeklyReviewFailedAnswer(answer);
       return;
     }
-
-    // Safety guard: if the user already manually modified this exact field after accepting,
-    // never overwrite the user's newer value — simply clear the Undo entry.
-    const currentFieldVal = getWeeklyScheduleFieldValue(
-      latestTargetSchedule,
-      targetActivity,
-      targetField
-    );
-    if (currentFieldVal !== appliedValue) {
-      setLastAppliedAdjustment(null);
-      return;
-    }
-
-    // Restore ONLY that single field on that target week, preserving all other edits
-    const restoredTargetSchedule = setWeeklyScheduleFieldValue(
-      latestTargetSchedule,
-      targetActivity,
-      targetField,
-      previousValue
-    );
-    const nextByWeek: WeeklySchedulesByWeek = {
-      ...weeklySchedulesByWeek,
-      [targetWeekStartKey]: restoredTargetSchedule,
-    };
-    setWeeklySchedulesByWeek(nextByWeek);
-    saveWeeklySchedulesByWeek(nextByWeek);
-
-    const nextResolved = resolvedAdjustmentKeys.filter(
-      (k) => k !== proposal.resolutionKey && k !== proposal.id
-    );
-    setResolvedAdjustmentKeys(nextResolved);
-    saveResolvedAdjustmentKeys(nextResolved);
-    setLastAppliedAdjustment(null);
+    setWeeklyReviewSaveError(null);
+    setWeeklyReviewFailedAnswer(null);
   };
 
-  const handleDismissAdjustment = () => {
-    if (!activeAdjustmentProposal) return;
-    const nextResolved = Array.from(
-      new Set([
-        ...resolvedAdjustmentKeys,
-        activeAdjustmentProposal.resolutionKey,
-        activeAdjustmentProposal.id,
-      ])
-    );
-    setResolvedAdjustmentKeys(nextResolved);
-    saveResolvedAdjustmentKeys(nextResolved);
-    if (onUpdatePlanStore) {
-      onUpdatePlanStore((prev) => recordCommitmentRhythmEvent(prev, 'kept'));
+  const triggerPrimaryFollowUpSelect = (answer: WeeklyHardFollowUpAnswer) => {
+    const res = handleWeeklyFollowUpSelect(answer);
+    if (!res.ok) {
+      setWeeklyFollowUpSaveError(res.error ?? 'Couldn’t save your answer. Please try again.');
+      setWeeklyFollowUpFailedAnswer(answer);
+      return;
     }
-    setLastAppliedAdjustment(null);
+    setWeeklyFollowUpSaveError(null);
+    setWeeklyFollowUpFailedAnswer(null);
+  };
+
+  const triggerPrimaryConfirmSuggestion = () => {
+    const step = weeklyReviewModel.pendingSuggestion;
+    if (!step) return;
+    const editable =
+      step.kind === 'make_smaller' ||
+      step.kind === 'shift_cue' ||
+      step.kind === 'add_alternative';
+    const trimmed = weeklyPrimaryAfterDraft.trim();
+    if (editable && !trimmed) {
+      setWeeklyPrimarySuggestionError('Enter a short description before confirming.');
+      setWeeklyPrimaryFailedAction(null);
+      return;
+    }
+    const res = handleWeeklyConfirmSuggestion(step, editable ? trimmed : undefined);
+    if (!res.ok) {
+      setWeeklyPrimarySuggestionError(
+        res.error ?? 'Couldn’t save this update right now. Your plan wasn’t changed.'
+      );
+      setWeeklyPrimaryFailedAction('confirm');
+      return;
+    }
+    setWeeklyPrimarySuggestionError(null);
+    setWeeklyPrimaryFailedAction(null);
+    setWeeklyPrimaryConfirming(false);
+  };
+
+  const triggerPrimaryDismissSuggestion = () => {
+    const step = weeklyReviewModel.pendingSuggestion;
+    if (!step) return;
+    const res = handleWeeklyDismissSuggestion(step);
+    if (!res.ok) {
+      setWeeklyPrimarySuggestionError(
+        res.error ?? 'Couldn’t save your preference right now. Please try again.'
+      );
+      setWeeklyPrimaryFailedAction('dismiss');
+      return;
+    }
+    setWeeklyPrimarySuggestionError(null);
+    setWeeklyPrimaryFailedAction(null);
+    setWeeklyPrimaryConfirming(false);
   };
 
   // 6-Month Trend Series derived directly from effectiveActivityLogs ending at viewed month
@@ -2150,8 +2739,18 @@ export function MyPlanView({
 
   // --- Handlers for Phase Commitment Header / Goal Detail ---
   const handleOpenFocusAdjust = () => {
-    setFocusDraftTitle(hasConfirmedCommitment ? headerIntentText : '');
-    setFocusDraftApproach(hasConfirmedCommitment ? headerStrategyText : '');
+    if (hasConfirmedCommitment && effectiveCommitment) {
+      const targetMode: GoalDetailSubMode =
+        effectiveCommitment.reviewRequested && effectiveCommitment.status !== 'completed'
+          ? 'review'
+          : 'overview';
+      setGoalSheetInitialMode(targetMode);
+      setGoalSheetActiveMode(targetMode);
+      openSecondaryModule('goal', 'plan');
+      return;
+    }
+    setFocusDraftTitle('');
+    setFocusDraftApproach('');
     setFocusDraftReview(direction.nextReviewDate);
     setIsFocusAdjustOpen(true);
   };
@@ -2636,7 +3235,10 @@ export function MyPlanView({
   };
 
   return (
-    <div className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(8rem+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none">
+    <div
+      ref={planScrollRef}
+      className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(8rem+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none"
+    >
       <style>{GENKI_PLAN_UI_STYLES}</style>
       {/* Toast Notifications */}
       <AnimatePresence>
@@ -2682,6 +3284,8 @@ export function MyPlanView({
         data-commitment-state={
           !hasConfirmedCommitment
             ? 'unconfirmed'
+            : effectiveCommitment?.status === 'completed'
+            ? 'completed'
             : effectiveCommitment?.reviewRequested
             ? 'review'
             : effectiveCommitment?.lastEventKind ?? 'started'
@@ -2812,7 +3416,7 @@ export function MyPlanView({
               <button
                 type="button"
                 id="plan-rhythm-view-journey-btn"
-                onClick={() => setSelectedModule('journey')}
+                onClick={() => openSecondaryModule('journey')}
                 className="genki-plan-rhythm-journey-btn"
               >
                 View journey
@@ -3045,111 +3649,12 @@ export function MyPlanView({
           </div>
         </section>
 
-        {/* 2b. On-demand adjustment section (Shown only with clear evidence) */}
-        {(activeAdjustmentProposal || lastAppliedAdjustment) && (
-          <>
-            <div aria-hidden="true" className="genki-plan-section-divider" />
-            <section
-              id="plan-module-adjustment"
-              aria-labelledby="plan-heading-adjustment"
-              className="flex flex-col"
-            >
-              <div className="genki-plan-section-header">
-                <h2 id="plan-heading-adjustment" className="genki-plan-section-title">
-                  A small adjustment
-                </h2>
-                <span id="plan-adjustment-target-week" className="genki-plan-section-date">
-                  {lastAppliedAdjustment
-                    ? lastAppliedAdjustment.proposal.targetWeekRangeLabel
-                    : activeAdjustmentProposal?.targetWeekRangeLabel}
-                </span>
-              </div>
-
-              <div className="mt-[16px] flex flex-col">
-                {lastAppliedAdjustment ? (
-                  <div
-                    id="plan-adjustment-updated-state"
-                    className="flex items-center justify-between gap-3"
-                  >
-                    <div className="flex flex-col gap-0.5 min-w-0">
-                      <span
-                        id="plan-adjustment-updated-label"
-                        className="text-[15px] font-semibold leading-[22px] text-[#302D3D]"
-                      >
-                        Updated
-                      </span>
-                      <span
-                        id="plan-adjustment-updated-change"
-                        className="genki-plan-meta"
-                      >
-                        Next week ({lastAppliedAdjustment.proposal.targetWeekRangeLabel}) ·{' '}
-                        {lastAppliedAdjustment.proposal.changeLabel}
-                      </span>
-                    </div>
-
-                    <button
-                      type="button"
-                      id="plan-adjustment-undo-btn"
-                      onClick={handleUndoAdjustment}
-                      className="genki-plan-text-action shrink-0"
-                    >
-                      Undo
-                    </button>
-                  </div>
-                ) : activeAdjustmentProposal ? (
-                  <>
-                    <p
-                      id="plan-adjustment-headline"
-                      className="text-[16px] font-semibold leading-[22px] text-[#302D3D]"
-                    >
-                      {activeAdjustmentProposal.headline}
-                    </p>
-
-                    <p
-                      id="plan-adjustment-change"
-                      className="mt-[6px] text-[15px] font-medium leading-[22px] text-[#5E5BAE]"
-                    >
-                      {activeAdjustmentProposal.changeLabel}
-                    </p>
-
-                    <p
-                      id="plan-adjustment-reason"
-                      className="genki-plan-body mt-[4px]"
-                    >
-                      {activeAdjustmentProposal.reason}
-                    </p>
-
-                    <div className="mt-[12px] flex flex-wrap items-center gap-2.5">
-                      <button
-                        type="button"
-                        id="plan-adjustment-accept-btn"
-                        onClick={handleAcceptAdjustment}
-                        className="genki-plan-control genki-plan-control-primary min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold leading-[20px] transition-colors cursor-pointer"
-                      >
-                        Try this
-                      </button>
-
-                      <button
-                        type="button"
-                        id="plan-adjustment-dismiss-btn"
-                        onClick={handleDismissAdjustment}
-                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-3.5 rounded-[12px] text-[15px] font-semibold leading-[20px] transition-colors cursor-pointer"
-                      >
-                        Keep my plan
-                      </button>
-                    </div>
-                  </>
-                ) : null}
-              </div>
-            </section>
-          </>
-        )}
-
         <div aria-hidden="true" className="genki-plan-section-divider" />
 
-        {/* 3. Weekly review */}
+        {/* 3. Weekly review (Stage 6: No 4-week bar chart; strictly completed week) */}
         <section
           id="plan-module-weekly-review"
+          data-review-week={weeklyReviewModel.weekStartKey}
           aria-labelledby="plan-heading-weekly-review"
           className="flex flex-col"
         >
@@ -3157,157 +3662,350 @@ export function MyPlanView({
             <h2 id="plan-heading-weekly-review" className="genki-plan-section-title">
               Weekly review
             </h2>
-            <span id="weekly-review-date-range" className="genki-plan-section-date">
-              {lastCompletedWeekBounds.rangeLabel}
-            </span>
+            {weeklyReviewModel.hasReviewableWeek && (
+              <span id="weekly-review-date-range" className="genki-plan-section-date">
+                {weeklyReviewModel.rangeLabel}
+              </span>
+            )}
           </div>
 
-          {weeklyReviewChartModel.hasHistory ? (
+          {!weeklyReviewModel.hasReviewableWeek ? (
+            <p
+              id="weekly-review-first-week"
+              className="genki-plan-review-fact mt-[12px] text-[#706A7C]"
+            >
+              We’ll reflect after your first week.
+            </p>
+          ) : (
             <>
-              <div
-                id="weekly-review-bar-chart"
-                role="figure"
-                aria-label="Completed activities across recent completed weeks"
-                className="mt-[16px]"
-              >
+              {/* 1. One evidence-backed fact (15px) */}
+              <p id="weekly-review-fact" className="genki-plan-review-fact mt-[12px]">
+                {weeklyReviewModel.factLine}
+              </p>
+
+              {/* 2. Main question (16px) & 3 options (14px, min-h 56px, radius 12px, gap 6px) */}
+              <div id="weekly-review-feedback-block" className="mt-[16px] flex flex-col">
+                <p id="weekly-review-question" className="genki-plan-feedback-question">
+                  How did movement fit into your week?
+                </p>
+
                 <div
-                  role="list"
-                  className="genki-plan-review-chart"
-                  style={{
-                    gridTemplateColumns: `repeat(${weeklyReviewChartModel.weeks.length}, minmax(0, 1fr))`,
-                  }}
+                  role="group"
+                  aria-labelledby="weekly-review-question"
+                  className="genki-plan-feedback-grid mt-[10px]"
                 >
-                  {weeklyReviewChartModel.weeks.map((week) => (
-                    <div
-                      key={week.weekStartKey}
-                      role="listitem"
-                      aria-label={week.ariaLabel}
-                      data-week-start={week.weekStartKey}
-                      data-week-status={week.status}
-                      data-week-count={week.count !== null ? String(week.count) : 'unknown'}
-                      data-is-review-week={week.isReviewWeek ? 'true' : undefined}
-                      className="genki-plan-review-col"
+                  {WEEKLY_FIT_OPTIONS.map((opt) => {
+                    const isSelected = weeklyReviewModel.fitAnswer === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        id={`weekly-review-option-${opt.value}`}
+                        aria-pressed={isSelected}
+                        onClick={() => triggerPrimaryFitSelect(opt.value)}
+                        className="genki-plan-control genki-plan-control-feedback"
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Save error + Retry */}
+                {weeklyReviewSaveError && (
+                  <div
+                    id="weekly-review-save-error"
+                    role="alert"
+                    className="mt-[10px] flex flex-wrap items-center justify-between gap-2"
+                  >
+                    <span className="text-[13px] font-medium leading-[18px] text-[#B42318]">
+                      {weeklyReviewSaveError}
+                    </span>
+                    {weeklyReviewFailedAnswer && (
+                      <button
+                        type="button"
+                        id="weekly-review-retry-btn"
+                        onClick={() => triggerPrimaryFitSelect(weeklyReviewFailedAnswer)}
+                        className="genki-plan-control min-h-[44px] px-3 rounded-[10px] bg-[#EEEDF6] text-[#514C8C] text-[13px] font-semibold cursor-pointer"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Saved answer confirmation + View review */}
+                {weeklyReviewModel.fitAnswerLabel && !weeklyReviewSaveError && (
+                  <div
+                    id="weekly-review-saved-bar"
+                    role="status"
+                    aria-live="polite"
+                    className="mt-[10px] flex flex-wrap items-center justify-between gap-2"
+                  >
+                    <span
+                      id="weekly-review-saved-answer"
+                      className="text-[13px] font-medium leading-[18px] text-[#514879]"
                     >
-                      <div className="genki-plan-review-plot" aria-hidden="true">
-                        {week.status === 'known' && week.count !== null ? (
-                          <>
-                            <span className="genki-plan-review-value">{week.count}</span>
-                            {week.count > 0 ? (
-                              <span
-                                className={`genki-plan-review-bar ${
-                                  week.isReviewWeek
-                                    ? 'genki-plan-review-bar-current'
-                                    : 'genki-plan-review-bar-other'
-                                }`}
-                                style={{ height: `${week.barHeightPx}px` }}
+                      Saved: {weeklyReviewModel.fitAnswerLabel}
+                    </span>
+                    <button
+                      type="button"
+                      id="weekly-review-view-btn"
+                      onClick={() => openSecondaryModule('weekly_review', 'plan')}
+                      className="genki-plan-text-action"
+                    >
+                      View review
+                    </button>
+                  </div>
+                )}
+
+                {/* At most ONE follow-up question when "Hard to fit in" is selected */}
+                {weeklyReviewModel.fitAnswer === 'hard_to_fit_in' && (
+                  <div
+                    id="weekly-review-followup-block"
+                    className="mt-[12px] pt-[12px] border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-2"
+                  >
+                    <p
+                      id="weekly-review-followup-question"
+                      className="text-[14px] font-semibold leading-[20px] text-[#302D3D]"
+                    >
+                      What made it hardest to fit in?
+                    </p>
+                    <div
+                      role="group"
+                      aria-labelledby="weekly-review-followup-question"
+                      className="grid grid-cols-2 gap-1.5"
+                    >
+                      {WEEKLY_HARD_FOLLOWUP_OPTIONS.map((opt) => {
+                        const active = weeklyReviewModel.followUpAnswer === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            id={`weekly-review-followup-${opt.value}`}
+                            aria-pressed={active}
+                            onClick={() => triggerPrimaryFollowUpSelect(opt.value)}
+                            className={`genki-plan-control min-h-[48px] px-2.5 py-2 rounded-[12px] text-[13px] font-medium leading-[18px] text-center border transition-colors cursor-pointer ${
+                              active
+                                ? 'bg-[#E5E0F3] text-[#514879] border-[#BEB4DE]'
+                                : 'bg-[#F1EFF6] text-[#615B73] border-transparent hover:bg-[#EAE6F4]'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {weeklyFollowUpSaveError && (
+                      <div
+                        id="weekly-review-followup-error"
+                        role="alert"
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span className="text-[13px] font-medium leading-[18px] text-[#B42318]">
+                          {weeklyFollowUpSaveError}
+                        </span>
+                        {weeklyFollowUpFailedAnswer && (
+                          <button
+                            type="button"
+                            id="weekly-review-followup-retry-btn"
+                            onClick={() => triggerPrimaryFollowUpSelect(weeklyFollowUpFailedAnswer)}
+                            className="genki-plan-control min-h-[44px] px-3 rounded-[10px] bg-[#EEEDF6] text-[#514C8C] text-[13px] font-semibold cursor-pointer"
+                          >
+                            Retry
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Room for more: records willingness ONLY (never pushes volume increase) */}
+                {weeklyReviewModel.fitAnswer === 'room_for_more' && (
+                  <p
+                    id="weekly-review-room-note"
+                    className="mt-[8px] text-[13px] font-normal leading-[18px] text-[#706A7C]"
+                  >
+                    Willingness noted — your plan stays unchanged unless you choose to edit it.
+                  </p>
+                )}
+
+                {/* Pending suggestion (strictly separated from Saved answer & Confirmed decisions) */}
+                {weeklyReviewModel.pendingSuggestion &&
+                  weeklyReviewModel.pendingSuggestion.decisionStatus === 'pending' && (
+                    <div
+                      id="weekly-review-pending-suggestion"
+                      data-suggestion-id={weeklyReviewModel.pendingSuggestion.suggestionId}
+                      className="mt-[12px] rounded-[16px] bg-[#F7F5FB] border border-[#7770B6]/12 p-3.5 flex flex-col gap-2.5"
+                    >
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[12px] font-medium leading-[16px] text-[#5E5BAE]">
+                          Suggested adjustment
+                        </span>
+                        <span className="text-[15px] font-semibold leading-[22px] text-[#302D3D]">
+                          {weeklyReviewModel.pendingSuggestion.title}
+                        </span>
+                        <p className="text-[13px] font-normal leading-[18px] text-[#524C63]">
+                          {weeklyReviewModel.pendingSuggestion.basis}
+                        </p>
+                      </div>
+
+                      {!weeklyPrimaryConfirming ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            id="weekly-review-suggestion-review-btn"
+                            onClick={() => {
+                              setWeeklyPrimaryAfterDraft(
+                                weeklyReviewModel.pendingSuggestion?.suggestedFieldValue ??
+                                  weeklyReviewModel.pendingSuggestion?.afterLabel ??
+                                  ''
+                              );
+                              setWeeklyPrimarySuggestionError(null);
+                              setWeeklyPrimaryConfirming(true);
+                            }}
+                            className="genki-plan-control min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold cursor-pointer"
+                          >
+                            {weeklyReviewModel.pendingSuggestion.primaryCtaLabel}
+                          </button>
+                          <button
+                            type="button"
+                            id="weekly-review-suggestion-dismiss-btn"
+                            onClick={triggerPrimaryDismissSuggestion}
+                            className="genki-plan-control min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-[#524C63] text-[14px] font-medium hover:bg-[#F3F1F8] cursor-pointer"
+                          >
+                            {weeklyReviewModel.pendingSuggestion.secondaryCtaLabel}
+                          </button>
+                        </div>
+                      ) : (
+                        <div
+                          id="weekly-review-primary-diff-box"
+                          className="rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] p-3 flex flex-col gap-2.5"
+                        >
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[12px] font-medium text-[#706A7C]">Before</span>
+                            <span
+                              id="weekly-review-primary-diff-before"
+                              className="text-[14px] font-normal leading-[20px] text-[#524C63] break-words"
+                            >
+                              {weeklyReviewModel.pendingSuggestion.beforeLabel}
+                            </span>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[12px] font-medium text-[#5E5BAE]">After</span>
+                            {weeklyReviewModel.pendingSuggestion.kind === 'make_smaller' ||
+                            weeklyReviewModel.pendingSuggestion.kind === 'shift_cue' ||
+                            weeklyReviewModel.pendingSuggestion.kind === 'add_alternative' ? (
+                              <input
+                                id="weekly-review-primary-diff-after-input"
+                                type="text"
+                                value={weeklyPrimaryAfterDraft}
+                                onChange={(e) => {
+                                  setWeeklyPrimaryAfterDraft(e.target.value);
+                                  setWeeklyPrimarySuggestionError(null);
+                                }}
+                                aria-label="Updated plan setting"
+                                className="w-full min-h-[44px] px-3 py-2 rounded-[10px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[14px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
                               />
                             ) : (
                               <span
-                                className={`genki-plan-review-bar-zero ${
-                                  week.isReviewWeek
-                                    ? 'genki-plan-review-bar-zero-current'
-                                    : 'genki-plan-review-bar-zero-other'
-                                }`}
-                              />
+                                id="weekly-review-primary-diff-after"
+                                className="text-[14px] font-medium leading-[20px] text-[#302D3D]"
+                              >
+                                {weeklyReviewModel.pendingSuggestion.afterLabel}
+                              </span>
                             )}
-                          </>
-                        ) : (
-                          <span className="genki-plan-review-value genki-plan-review-value-unknown">
-                            —
-                          </span>
-                        )}
-                      </div>
-                      <span className="genki-plan-review-label" aria-hidden="true">
-                        {week.startLabel}
-                      </span>
+                          </div>
+
+                          {weeklyPrimarySuggestionError && (
+                            <div
+                              id="weekly-review-primary-suggestion-error"
+                              role="alert"
+                              className="flex flex-wrap items-center justify-between gap-2"
+                            >
+                              <span className="text-[13px] font-medium text-[#B42318]">
+                                {weeklyPrimarySuggestionError}
+                              </span>
+                              {weeklyPrimaryFailedAction && (
+                                <button
+                                  type="button"
+                                  id="weekly-review-primary-suggestion-retry-btn"
+                                  onClick={() =>
+                                    weeklyPrimaryFailedAction === 'confirm'
+                                      ? triggerPrimaryConfirmSuggestion()
+                                      : triggerPrimaryDismissSuggestion()
+                                  }
+                                  className="genki-plan-control min-h-[44px] px-3 rounded-[10px] bg-[#EEEDF6] text-[#514C8C] text-[13px] font-semibold cursor-pointer"
+                                >
+                                  Retry
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              id="weekly-review-primary-confirm-btn"
+                              onClick={triggerPrimaryConfirmSuggestion}
+                              className="genki-plan-control flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold cursor-pointer"
+                            >
+                              {weeklyReviewModel.pendingSuggestion.kind === 'keep_rhythm'
+                                ? 'Confirm keeping rhythm'
+                                : 'Confirm update'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setWeeklyPrimaryConfirming(false);
+                                setWeeklyPrimarySuggestionError(null);
+                              }}
+                              className="genki-plan-control min-h-[44px] px-3 rounded-[12px] text-[14px] font-medium text-[#625A76] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  )}
 
-              <p id="weekly-review-summary" className="genki-plan-review-summary mt-[12px]">
-                {lastWeekCompactSummaryText}
-              </p>
-            </>
-          ) : (
-            <p id="weekly-review-empty" className="genki-plan-review-summary mt-[16px]">
-              Your weekly rhythm will appear here.
-            </p>
-          )}
-
-          <div id="weekly-review-feedback-block" className="mt-[20px] flex flex-col">
-            <p id="weekly-review-question" className="genki-plan-feedback-question">
-              How did it feel?
-            </p>
-
-            <div
-              role="group"
-              aria-labelledby="weekly-review-question"
-              className="genki-plan-feedback-grid mt-[10px]"
-            >
-              {(
-                [
-                  { value: 'too_much', label: 'Too much' },
-                  { value: 'about_right', label: 'About right' },
-                  { value: 'ready_for_more', label: 'Ready for more' },
-                ] as const
-              ).map((opt) => {
-                const isSelected = selectedWeeklyReviewFeeling === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    id={`weekly-review-option-${opt.value}`}
-                    aria-pressed={isSelected}
-                    onClick={() => handleSelectWeeklyReviewFeeling(opt.value)}
-                    className="genki-plan-control genki-plan-control-feedback"
+                {/* Confirmed decisions (immutable audit summary separated from Saved answer) */}
+                {weeklyReviewModel.confirmedDecisions.length > 0 && (
+                  <div
+                    id="weekly-review-confirmed-summary"
+                    className="mt-[10px] rounded-[12px] bg-[#F7F5FB] px-3 py-2 flex flex-col gap-0.5"
                   >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
+                    <span className="text-[12px] font-medium leading-[16px] text-[#706A7C]">
+                      Confirmed decision
+                    </span>
+                    <span className="text-[13px] font-semibold leading-[18px] text-[#514879]">
+                      {
+                        weeklyReviewModel.confirmedDecisions[
+                          weeklyReviewModel.confirmedDecisions.length - 1
+                        ].summary
+                      }
+                    </span>
+                  </div>
+                )}
 
-            {weeklyReviewSaveError ? (
-              <p
-                id="weekly-review-save-error"
-                role="alert"
-                className="mt-[12px] text-[14px] font-medium leading-[20px] text-[#B42318]"
-              >
-                {weeklyReviewSaveError}
-              </p>
-            ) : weeklyReviewResponseText ? (
-              <p
-                id="weekly-review-response"
-                role="status"
-                aria-live="polite"
-                className="genki-plan-body mt-[12px]"
-              >
-                {weeklyReviewResponseText}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="mt-[8px] flex items-center justify-end gap-4">
-            {selectedWeeklyReviewFeeling && (
-              <button
-                type="button"
-                id="weekly-review-adjust-next-week-btn"
-                onClick={() => handleOpenWeekAdjust('next_week')}
-                className="genki-plan-text-action"
-              >
-                Adjust next week
-              </button>
-            )}
-            <button
-              type="button"
-              id="weekly-review-view-history-btn"
-              onClick={() => setSelectedModule('history')}
-              className="genki-plan-text-action"
-            >
-              View history
-            </button>
-          </div>
+                {/* When no answer is saved yet, still offer a quiet View review entry */}
+                {!weeklyReviewModel.fitAnswerLabel && (
+                  <div className="mt-[6px] flex items-center justify-end">
+                    <button
+                      type="button"
+                      id="weekly-review-view-btn"
+                      onClick={() => openSecondaryModule('weekly_review', 'plan')}
+                      className="genki-plan-text-action"
+                    >
+                      View review
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </section>
       </div>
 
@@ -3322,7 +4020,7 @@ export function MyPlanView({
         <button
           type="button"
           id="plan-entry-history"
-          onClick={() => setSelectedModule('history')}
+          onClick={() => openSecondaryModule('history', 'plan')}
           className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
           <span className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]">
@@ -3339,7 +4037,7 @@ export function MyPlanView({
         <button
           type="button"
           id="plan-entry-preferences"
-          onClick={() => setSelectedModule('preferences')}
+          onClick={() => openSecondaryModule('preferences')}
           className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
           <div className="flex flex-col min-w-0">
@@ -3368,7 +4066,7 @@ export function MyPlanView({
         <button
           type="button"
           id="plan-entry-health"
-          onClick={() => setSelectedModule('health')}
+          onClick={() => openSecondaryModule('health')}
           className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2 flex items-center justify-between gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
         >
           <span className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]">
@@ -3399,9 +4097,7 @@ export function MyPlanView({
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.2 }}
-                  onClick={() => {
-                    setSelectedModule(null);
-                  }}
+                  onClick={handleSecondarySheetBack}
                   className="absolute inset-0 bg-black/25 backdrop-blur-xs"
                 />
 
@@ -3410,7 +4106,15 @@ export function MyPlanView({
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
                   transition={{ type: 'spring', damping: 28, stiffness: 280 }}
-                  className="relative w-full max-h-[88%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-5 sm:p-6 pb-[calc(24px+env(safe-area-inset-bottom,0px))] shadow-2xl border-t border-white/90 overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
+                  style={
+                    (selectedModule === 'journey' ||
+                      selectedModule === 'weekly_review' ||
+                      selectedModule === 'goal') &&
+                    focusKeyboardInset > 0
+                      ? { paddingBottom: `${focusKeyboardInset + 24}px` }
+                      : undefined
+                  }
+                  className="relative w-full max-h-[90%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-5 sm:p-6 pb-[calc(24px+env(safe-area-inset-bottom,0px))] shadow-2xl border-t border-white/90 overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
                   id="my-plan-secondary-sheet"
                 >
                   {/* Sheet Header with clear Back navigation */}
@@ -3419,14 +4123,24 @@ export function MyPlanView({
                       <button
                         type="button"
                         id="secondary-sheet-back-btn"
-                        onClick={() => {
-                          setSelectedModule(null);
-                        }}
+                        onClick={handleSecondarySheetBack}
                         className="genki-plan-control genki-plan-control-base min-h-[44px] -ml-2 px-2 flex items-center gap-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 transition-opacity cursor-pointer"
-                        aria-label="Return to Plan"
+                        aria-label={
+                          selectedModule === 'history' && historyReturnModule === 'journey'
+                            ? 'Return to Your journey'
+                            : selectedModule === 'history' && historyReturnModule === 'weekly_review'
+                            ? 'Return to Weekly review'
+                            : 'Return to Plan'
+                        }
                       >
                         <ChevronLeft className="w-5 h-5 stroke-[2.2]" />
-                        <span>Plan</span>
+                        <span>
+                          {selectedModule === 'history' && historyReturnModule === 'journey'
+                            ? 'Your journey'
+                            : selectedModule === 'history' && historyReturnModule === 'weekly_review'
+                            ? 'Weekly review'
+                            : 'Plan'}
+                        </span>
                       </button>
 
                       {selectedModule === 'preferences' && (
@@ -3444,124 +4158,107 @@ export function MyPlanView({
                     <div>
                       <h3 className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
                         {selectedModule === 'journey' && 'Your journey'}
+                        {selectedModule === 'weekly_review' && 'Weekly review'}
+                        {selectedModule === 'goal' &&
+                          (goalSheetActiveMode === 'adjust'
+                            ? 'Adjust goal'
+                            : goalSheetActiveMode === 'review'
+                            ? 'Review goal'
+                            : goalSheetActiveMode === 'confirm_completion'
+                            ? 'Mark this goal complete?'
+                            : effectiveCommitment?.status === 'completed'
+                            ? 'Review together'
+                            : 'About this goal')}
                         {selectedModule === 'history' && 'History'}
                         {selectedModule === 'preferences' && 'Preferences'}
                         {selectedModule === 'health' && 'Health data'}
                       </h3>
-                      <p className="text-[13px] leading-[18px] text-[#6E6E78] mt-0.5">
-                        {selectedModule === 'journey' &&
-                          (activeRhythmHabit
-                            ? `${activeRhythmHabit.label} · ${rhythmModel?.statusLabel ?? ''}`
-                            : 'Habit rhythm overview')}
-                        {selectedModule === 'history' && 'Activity calendar, 6-month trend & detailed stats'}
-                        {selectedModule === 'preferences' && 'Saved preferences and pending questions'}
-                        {selectedModule === 'health' && 'Wearable & Apple Health connection status'}
-                      </p>
+                      {selectedModule !== 'journey' && selectedModule !== 'goal' && (
+                        <p className="text-[13px] leading-[18px] text-[#6E6E78] mt-0.5 tabular-nums">
+                          {selectedModule === 'weekly_review' && weeklyReviewModel.rangeLabel}
+                          {selectedModule === 'history' && 'Activity calendar, 6-month trend & detailed stats'}
+                          {selectedModule === 'preferences' && 'Saved preferences and pending questions'}
+                          {selectedModule === 'health' && 'Wearable & Apple Health connection status'}
+                        </p>
+                      )}
                     </div>
                   </div>
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 0: YOUR JOURNEY (Interim Stage 4 View)   */}
+                  {/* SECONDARY PAGE 0: YOUR JOURNEY (Full Stage 5 Detail)    */}
                   {/* ======================================================= */}
                   {selectedModule === 'journey' && (
-                    <div id="view-journey-secondary-page" className="flex flex-col gap-4 text-[#1C1C1E]">
-                      {activeRhythmHabit && rhythmModel ? (
-                        <>
-                          <div className="rounded-[24px] p-5 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex flex-col min-w-0">
-                                <span className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
-                                  Confirmed habit
-                                </span>
-                                <h4 className="mt-1 text-[18px] font-semibold leading-[24px] text-[#302D3D]">
-                                  {activeRhythmHabit.label}
-                                </h4>
-                              </div>
-                              <button
-                                type="button"
-                                id="journey-edit-habit-btn"
-                                onClick={() => handleOpenHabitConfirm(activeRhythmHabit)}
-                                className="genki-plan-text-action shrink-0"
-                              >
-                                Edit
-                              </button>
-                            </div>
+                    activeRhythmHabit ? (
+                      <YourJourneyView
+                        store={effectivePlanStore}
+                        habit={activeRhythmHabit}
+                        confirmedHabitCount={confirmedHabits.length}
+                        referenceDate={referenceTodayDate}
+                        sharedWeeklyProposal={null}
+                        sharedWeeklyExperiment={weeklyReviewModel.pendingSuggestion}
+                        resolvedAdjustmentKeys={resolvedAdjustmentKeys}
+                        onEditHabit={(h) => handleOpenHabitConfirm(h)}
+                        onSwitchHabit={handleCycleRhythmHabit}
+                        onRetryQuery={handleRetryRhythmQuery}
+                        onOpenHistoryFromJourney={() => openSecondaryModule('history', 'journey')}
+                        onSaveFeelingCheckIn={handleJourneySaveFeelingCheckIn}
+                        onHideStatusConclusion={handleJourneyHideStatusConclusion}
+                        onShowStatusConclusion={handleJourneyShowStatusConclusion}
+                        onConfirmNextStep={handleJourneyConfirmNextStep}
+                        onDismissNextStep={handleJourneyDismissNextStep}
+                      />
+                    ) : (
+                      <div id="view-journey-secondary-page" className="flex flex-col gap-3">
+                        <p className="text-[15px] leading-[22px] text-[#625A76]">
+                          Confirm a habit first to follow your rhythm and journey here.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            closeSecondaryModuleToPlan();
+                            handleOpenHabitConfirm(null);
+                          }}
+                          className="genki-plan-control genki-plan-control-primary self-start min-h-[48px] px-5 rounded-[12px] bg-[#5E5BAE] text-white text-[15px] font-semibold cursor-pointer"
+                        >
+                          Confirm a habit
+                        </button>
+                      </div>
+                    )
+                  )}
 
-                            <div className="pt-2 border-t border-black/[0.06] flex flex-col gap-2 text-[14px] leading-[20px]">
-                              <div className="flex flex-col">
-                                <span className="text-[12px] text-[#706A7C]">Regular action</span>
-                                <span className="text-[#302D3D] font-medium">
-                                  {activeRhythmHabit.regularAction}
-                                </span>
-                              </div>
-                              {activeRhythmHabit.minimumAction && (
-                                <div className="flex flex-col">
-                                  <span className="text-[12px] text-[#706A7C]">Minimum action</span>
-                                  <span className="text-[#302D3D] font-medium">
-                                    {activeRhythmHabit.minimumAction}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
+                  {/* ======================================================= */}
+                  {/* SECONDARY PAGE 0B: WEEKLY REVIEW DETAIL (Stage 6)       */}
+                  {/* ======================================================= */}
+                  {selectedModule === 'weekly_review' && (
+                    <WeeklyReviewDetailView
+                      model={weeklyReviewModel}
+                      habit={activeRhythmHabit}
+                      onSelectFitAnswer={handleWeeklyFitSelect}
+                      onSelectFollowUp={handleWeeklyFollowUpSelect}
+                      onConfirmSuggestion={handleWeeklyConfirmSuggestion}
+                      onDismissSuggestion={handleWeeklyDismissSuggestion}
+                      onSelectStartingFeel={handleWeeklyStartingFeelSelect}
+                      onSaveSelfReport={handleWeeklySelfReportSave}
+                      onOpenHistory={() => openSecondaryModule('history', 'weekly_review')}
+                    />
+                  )}
 
-                            <div className="pt-2 border-t border-black/[0.06] flex flex-col gap-1">
-                              <span className="text-[15px] font-semibold leading-[21px] text-[#302D3D]">
-                                {rhythmModel.statusLabel}
-                              </span>
-                              <p className="text-[14px] font-normal leading-[20px] text-[#625A76]">
-                                {rhythmModel.numericSummary}
-                              </p>
-                              {rhythmModel.factualBasis && (
-                                <p className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
-                                  {rhythmModel.factualBasis}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="rounded-[24px] p-5 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2.5">
-                            <span className="text-[14px] font-semibold leading-[20px] text-[#302D3D]">
-                              Recorded practice dates
-                            </span>
-                            {rhythmModel.formattedPracticeDates.length > 0 ? (
-                              <p className="text-[13px] font-normal leading-[19px] text-[#625A76]">
-                                {rhythmModel.formattedPracticeDates.slice(-14).join(' · ')}
-                              </p>
-                            ) : (
-                              <p className="text-[13px] font-normal leading-[19px] text-[#706A7C]">
-                                No practice dates recorded for this habit yet.
-                              </p>
-                            )}
-                            <div className="pt-2 border-t border-black/[0.06] flex items-center justify-between gap-2">
-                              <button
-                                type="button"
-                                id="journey-open-history-btn"
-                                onClick={() => setSelectedModule('history')}
-                                className="genki-plan-text-action"
-                              >
-                                View history
-                              </button>
-                            </div>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="rounded-[24px] p-5 bg-white border border-black/[0.04] flex flex-col gap-3">
-                          <p className="text-[14px] leading-[20px] text-[#625A76]">
-                            Confirm a habit first to follow your rhythm and journey here.
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedModule(null);
-                              handleOpenHabitConfirm(null);
-                            }}
-                            className="genki-plan-control genki-plan-control-primary self-start"
-                          >
-                            Confirm a habit
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                  {/* ======================================================= */}
+                  {/* SECONDARY PAGE 0C: ABOUT THIS GOAL / REVIEW TOGETHER    */}
+                  {/* ======================================================= */}
+                  {selectedModule === 'goal' && effectiveCommitment && (
+                    <GoalDetailView
+                      store={effectivePlanStore}
+                      commitment={effectiveCommitment}
+                      activeHabit={activeRhythmHabit}
+                      referenceDate={referenceTodayDate}
+                      initialMode={goalSheetInitialMode}
+                      onModeChange={setGoalSheetActiveMode}
+                      onAdjustGoal={handleGoalAdjust}
+                      onKeepExploring={handleGoalKeepExploring}
+                      onConfirmCompletion={handleGoalConfirmCompletion}
+                      onApplyNextStep={handleGoalApplyNextStep}
+                    />
                   )}
 
                   {/* ======================================================= */}
