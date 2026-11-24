@@ -1,40 +1,29 @@
 import {
-  ACTIVITIES_STORAGE_KEY,
-  ActivityCompletionRecord,
-  DEFAULT_WEEKLY_DRAFT,
-  REST_RECORDS_STORAGE_KEY,
-  RestRecord,
-  WeeklySchedule,
   addLocalDays,
   buildDateOnlyIso,
-  createDemoHistoryRecords,
-  formatReviewOnSundayLabel,
   getLastCompletedWeekBounds,
   getLocalWeekBounds,
-  getNextWeekBounds,
-  isDateKeyInWeek,
-  loadUnifiedActivityStore,
-  loadWeeklySchedulesByWeek,
-  saveUnifiedActivities,
-  saveUnifiedRestRecords,
-  saveWeeklySchedulesByWeek,
   toLocalDateKey,
 } from './weeklyPlanStore';
 import {
-  DEFAULT_PLAN_PHASES,
-  PLAN_PATH_STORAGE_KEY,
-  loadInitialPlanPath,
-  savePlanPathState,
-} from './planPhaseStore';
-import {
-  PREFERENCES_STORAGE_KEY,
-  PROTOTYPE_DEMO_PREFERENCES,
-  loadPreferences,
-  savePreferences,
-} from './preferencesStore';
+  PlanFoundationStore,
+  addExerciseSession,
+  completeTaskCard,
+  createEmptyPlanFoundationStore,
+  recordLifecycleEvent,
+  upsertPhaseCommitment,
+  upsertWeeklyReviewAnswer,
+  DEFAULT_WEEKLY_REVIEW_QUESTION_ID,
+} from './planDataFoundation';
 
-export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v1';
+export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v2-isolated';
 export const PROTOTYPE_DEMO_SEED_VERSION_KEY = 'genki.plan.demoSeedVersion.v1';
+
+/**
+ * Isolated storage prefix strictly for explicit dev/test preview fixtures.
+ * Official user storage keys MUST NEVER be written by fixture builders.
+ */
+export const PREVIEW_FIXTURE_STORAGE_PREFIX = 'genki.plan.preview_fixture.v1.';
 
 export const FOCUS_STORAGE_KEY = 'genki.plan.focus.v1';
 export const LEGACY_DIRECTION_STORAGE_KEYS = [
@@ -44,378 +33,189 @@ export const LEGACY_DIRECTION_STORAGE_KEYS = [
   'your_direction',
 ] as const;
 
-const LEGACY_SAMPLE_NOTES_TO_STRIP = new Set([
-  'Sample historical activity',
-  'Sample restorative day',
-]);
-
-function createDemoWeeklySchedule(): WeeklySchedule {
-  return {
-    walk: {
-      targetCount: DEFAULT_WEEKLY_DRAFT.walk.targetCount,
-      durationLabel: DEFAULT_WEEKLY_DRAFT.walk.durationLabel,
-    },
-    stretch: {
-      targetCount: DEFAULT_WEEKLY_DRAFT.stretch.targetCount,
-      durationLabel: DEFAULT_WEEKLY_DRAFT.stretch.durationLabel,
-    },
-    restNote: 'As needed',
-    updatedAt: '',
-    source: 'demo',
-  };
-}
-
-function hasSavedUserFocus(): boolean {
-  if (typeof window === 'undefined' || !window.localStorage) return false;
-  try {
-    const raw = window.localStorage.getItem(FOCUS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        const obj = parsed as Record<string, unknown>;
-        const title =
-          typeof obj.focus === 'string'
-            ? obj.focus.trim()
-            : typeof obj.goalTitle === 'string'
-            ? obj.goalTitle.trim()
-            : '';
-        const isDemo = obj.source === 'demo' || obj.isSample === true;
-        if (title && !isDemo) return true;
-      }
-    }
-
-    for (const legacyKey of LEGACY_DIRECTION_STORAGE_KEYS) {
-      const legacyRaw = window.localStorage.getItem(legacyKey);
-      if (!legacyRaw) continue;
-      const parsed = JSON.parse(legacyRaw);
-      if (parsed && typeof parsed === 'object') {
-        const obj = parsed as Record<string, unknown>;
-        const title =
-          typeof obj.focus === 'string'
-            ? obj.focus.trim()
-            : typeof obj.goalTitle === 'string'
-            ? obj.goalTitle.trim()
-            : '';
-        const isDemo = obj.source === 'demo' || obj.isSample === true;
-        if (title && !isDemo) return true;
-      }
-    }
-  } catch {
-    // Ignore malformed JSON
-  }
-  return false;
+export interface IsolatedPlanPreviewFixture {
+  readonly isTestFixture: true;
+  readonly fixtureLabel: 'TEST_PREVIEW_FIXTURE';
+  readonly storageNamespace: typeof PREVIEW_FIXTURE_STORAGE_PREFIX;
+  readonly generatedAt: string;
+  readonly store: PlanFoundationStore;
 }
 
 /**
- * One-time versioned prototype demo data initializer.
- *
- * Rules:
- * - Runs at most once per PROTOTYPE_DEMO_SEED_VERSION.
- * - Preserves all existing user data (never clears or overwrites user records).
- * - Uses stable deterministic IDs and local date utilities.
- * - Retains internal `source: 'demo'` markers in code without surfacing sample notices in UI.
- * - Never pre-selects Weekly review feedback, never fabricates Today completions or future logs,
- *   never invents exact timestamps for demo records, and never seeds health metrics.
+ * Deprecated legacy auto-seeder retained solely as a safe no-op for import compatibility.
+ * Official user storage MUST NOT be populated with simulated demo history.
  */
-export function initializePrototypeDemoData(referenceDate: Date = new Date()): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
+export function initializePrototypeDemoData(_referenceDate: Date = new Date()): void {
+  // Intentionally a no-op: never write simulated demo history into official user localStorage.
+}
 
-  try {
-    if (
-      window.localStorage.getItem(PROTOTYPE_DEMO_SEED_VERSION_KEY) ===
-      PROTOTYPE_DEMO_SEED_VERSION
-    ) {
-      return;
-    }
-  } catch {
-    return;
-  }
-
+/**
+ * Builds an explicitly tagged, strictly isolated in-memory test/dev preview fixture.
+ * - Marked with `isTestFixture: true` and `fixtureLabel: 'TEST_PREVIEW_FIXTURE'`.
+ * - Cannot be persisted into official user storage (`savePlanFoundationStore` refuses fixtures).
+ */
+export function createIsolatedPlanPreviewFixture(
+  referenceDate: Date = new Date()
+): IsolatedPlanPreviewFixture {
   const localToday = new Date(
     referenceDate.getFullYear(),
     referenceDate.getMonth(),
     referenceDate.getDate()
   );
+  const currentWeek = getLocalWeekBounds(localToday);
+  const lastWeek = getLastCompletedWeekBounds(localToday);
   const todayKey = toLocalDateKey(localToday);
-  const currentWeekBounds = getLocalWeekBounds(localToday);
-  const lastWeekBounds = getLastCompletedWeekBounds(localToday);
-  const nextWeekBounds = getNextWeekBounds(localToday);
 
-  // 1. Up next phases & Your focus (shared current phase)
-  let activePhaseName = DEFAULT_PLAN_PHASES[0].name;
-  try {
-    const existingPathRaw = window.localStorage.getItem(PLAN_PATH_STORAGE_KEY);
-    if (!existingPathRaw) {
-      savePlanPathState({
-        phases: DEFAULT_PLAN_PHASES.map((p) => ({ ...p })),
-        currentPhaseId: DEFAULT_PLAN_PHASES[0].id,
-        source: 'demo',
-      });
-    } else {
-      const loadedPath = loadInitialPlanPath();
-      const matched = loadedPath.phases.find((p) => p.id === loadedPath.currentPhaseId);
-      if (matched) activePhaseName = matched.name;
-    }
+  let store = createEmptyPlanFoundationStore();
+  store.isTestFixture = true;
+  store.fixtureLabel = 'TEST_PREVIEW_FIXTURE';
 
-    if (!hasSavedUserFocus()) {
-      const demoFocusPayload = {
-        focus: 'Feel more energetic',
-        phase: activePhaseName,
-        approach: 'Short walks and gentle stretches.',
-        reviewDate: formatReviewOnSundayLabel(localToday),
-        status: 'active',
-        goalId: 'energy',
-        source: 'demo',
-        isSample: true,
-      };
-      window.localStorage.setItem(FOCUS_STORAGE_KEY, JSON.stringify(demoFocusPayload));
-    }
-  } catch {
-    // Ignore storage errors
+  const commitRes = upsertPhaseCommitment(store, {
+    phaseId: 'start-small',
+    phaseName: 'Start small',
+    originalIntent: 'I want to build a gentle daily movement rhythm without burning out.',
+    summary: 'Feel more energetic through short walks and stretches.',
+    strategies: [
+      {
+        habitId: 'habit::daily-walk',
+        label: 'Short walk',
+        regularAction: '15-minute walk',
+        minimumAction: '5-minute walk',
+        frequencyDescription: 'About 3 times a week',
+        frequencyIsDescriptiveOnly: true,
+        version: 'v1',
+        confirmedAt: buildDateOnlyIso(lastWeek.weekStartKey),
+      },
+      {
+        habitId: 'habit::gentle-stretch',
+        label: 'Gentle stretch',
+        regularAction: '5-minute stretch at home',
+        minimumAction: '2-minute shoulder stretch',
+        frequencyDescription: 'About 2 times a week',
+        frequencyIsDescriptiveOnly: true,
+        version: 'v1',
+        confirmedAt: buildDateOnlyIso(lastWeek.weekStartKey),
+      },
+    ],
+    status: 'active',
+    confirmTrackingStartDateKey: lastWeek.weekStartKey,
+    timestamp: buildDateOnlyIso(lastWeek.weekStartKey),
+  });
+  store = commitRes.store;
+
+  // Last week fixture task completions
+  const lastWeekMon = toLocalDateKey(addLocalDays(lastWeek.weekStart, 0));
+  const lastWeekWed = toLocalDateKey(addLocalDays(lastWeek.weekStart, 2));
+  const lastWeekThu = toLocalDateKey(addLocalDays(lastWeek.weekStart, 3));
+  const lastWeekSun = toLocalDateKey(addLocalDays(lastWeek.weekStart, 6));
+
+  store = completeTaskCard(store, {
+    logicalTaskId: `fixture-task::${lastWeekMon}::walk`,
+    dateKey: lastWeekMon,
+    completedAt: buildDateOnlyIso(lastWeekMon),
+    hasExactTimestamp: false,
+    planId: 'walk',
+    title: 'Take a 15-minute walk',
+    exerciseSegments: [
+      {
+        exerciseType: 'walk',
+        title: 'Take a 15-minute walk',
+        plannedDurationMinutes: 15,
+        actualDurationMinutes: 15,
+        durationTrust: 'user_reported_actual',
+        linkedHabitId: 'habit::daily-walk',
+      },
+    ],
+    linkedHabitIds: ['habit::daily-walk'],
+    actionTier: 'regular',
+    actionVersion: 'v1',
+  }).store;
+
+  store = completeTaskCard(store, {
+    logicalTaskId: `fixture-task::${lastWeekWed}::stretch`,
+    dateKey: lastWeekWed,
+    completedAt: buildDateOnlyIso(lastWeekWed),
+    hasExactTimestamp: false,
+    planId: 'stretch',
+    title: '5-minute stretch at home',
+    exerciseSegments: [
+      {
+        exerciseType: 'stretch',
+        title: '5-minute stretch at home',
+        plannedDurationMinutes: 5,
+        actualDurationMinutes: null,
+        durationTrust: 'unknown',
+        linkedHabitId: 'habit::gentle-stretch',
+      },
+    ],
+    linkedHabitIds: ['habit::gentle-stretch'],
+    actionTier: 'minimum',
+    actionVersion: 'v1',
+  }).store;
+
+  store = addExerciseSession(store, {
+    id: `fixture-manual::${lastWeekThu}::walk`,
+    exerciseType: 'walk',
+    dateKey: lastWeekThu,
+    occurredAt: buildDateOnlyIso(lastWeekThu),
+    hasExactTimestamp: false,
+    actualDurationMinutes: 20,
+    durationTrust: 'user_reported_actual',
+    source: 'manual',
+    linkedHabitId: 'habit::daily-walk',
+    actionTier: 'regular',
+    actionVersion: 'v1',
+    title: 'Evening neighborhood walk',
+  }).store;
+
+  store = recordLifecycleEvent(store, {
+    type: 'rest',
+    dateKey: lastWeekSun,
+    occurredAt: buildDateOnlyIso(lastWeekSun),
+    source: 'plan',
+    title: 'Mindful rest day',
+  }).store;
+
+  // Current week fixture item strictly before today if available
+  const curMon = toLocalDateKey(addLocalDays(currentWeek.weekStart, 0));
+  if (curMon < todayKey) {
+    store = completeTaskCard(store, {
+      logicalTaskId: `fixture-task::${curMon}::walk`,
+      dateKey: curMon,
+      completedAt: buildDateOnlyIso(curMon),
+      hasExactTimestamp: false,
+      planId: 'walk',
+      title: 'Take a 15-minute walk',
+      exerciseSegments: [
+        {
+          exerciseType: 'walk',
+          title: 'Take a 15-minute walk',
+          plannedDurationMinutes: 15,
+          actualDurationMinutes: null,
+          durationTrust: 'unknown',
+          linkedHabitId: 'habit::daily-walk',
+        },
+      ],
+      linkedHabitIds: ['habit::daily-walk'],
+      actionTier: 'regular',
+      actionVersion: 'v1',
+    }).store;
   }
 
-  // 2. This week & Next week schedules (saved independently by weekStartKey)
-  try {
-    const existingByWeek = loadWeeklySchedulesByWeek(localToday);
-    let schedulesChanged = false;
-    const nextByWeek = { ...existingByWeek };
+  store = upsertWeeklyReviewAnswer(store, {
+    weekStartKey: lastWeek.weekStartKey,
+    questionId: DEFAULT_WEEKLY_REVIEW_QUESTION_ID,
+    rawAnswer: 'about_right',
+    commitmentVersion: store.commitment?.version ?? 1,
+    habitVersion: 'v1',
+    timestamp: buildDateOnlyIso(lastWeekSun),
+  }).store;
 
-    if (!nextByWeek[currentWeekBounds.weekStartKey]) {
-      nextByWeek[currentWeekBounds.weekStartKey] = createDemoWeeklySchedule();
-      schedulesChanged = true;
-    }
-    if (!nextByWeek[nextWeekBounds.weekStartKey]) {
-      nextByWeek[nextWeekBounds.weekStartKey] = createDemoWeeklySchedule();
-      schedulesChanged = true;
-    }
-
-    if (schedulesChanged) {
-      saveWeeklySchedulesByWeek(nextByWeek);
-    }
-  } catch {
-    // Ignore storage errors
-  }
-
-  // 3. Unified activities & rest records (History + This week + Weekly review)
-  try {
-    const hadUnifiedActivitiesKey =
-      window.localStorage.getItem(ACTIVITIES_STORAGE_KEY) !== null;
-    const hadUnifiedRestKey =
-      window.localStorage.getItem(REST_RECORDS_STORAGE_KEY) !== null;
-
-    const unified = loadUnifiedActivityStore(localToday);
-    let activities = [...unified.activities];
-    let restRecords = [...unified.restRecords];
-    let activitiesChanged = false;
-    let restChanged = false;
-
-    // Strip any legacy sample-label note strings on previously seeded demo entries
-    activities = activities.map((rec) => {
-      if (rec.source === 'demo' && rec.note && LEGACY_SAMPLE_NOTES_TO_STRIP.has(rec.note)) {
-        activitiesChanged = true;
-        const cleaned = { ...rec };
-        delete cleaned.note;
-        return cleaned;
-      }
-      return rec;
-    });
-    restRecords = restRecords.map((rec) => {
-      if (rec.source === 'demo' && rec.note && LEGACY_SAMPLE_NOTES_TO_STRIP.has(rec.note)) {
-        restChanged = true;
-        const cleaned = { ...rec };
-        delete cleaned.note;
-        return cleaned;
-      }
-      return rec;
-    });
-
-    const existingActivityIds = new Set(activities.map((a) => a.id));
-    const existingRestIds = new Set(restRecords.map((r) => r.id));
-
-    const pushDemoActivityIfAbsent = (rec: ActivityCompletionRecord) => {
-      if (existingActivityIds.has(rec.id)) return;
-      existingActivityIds.add(rec.id);
-      activities.push(rec);
-      activitiesChanged = true;
-    };
-
-    const pushDemoRestIfAbsent = (rec: RestRecord) => {
-      if (existingRestIds.has(rec.id)) return;
-      existingRestIds.add(rec.id);
-      restRecords.push(rec);
-      restChanged = true;
-    };
-
-    // 3a. Last completed week (Tue Walk 15m, Thu Stretch 5m, Sat Walk 15m, Sun Rest)
-    // Only seed when user has no real activities or rest records in last completed week
-    const hasUserLastWeekData =
-      activities.some(
-        (a) =>
-          a.source !== 'demo' &&
-          isDateKeyInWeek(a.dateKey, lastWeekBounds.weekStartKey, lastWeekBounds.weekEndKey)
-      ) ||
-      restRecords.some(
-        (r) =>
-          r.source !== 'demo' &&
-          isDateKeyInWeek(r.dateKey, lastWeekBounds.weekStartKey, lastWeekBounds.weekEndKey)
-      );
-
-    if (!hasUserLastWeekData) {
-      const lastTueKey = toLocalDateKey(addLocalDays(lastWeekBounds.weekStart, 1));
-      const lastThuKey = toLocalDateKey(addLocalDays(lastWeekBounds.weekStart, 3));
-      const lastSatKey = toLocalDateKey(addLocalDays(lastWeekBounds.weekStart, 5));
-      const lastSunKey = toLocalDateKey(addLocalDays(lastWeekBounds.weekStart, 6));
-
-      pushDemoActivityIfAbsent({
-        id: `demo::${lastTueKey}::walk`,
-        source: 'demo',
-        title: 'Walk',
-        category: 'walk',
-        durationMinutes: 15,
-        completedAt: buildDateOnlyIso(lastTueKey),
-        dateKey: lastTueKey,
-        hasExactTimestamp: false,
-        isSample: true,
-      });
-
-      pushDemoActivityIfAbsent({
-        id: `demo::${lastThuKey}::stretch`,
-        source: 'demo',
-        title: 'Stretch',
-        category: 'stretch',
-        durationMinutes: 5,
-        completedAt: buildDateOnlyIso(lastThuKey),
-        dateKey: lastThuKey,
-        hasExactTimestamp: false,
-        isSample: true,
-      });
-
-      pushDemoActivityIfAbsent({
-        id: `demo::${lastSatKey}::walk`,
-        source: 'demo',
-        title: 'Walk',
-        category: 'walk',
-        durationMinutes: 15,
-        completedAt: buildDateOnlyIso(lastSatKey),
-        dateKey: lastSatKey,
-        hasExactTimestamp: false,
-        isSample: true,
-      });
-
-      pushDemoRestIfAbsent({
-        id: `demo-rest::${lastSunKey}`,
-        dateKey: lastSunKey,
-        source: 'demo',
-        title: 'Rest day',
-        createdAt: buildDateOnlyIso(lastSunKey),
-        isSample: true,
-      });
-    }
-
-    // 3b. This week (ONLY strictly past days < todayKey; never Today, never future; 0 on Monday)
-    const hasUserThisWeekData =
-      activities.some(
-        (a) =>
-          a.source !== 'demo' &&
-          isDateKeyInWeek(a.dateKey, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey)
-      ) ||
-      restRecords.some(
-        (r) =>
-          r.source !== 'demo' &&
-          isDateKeyInWeek(r.dateKey, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey)
-      );
-
-    if (!hasUserThisWeekData) {
-      const daysSinceMonday = (localToday.getDay() + 6) % 7;
-
-      if (daysSinceMonday >= 1) {
-        const monKey = toLocalDateKey(currentWeekBounds.weekStart);
-        if (monKey < todayKey) {
-          pushDemoActivityIfAbsent({
-            id: `demo::${monKey}::walk`,
-            source: 'demo',
-            title: 'Walk',
-            category: 'walk',
-            durationMinutes: 15,
-            completedAt: buildDateOnlyIso(monKey),
-            dateKey: monKey,
-            hasExactTimestamp: false,
-            isSample: true,
-          });
-        }
-      }
-
-      if (daysSinceMonday >= 2) {
-        const stretchOffset = daysSinceMonday >= 3 ? 2 : 1;
-        const stretchDateKey = toLocalDateKey(addLocalDays(currentWeekBounds.weekStart, stretchOffset));
-        if (stretchDateKey < todayKey) {
-          pushDemoActivityIfAbsent({
-            id: `demo::${stretchDateKey}::stretch`,
-            source: 'demo',
-            title: 'Stretch',
-            category: 'stretch',
-            durationMinutes: 5,
-            completedAt: buildDateOnlyIso(stretchDateKey),
-            dateKey: stretchDateKey,
-            hasExactTimestamp: false,
-            isSample: true,
-          });
-        }
-      }
-    }
-
-    // 3c. Earlier historical months (< lastWeekBounds.weekStartKey) for History calendar & 6-month trend
-    if (!hadUnifiedActivitiesKey && !hadUnifiedRestKey) {
-      const userDates = new Set<string>([
-        ...activities.filter((a) => a.source !== 'demo').map((a) => a.dateKey),
-        ...restRecords.filter((r) => r.source !== 'demo').map((r) => r.dateKey),
-      ]);
-      const historicalDemo = createDemoHistoryRecords(localToday);
-      for (const a of historicalDemo.activities) {
-        if (!userDates.has(a.dateKey)) {
-          pushDemoActivityIfAbsent(a);
-        }
-      }
-      for (const r of historicalDemo.restRecords) {
-        if (!userDates.has(r.dateKey)) {
-          pushDemoRestIfAbsent(r);
-        }
-      }
-    }
-
-    if (activitiesChanged) {
-      saveUnifiedActivities(activities);
-    }
-    if (restChanged) {
-      saveUnifiedRestRecords(restRecords);
-    }
-  } catch {
-    // Ignore storage errors
-  }
-
-  // 4. Weekly review: intentionally do NOT pre-select any feeling (Too much / About right / Ready for more)
-
-  // 5. Preferences: sanitize any legacy hardcoded default seeds; if no preferences exist at all,
-  //    seed at most 2 pending demo questions with no fabricated evidence.
-  try {
-    const hadPrefsKey = window.localStorage.getItem(PREFERENCES_STORAGE_KEY) !== null;
-    const loadedPrefs = loadPreferences();
-    if (!hadPrefsKey && loadedPrefs.length === 0) {
-      savePreferences(PROTOTYPE_DEMO_PREFERENCES.map((item) => ({ ...item })));
-    }
-  } catch {
-    // Ignore storage errors
-  }
-
-  // 6. Health data: intentionally remains Not connected / No data (never seeded)
-
-  // Mark initialization complete for this version so refresh, tab switches, or deletions never re-seed
-  try {
-    window.localStorage.setItem(
-      PROTOTYPE_DEMO_SEED_VERSION_KEY,
-      PROTOTYPE_DEMO_SEED_VERSION
-    );
-  } catch {
-    // Ignore storage errors
-  }
+  return {
+    isTestFixture: true,
+    fixtureLabel: 'TEST_PREVIEW_FIXTURE',
+    storageNamespace: PREVIEW_FIXTURE_STORAGE_PREFIX,
+    generatedAt: referenceDate.toISOString(),
+    store,
+  };
 }

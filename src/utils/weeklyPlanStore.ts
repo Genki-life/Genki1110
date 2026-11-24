@@ -780,7 +780,7 @@ export function loadUnifiedActivityStore(
   let hasUnifiedActivitiesKey = false;
   let hasUnifiedRestKey = false;
 
-  // 1. Load existing unified store if present
+  // 1. Load existing unified store if present (strictly excluding demo/sample rows from official user state)
   try {
     const rawActivities = window.localStorage.getItem(ACTIVITIES_STORAGE_KEY);
     if (rawActivities !== null) {
@@ -788,7 +788,7 @@ export function loadUnifiedActivityStore(
       const parsed = JSON.parse(rawActivities);
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
-          const rec = normalizeCompletionRecord(item, { allowDemo: true });
+          const rec = normalizeCompletionRecord(item, { allowDemo: false });
           if (rec) pushActivity(rec);
         }
       }
@@ -804,7 +804,7 @@ export function loadUnifiedActivityStore(
       const parsed = JSON.parse(rawRest);
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
-          const rec = normalizeRestRecord(item, { allowDemo: true });
+          const rec = normalizeRestRecord(item, { allowDemo: false });
           if (rec) pushRest(rec);
         }
       }
@@ -1022,6 +1022,7 @@ export interface ActivityUpdatePatch {
   category: Exclude<ActivityCategory, 'rest'>;
   durationMinutes: number;
   note?: string;
+  dateKey?: string;
 }
 
 export function updateActivityRecordById(
@@ -1032,8 +1033,13 @@ export function updateActivityRecordById(
   return records.map((rec) => {
     if (rec.id !== recordId) return rec;
     const cleanTitle = patch.title.trim() || rec.title;
-    const cleanDuration = Math.max(1, Math.round(patch.durationMinutes || rec.durationMinutes));
+    const cleanDuration = Math.max(0, Math.round(patch.durationMinutes ?? rec.durationMinutes));
     const cleanNote = patch.note?.trim() || undefined;
+    const nextDateKey =
+      patch.dateKey && parseLocalDateKey(patch.dateKey.trim())
+        ? patch.dateKey.trim()
+        : rec.dateKey;
+    const dateChanged = nextDateKey !== rec.dateKey;
     // Editing a demo record promotes it to a real manual user record
     const nextSource: ActivitySource = rec.source === 'demo' ? 'manual' : rec.source;
 
@@ -1043,6 +1049,10 @@ export function updateActivityRecordById(
       title: cleanTitle,
       category: patch.category,
       durationMinutes: cleanDuration,
+      dateKey: nextDateKey,
+      ...(dateChanged
+        ? { completedAt: buildDateOnlyIso(nextDateKey), hasExactTimestamp: false }
+        : {}),
       isSample: false,
     };
     if (cleanNote) {

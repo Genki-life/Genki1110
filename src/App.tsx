@@ -27,26 +27,31 @@ import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
 import { FurryNovaStaticAvatar } from './components/Avatar3D/FurryNovaStaticAvatar';
 import {
   ActivityCategory,
-  ActivityCompletionRecord,
   ActivityUpdatePatch,
   ManualActivityInput,
-  RestRecord,
-  addManualActivityRecord,
   inferActivityCategory,
   inferDurationMinutes,
-  loadUnifiedActivityStore,
-  removeActivitiesForDate,
-  removeActivityRecordById,
-  removeRestRecordById,
-  removeRestRecordsForDate,
   saveUnifiedActivities,
   saveUnifiedRestRecords,
   toLocalDateKey,
-  updateActivityRecordById,
-  upsertRestRecordForDate,
-  upsertTodayActivityRecord,
 } from './utils/weeklyPlanStore';
-import { initializePrototypeDemoData } from './utils/prototypeDemoSeed';
+import {
+  PlanFoundationStore,
+  addExerciseSession,
+  clearRecordsForDate,
+  completeTaskCard,
+  loadPlanFoundationStore,
+  mapActivityCategoryToExerciseType,
+  projectLegacyActivityRecords,
+  projectLegacyRestRecords,
+  recordAlternativePlanReplacement,
+  recordLifecycleEvent,
+  removeExerciseSession,
+  removeLifecycleEvent,
+  savePlanFoundationStore,
+  undoTaskCardCompletion,
+  updateExerciseSession,
+} from './utils/planDataFoundation';
 import { PlanLoadingView } from './components/PlanLoadingView';
 import { DiscoverLoadingView } from './components/DiscoverLoadingView';
 import {
@@ -514,8 +519,12 @@ interface SuggestionCardItemState {
   id: string;
   /** Stable per-task-instance identifier for deduplicating Today completions & Undo without guessing by date+slot */
   taskInstanceId: string;
-  /** Exact unified ActivityCompletionRecord.id written when this card was completed */
+  /** Exact unified TaskCompletionRecord.id written when this card was completed */
   completedRecordId?: string | null;
+  /** Original plan ID before any Plan B / alternative replacement */
+  originalPlanId?: string;
+  /** Plan IDs replaced on this same logical task instance */
+  replacedFromPlanIds?: string[];
   plan: PlanItem;
   planState: 'suggested' | 'accepted' | 'completed';
   showPlanBHint: boolean;
@@ -1016,30 +1025,54 @@ export default function App() {
     };
   }, []);
   
-  // Single unified persistent activity & rest store shared by Today, History, This week, Weekly review, and Charts
-  const initialUnifiedStoreRef = useRef<ReturnType<typeof loadUnifiedActivityStore> | null>(null);
-  if (initialUnifiedStoreRef.current === null) {
+  // Single shared persistent PlanFoundationStore backing Today, Plan, History, This week, and Weekly review
+  const initialPlanStoreRef = useRef<PlanFoundationStore | null>(null);
+  if (initialPlanStoreRef.current === null) {
     const bootNow = new Date();
-    initializePrototypeDemoData(bootNow);
-    initialUnifiedStoreRef.current = loadUnifiedActivityStore(bootNow);
+    initialPlanStoreRef.current = loadPlanFoundationStore({ now: bootNow });
   }
   const initialTodayDateKeyRef = useRef<string>(toLocalDateKey(new Date()));
 
-  const [activityRecords, setActivityRecords] = useState<ActivityCompletionRecord[]>(
-    () => initialUnifiedStoreRef.current!.activities
+  const [planStore, setPlanStore] = useState<PlanFoundationStore>(
+    () => initialPlanStoreRef.current!
   );
-  const [restRecords, setRestRecords] = useState<RestRecord[]>(
-    () => initialUnifiedStoreRef.current!.restRecords
+  const planStoreRef = useRef<PlanFoundationStore>(planStore);
+  planStoreRef.current = planStore;
+
+  const updatePlanStore = useCallback(
+    (updater: (prev: PlanFoundationStore) => PlanFoundationStore) => {
+      setPlanStore((prev) => {
+        const next = updater(prev);
+        if (next === prev) return prev;
+        savePlanFoundationStore(next);
+        // Mirror clean non-demo legacy keys for compatibility across reload/external readers
+        saveUnifiedActivities(projectLegacyActivityRecords(next));
+        saveUnifiedRestRecords(projectLegacyRestRecords(next));
+        return next;
+      });
+    },
+    []
   );
-  const activityRecordsRef = useRef<ActivityCompletionRecord[]>(activityRecords);
+
+  const activityRecords = useMemo(
+    () => projectLegacyActivityRecords(planStore),
+    [planStore]
+  );
+  const restRecords = useMemo(
+    () => projectLegacyRestRecords(planStore),
+    [planStore]
+  );
+  const activityRecordsRef = useRef(activityRecords);
   activityRecordsRef.current = activityRecords;
-  const restRecordsRef = useRef<RestRecord[]>(restRecords);
+  const restRecordsRef = useRef(restRecords);
   restRecordsRef.current = restRecords;
 
   // 3 independent suggestion cards state (starts at index 0 -> 1 / 3: "How about a 5-minute stretch?")
   const [cardsState, setCardsState] = useState<SuggestionCardItemState[]>(() => {
     const todayKey = initialTodayDateKeyRef.current;
-    const existingActivities = initialUnifiedStoreRef.current!.activities;
+    const existingTasks = initialPlanStoreRef.current!.taskCompletions.filter(
+      (t) => t.status === 'done'
+    );
     const baseCards: { id: string; plan: PlanItem }[] = [
       { id: 'card-0', plan: STRETCH_PLAN },
       { id: 'card-1', plan: DEFAULT_WALK_PLAN },
@@ -1047,16 +1080,17 @@ export default function App() {
     ];
     return baseCards.map(({ id, plan }) => {
       const taskInstanceId = `today-task::${todayKey}::${id}`;
-      // Match existing Today completion by stable taskInstanceId (or legacy `${todayKey}::${id}` sourceKey)
-      const matched = existingActivities.find(
+      // Match existing Today completion by stable logicalTaskId (or legacy `${todayKey}::${id}`)
+      const matched = existingTasks.find(
         (rec) =>
-          rec.source === 'today' &&
-          (rec.sourceKey === taskInstanceId || rec.sourceKey === `${todayKey}::${id}`)
+          rec.logicalTaskId === taskInstanceId || rec.logicalTaskId === `${todayKey}::${id}`
       );
       return {
         id,
-        taskInstanceId: matched?.sourceKey ?? taskInstanceId,
+        taskInstanceId: matched?.logicalTaskId ?? taskInstanceId,
         completedRecordId: matched ? matched.id : null,
+        originalPlanId: matched?.originalPlanId ?? plan.id,
+        replacedFromPlanIds: matched?.replacedFromPlanIds ?? [],
         plan,
         planState: matched ? 'completed' : 'suggested',
         showPlanBHint: true,
@@ -1073,10 +1107,12 @@ export default function App() {
   cardsStateRef.current = cardsState;
   const chatTargetCardIdxRef = useRef<number>(activeCardIndex);
 
-  const initialTodayRestRecord = initialUnifiedStoreRef.current!.restRecords.find(
-    (r) => r.source === 'today' && r.dateKey === initialTodayDateKeyRef.current
+  const initialTodayRestEvent = initialPlanStoreRef.current!.lifecycleEvents.find(
+    (e) => e.type === 'rest' && e.source === 'today' && e.dateKey === initialTodayDateKeyRef.current
   );
-  const todayRestRecordIdRef = useRef<string | null>(initialTodayRestRecord?.id ?? null);
+  const todayRestRecordIdRef = useRef<string | null>(
+    initialTodayRestEvent?.legacyRestRecordId ?? initialTodayRestEvent?.id ?? null
+  );
 
   const currentCard = cardsState[activeCardIndex];
   const currentPlan = currentCard.plan;
@@ -1086,7 +1122,20 @@ export default function App() {
   const setCurrentPlan = useCallback((nextPlan: PlanItem, targetIdx?: number) => {
     const idx = targetIdx ?? activeCardIndexRef.current;
     setCardsState(prev =>
-      prev.map((item, i) => (i === idx ? { ...item, plan: nextPlan } : item))
+      prev.map((item, i) => {
+        if (i !== idx) return item;
+        const prevReplaced = item.replacedFromPlanIds ?? [];
+        const nextReplaced =
+          item.plan.id !== nextPlan.id && !prevReplaced.includes(item.plan.id)
+            ? [...prevReplaced, item.plan.id]
+            : prevReplaced;
+        return {
+          ...item,
+          originalPlanId: item.originalPlanId ?? item.plan.id,
+          replacedFromPlanIds: nextReplaced,
+          plan: nextPlan,
+        };
+      })
     );
   }, []);
 
@@ -1111,42 +1160,50 @@ export default function App() {
 
     const now = new Date();
     const dateKey = toLocalDateKey(now);
-    const stableSourceKey = card.taskInstanceId;
-    const stableRecordId = card.completedRecordId || stableSourceKey;
-
-    const nextRecord: ActivityCompletionRecord = {
-      id: stableRecordId,
-      sourceKey: stableSourceKey,
-      source: 'today',
-      cardId: card.id,
-      planId: card.plan.id,
-      title: card.plan.title,
-      category,
-      durationMinutes:
-        typeof card.plan.durationMinutes === 'number'
-          ? card.plan.durationMinutes
-          : inferDurationMinutes(card.plan.title),
-      completedAt: now.toISOString(),
-      dateKey,
-      hasExactTimestamp: true,
-      note: 'Completed on Today',
-      isSample: false,
-    };
+    const stableLogicalTaskId = card.taskInstanceId;
+    const plannedDurationMinutes =
+      typeof card.plan.durationMinutes === 'number'
+        ? card.plan.durationMinutes
+        : inferDurationMinutes(card.plan.title);
+    const exerciseType = mapActivityCategoryToExerciseType(category, card.plan.id);
 
     setCardsState((prev) =>
       prev.map((item, i) =>
         i === idx
-          ? { ...item, planState: 'completed', completedRecordId: nextRecord.id }
+          ? { ...item, planState: 'completed', completedRecordId: stableLogicalTaskId }
           : item
       )
     );
 
-    setActivityRecords((prev) => {
-      const updated = upsertTodayActivityRecord(prev, nextRecord);
-      saveUnifiedActivities(updated);
-      return updated;
+    updatePlanStore((prev) => {
+      const { store } = completeTaskCard(prev, {
+        logicalTaskId: stableLogicalTaskId,
+        dateKey,
+        completedAt: now.toISOString(),
+        hasExactTimestamp: true,
+        cardId: card.id,
+        planId: card.plan.id,
+        originalPlanId: card.originalPlanId ?? card.plan.id,
+        replacedFromPlanIds: card.replacedFromPlanIds ?? [],
+        title: card.plan.title,
+        exerciseSegments: [
+          {
+            exerciseType,
+            title: card.plan.title,
+            plannedDurationMinutes,
+            // Planned duration NEVER masquerades as trustworthy actual duration
+            actualDurationMinutes: null,
+            durationTrust: 'unknown',
+            linkedHabitId: null,
+          },
+        ],
+        // Explicit habit linkage only; never guess habitId from title keywords
+        linkedHabitIds: [],
+        note: 'Completed on Today',
+      });
+      return store;
     });
-  }, [setPlanState]);
+  }, [setPlanState, updatePlanStore]);
 
   const undoCardCompleted = useCallback((targetIdx: number) => {
     const card = cardsStateRef.current[targetIdx];
@@ -1160,6 +1217,7 @@ export default function App() {
 
     // Strictly remove ONLY the exact record created by this card instance — never guess by current date + slot index
     const recordIdToRemove = card.completedRecordId;
+    const logicalTaskId = card.taskInstanceId;
 
     setCardsState((prev) =>
       prev.map((item, i) =>
@@ -1169,72 +1227,93 @@ export default function App() {
       )
     );
 
-    if (recordIdToRemove) {
-      setActivityRecords((prev) => {
-        const updated = removeActivityRecordById(prev, recordIdToRemove);
-        saveUnifiedActivities(updated);
-        return updated;
-      });
+    if (recordIdToRemove || logicalTaskId) {
+      updatePlanStore((prev) =>
+        undoTaskCardCompletion(prev, {
+          ...(recordIdToRemove ? { taskCompletionId: recordIdToRemove } : {}),
+          logicalTaskId,
+        })
+      );
     }
-  }, []);
+  }, [updatePlanStore]);
 
   // Unified History / Plan mutations (single source of truth synchronized with Today)
+  // Manual exercise logs NEVER create or increment Done task counts.
   const handleAddManualActivity = useCallback((input: ManualActivityInput) => {
-    setActivityRecords((prev) => {
-      const { records } = addManualActivityRecord(prev, input);
-      saveUnifiedActivities(records);
-      return records;
+    const exerciseType = mapActivityCategoryToExerciseType(input.category);
+    const cleanDuration =
+      typeof input.durationMinutes === 'number' && input.durationMinutes > 0
+        ? Math.round(input.durationMinutes)
+        : null;
+    updatePlanStore((prev) => {
+      const { store } = addExerciseSession(prev, {
+        exerciseType,
+        dateKey: input.dateKey,
+        actualDurationMinutes: cleanDuration,
+        durationTrust: cleanDuration !== null ? 'user_reported_actual' : 'unknown',
+        plannedDurationMinutes: null,
+        source: 'manual',
+        linkedHabitId: null,
+        title: input.title,
+        note: input.note,
+      });
+      return store;
     });
-  }, []);
+  }, [updatePlanStore]);
 
   const handleUpdateActivity = useCallback((recordId: string, patch: ActivityUpdatePatch) => {
-    setActivityRecords((prev) => {
-      const updated = updateActivityRecordById(prev, recordId, patch);
-      saveUnifiedActivities(updated);
-      return updated;
-    });
-  }, []);
+    const exerciseType = mapActivityCategoryToExerciseType(patch.category);
+    const cleanDuration =
+      typeof patch.durationMinutes === 'number' && patch.durationMinutes > 0
+        ? Math.round(patch.durationMinutes)
+        : null;
+    updatePlanStore((prev) =>
+      updateExerciseSession(prev, recordId, {
+        ...(patch.dateKey ? { dateKey: patch.dateKey } : {}),
+        exerciseType,
+        title: patch.title,
+        actualDurationMinutes: cleanDuration,
+        durationTrust: cleanDuration !== null ? 'user_reported_actual' : 'unknown',
+        note: patch.note,
+      })
+    );
+  }, [updatePlanStore]);
 
   const handleDeleteActivity = useCallback((recordId: string) => {
-    setActivityRecords((prev) => {
-      const updated = removeActivityRecordById(prev, recordId);
-      saveUnifiedActivities(updated);
-      return updated;
-    });
+    updatePlanStore((prev) =>
+      removeExerciseSession(prev, recordId, { cascadeTaskUndo: true })
+    );
     // If a Today card was linked to this deleted record, clear its completed binding so Today stays consistent
     setCardsState((prev) =>
       prev.map((item) =>
-        item.completedRecordId === recordId
+        item.completedRecordId === recordId || item.taskInstanceId === recordId
           ? { ...item, planState: item.planState === 'completed' ? 'accepted' : item.planState, completedRecordId: null }
           : item
       )
     );
-  }, []);
+  }, [updatePlanStore]);
 
   const handleUpsertRestDay = useCallback((dateKey: string, note?: string) => {
-    setRestRecords((prev) => {
-      const { restRecords: updated } = upsertRestRecordForDate(prev, {
+    updatePlanStore((prev) => {
+      const { store } = recordLifecycleEvent(prev, {
+        type: 'rest',
         dateKey,
-        source: 'manual',
+        source: 'plan',
         title: 'Mindful rest day',
         note: note?.trim() || 'Restorative recovery day',
+        legacyRestRecordId: `rest::manual::${dateKey}`,
       });
-      saveUnifiedRestRecords(updated);
-      return updated;
+      return store;
     });
-  }, []);
+  }, [updatePlanStore]);
 
   const handleDeleteRestRecord = useCallback((restId: string) => {
-    setRestRecords((prev) => {
-      const updated = removeRestRecordById(prev, restId);
-      saveUnifiedRestRecords(updated);
-      return updated;
-    });
+    updatePlanStore((prev) => removeLifecycleEvent(prev, restId));
     if (todayRestRecordIdRef.current === restId) {
       todayRestRecordIdRef.current = null;
       setIsRestDay(false);
     }
-  }, []);
+  }, [updatePlanStore]);
 
   const handleClearDayRecords = useCallback((dateKey: string) => {
     const removedActivityIds = new Set(
@@ -1244,16 +1323,7 @@ export default function App() {
       (r) => r.dateKey === dateKey && r.id === todayRestRecordIdRef.current
     );
 
-    setActivityRecords((prev) => {
-      const updated = removeActivitiesForDate(prev, dateKey);
-      saveUnifiedActivities(updated);
-      return updated;
-    });
-    setRestRecords((prev) => {
-      const updated = removeRestRecordsForDate(prev, dateKey);
-      saveUnifiedRestRecords(updated);
-      return updated;
-    });
+    updatePlanStore((prev) => clearRecordsForDate(prev, dateKey));
 
     if (hadTodayRest) {
       todayRestRecordIdRef.current = null;
@@ -1273,7 +1343,7 @@ export default function App() {
         )
       );
     }
-  }, []);
+  }, [updatePlanStore]);
 
   const setShowPlanBHint = useCallback((show: boolean, targetIdx?: number) => {
     const idx = targetIdx ?? activeCardIndexRef.current;
@@ -1431,7 +1501,7 @@ export default function App() {
 
   // Today home defaults to ambient normal state (card collapsed into bubble below Nova)
   const [isPlanCardOpen, setIsPlanCardOpen] = useState<boolean>(false);
-  const [isRestDay, setIsRestDay] = useState<boolean>(() => Boolean(initialTodayRestRecord));
+  const [isRestDay, setIsRestDay] = useState<boolean>(() => Boolean(initialTodayRestEvent));
   const bubbleDisplayMode: 'rest' | 'all-skipped' | 'suggestion' = isRestDay
     ? 'rest'
     : allCardsSkipped
@@ -1532,6 +1602,7 @@ export default function App() {
   }
   const [chatAttachments, setChatAttachments] = useState<PendingChatAttachment[]>([]);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentSourceRef = useRef<'home' | 'drawer'>('drawer');
   const chatAttachmentsRef = useRef<PendingChatAttachment[]>([]);
   chatAttachmentsRef.current = chatAttachments;
 
@@ -2110,13 +2181,9 @@ export default function App() {
     const restIdToRemove = todayRestRecordIdRef.current;
     todayRestRecordIdRef.current = null;
     if (restIdToRemove) {
-      setRestRecords((prev) => {
-        const updated = removeRestRecordById(prev, restIdToRemove);
-        saveUnifiedRestRecords(updated);
-        return updated;
-      });
+      updatePlanStore((prev) => removeLifecycleEvent(prev, restIdToRemove));
     }
-  }, []);
+  }, [updatePlanStore]);
 
   const handleResumeSkippedCard = useCallback((cardId: string) => {
     setCardSkipped(cardId, false);
@@ -2432,16 +2499,18 @@ export default function App() {
         cancelPendingAndActiveCardUpdate();
         setIsRestDay(true);
         const todayKey = toLocalDateKey(new Date());
-        setRestRecords((prev) => {
-          const { restRecords: updated, record } = upsertRestRecordForDate(prev, {
+        const todayRestLegacyId = `rest::today::${todayKey}`;
+        todayRestRecordIdRef.current = todayRestLegacyId;
+        updatePlanStore((prev) => {
+          const { store } = recordLifecycleEvent(prev, {
+            type: 'rest',
             dateKey: todayKey,
             source: 'today',
             title: 'Rest day',
             note: 'Chosen on Today',
+            legacyRestRecordId: todayRestLegacyId,
           });
-          todayRestRecordIdRef.current = record.id;
-          saveUnifiedRestRecords(updated);
-          return updated;
+          return store;
         });
 
         const now = Date.now();
@@ -2471,6 +2540,36 @@ export default function App() {
       cancelHoldImmediate();
       setCurrentPlan(option.targetPlan, targetIdx);
       setPlanState('accepted', targetIdx);
+
+      // Keep logical task identity synchronized if this card already had a completion record
+      if (targetCard && targetCard.plan.id !== option.targetPlan.id) {
+        const nextCat =
+          option.targetPlan.activityCategory ??
+          inferActivityCategory(option.targetPlan.id, option.targetPlan.title);
+        const nextExerciseType = mapActivityCategoryToExerciseType(nextCat, option.targetPlan.id);
+        const nextPlannedDur =
+          typeof option.targetPlan.durationMinutes === 'number'
+            ? option.targetPlan.durationMinutes
+            : inferDurationMinutes(option.targetPlan.title);
+        updatePlanStore((prev) =>
+          recordAlternativePlanReplacement(prev, {
+            logicalTaskId: targetCard.taskInstanceId,
+            previousPlanId: targetCard.plan.id,
+            nextPlanId: option.targetPlan!.id,
+            nextTitle: option.targetPlan!.title,
+            nextExerciseSegments: [
+              {
+                exerciseType: nextExerciseType,
+                title: option.targetPlan!.title,
+                plannedDurationMinutes: nextPlannedDur,
+                actualDurationMinutes: null,
+                durationTrust: 'unknown',
+                linkedHabitId: null,
+              },
+            ],
+          })
+        );
+      }
 
       const activeAdjust = adjustSessionRef.current;
       if (targetCard && activeAdjust && activeAdjust.cardId === targetCard.id) {
@@ -2681,13 +2780,34 @@ export default function App() {
     return () => window.cancelAnimationFrame(id);
   }, [chatAttachments.length, isChatOpen]);
 
-  const handleAttachmentButtonClick = () => {
+  const openGeneralNovaChat = useCallback(() => {
+    openChatWithTransition(() => {
+      adjustSessionRef.current = null;
+      setInputPlaceholder('Type your response…');
+      setChatMessages([
+        {
+          id: 'msg-open-input',
+          sender: 'ai',
+          text: "Hi! How's your day shaping up? Tell me whatever is on your mind."
+        }
+      ]);
+    });
+  }, [openChatWithTransition]);
+
+  const handleAttachmentButtonClick = (source: 'home' | 'drawer') => {
+    attachmentSourceRef.current = source;
     chatFileInputRef.current?.click();
   };
 
   const handleAttachmentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
-    if (!fileList || fileList.length === 0) return;
+    const source = attachmentSourceRef.current;
+    attachmentSourceRef.current = 'drawer';
+
+    if (!fileList || fileList.length === 0) {
+      e.target.value = '';
+      return;
+    }
 
     const added: PendingChatAttachment[] = [];
     for (let i = 0; i < fileList.length; i += 1) {
@@ -2710,10 +2830,14 @@ export default function App() {
       });
     }
 
+    e.target.value = '';
+
     if (added.length > 0) {
       setChatAttachments((prev) => [...prev, ...added]);
+      if (source === 'home' && !isChatOpen) {
+        openGeneralNovaChat();
+      }
     }
-    e.target.value = '';
   };
 
   const handleRemoveAttachment = (attachmentId: string) => {
@@ -5116,6 +5240,8 @@ export default function App() {
               <LazyMyPlanView
                 phoneFrameRef={phoneFrameRef}
                 isActive={activeTab === 'Plan'}
+                planStore={planStore}
+                onUpdatePlanStore={updatePlanStore}
                 activityRecords={activityRecords}
                 restRecords={restRecords}
                 onAddManualActivity={handleAddManualActivity}
@@ -5153,32 +5279,37 @@ export default function App() {
         >
           {/* Conversational Input Entry (Hidden on Plan tab to increase viewport space) */}
           {activeTab !== 'Plan' && (
-            <button 
-              type="button"
-              id="bottom-talk-to-nova-btn"
-              onClick={() => {
-                openChatWithTransition(() => {
-                  adjustSessionRef.current = null;
-                  setInputPlaceholder('Type your response…');
-                  setChatMessages([
-                    {
-                      id: 'msg-open-input',
-                      sender: 'ai',
-                      text: "Hi! How's your day shaping up? Tell me whatever is on your mind."
-                    }
-                  ]);
-                });
-              }}
-              className="genki-mobile-control genki-mobile-chat-entry liquid-glass-pill liquid-glass-pill-interactive relative z-30 pointer-events-auto w-full active:scale-[0.99] rounded-full px-4.5 py-2.5 flex items-center gap-3 cursor-pointer min-h-[46px] transition-colors text-left"
-              aria-label="Talk to Nova"
+            <div
+              id="bottom-talk-to-nova-bar"
+              className="liquid-glass-pill liquid-glass-pill-interactive relative z-30 pointer-events-auto w-full rounded-full pl-[6px] pr-4.5 py-[2px] flex items-center min-h-[48px] transition-colors"
             >
-              <span className="flex-1 text-[15px] leading-[22px] text-[#3C3C43] font-medium select-none tracking-[-0.01em]">
-                Talk to Nova…
-              </span>
-              <div className="w-7 h-7 rounded-full liquid-glass-icon-well text-[#5E5BAE] flex items-center justify-center shrink-0">
-                <Mic className="w-4 h-4 stroke-[2.2]" />
-              </div>
-            </button>
+              <button
+                type="button"
+                id="home-add-attachment-btn"
+                onClick={() => handleAttachmentButtonClick('home')}
+                aria-label="Add attachment"
+                className="genki-chat-attach-btn mr-[4px]"
+              >
+                <Plus className="w-5 h-5" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                id="bottom-talk-to-nova-btn"
+                onClick={openGeneralNovaChat}
+                className="genki-mobile-chat-entry genki-mobile-focus flex-1 min-w-0 min-h-[44px] flex items-center gap-3 text-left bg-transparent border-0 rounded-full cursor-pointer active:opacity-75 transition-opacity"
+                aria-label="Talk to Nova"
+              >
+                <span className="flex-1 min-w-0 truncate text-[15px] leading-[22px] text-[#3C3C43] font-medium select-none tracking-[-0.01em]">
+                  Talk to Nova…
+                </span>
+                <span
+                  aria-hidden="true"
+                  className="w-7 h-7 rounded-full liquid-glass-icon-well text-[#5E5BAE] flex items-center justify-center shrink-0"
+                >
+                  <Mic className="w-4 h-4 stroke-[2.2]" />
+                </span>
+              </button>
+            </div>
           )}
 
           {/* 3 Bottom Navigation Tabs in Floating Liquid Glass Capsule (Apple Health Reference Style) */}
@@ -5394,6 +5525,19 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Single Persistent Hidden File Input shared by Home '+' and Chat Drawer '+' */}
+        <input
+          ref={chatFileInputRef}
+          id="chat-attachment-file-input"
+          type="file"
+          multiple
+          accept="image/*,.pdf,application/pdf,.txt,text/plain"
+          onChange={handleAttachmentSelect}
+          className="hidden"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+
         {/* 7. AI Conversation Drawer / Sheet with smooth entrance and exit */}
         <AnimatePresence onExitComplete={() => setIsChatSheetExited(true)}>
           {isChatOpen && (
@@ -5534,18 +5678,6 @@ export default function App() {
                     onSubmit={handleSendChatMessage}
                     className="p-4 pb-6 border-t border-black/[0.06] bg-white/95 backdrop-blur-md shrink-0 flex flex-col gap-2"
                   >
-                    <input
-                      ref={chatFileInputRef}
-                      id="chat-attachment-file-input"
-                      type="file"
-                      multiple
-                      accept="image/*,.pdf,application/pdf,.txt,text/plain"
-                      onChange={handleAttachmentSelect}
-                      className="hidden"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                    />
-
                     {/* Compact Attachment Preview Area (expands above input bar, naturally shrinking message scroll region) */}
                     {chatAttachments.length > 0 && (
                       <div
@@ -5599,7 +5731,7 @@ export default function App() {
                       <button
                         type="button"
                         id="chat-add-attachment-btn"
-                        onClick={handleAttachmentButtonClick}
+                        onClick={() => handleAttachmentButtonClick('drawer')}
                         aria-label="Add attachment"
                         className="genki-chat-attach-btn mr-[4px]"
                       >

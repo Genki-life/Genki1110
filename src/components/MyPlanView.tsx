@@ -64,13 +64,34 @@ import {
 import {
   FOCUS_STORAGE_KEY,
   LEGACY_DIRECTION_STORAGE_KEYS,
-  initializePrototypeDemoData,
 } from '../utils/prototypeDemoSeed';
+import { PlanRhythmChart } from './PlanRhythmChart';
 import {
-  PlanPhase,
+  ConfirmedActionStrategy,
+  DEFAULT_WEEKLY_REVIEW_QUESTION_ID,
+  PlanFoundationStore,
+  confirmHabitStrategy,
+  createEmptyPlanFoundationStore,
+  deriveCommitmentStrategyLine,
+  derivePlanHeaderDetailActionLabel,
+  derivePlanHeaderNovaLine,
+  getConfirmedHabits,
+  getHabitRhythmModel,
+  getPlanWeekSnapshot,
+  getWeekDoneTaskCount,
+  hasConfirmedPhaseCommitment,
+  loadPlanFoundationStore,
+  mapExerciseTypeToLegacyCategory,
+  projectLegacyWeeklyReviewFeedbacks,
+  recordCommitmentRhythmEvent,
+  recordLifecycleEvent,
+  shiftLocalWeekStartKey,
+  upsertPhaseCommitment,
+  upsertWeeklyReviewAnswer,
+} from '../utils/planDataFoundation';
+import {
   PlanPathState,
   loadInitialPlanPath,
-  savePlanPathState,
 } from '../utils/planPhaseStore';
 import {
   MemoryCategory,
@@ -91,7 +112,7 @@ export type MemoryItem = PreferenceItem;
 // ============================================================================
 
 type RhythmTimeframe = '7d' | 'month';
-type SecondaryModuleType = 'path' | 'history' | 'preferences' | 'health' | null;
+type SecondaryModuleType = 'journey' | 'history' | 'preferences' | 'health' | null;
 
 // --- A. Unified Activity Record Model ---
 // Supports Active (with distinct sessionsCount & durationMinutes), Mindful Rest, or No Record
@@ -606,6 +627,8 @@ function ActiveMinutesBarChart({
 interface MyPlanViewProps {
   phoneFrameRef?: React.RefObject<HTMLDivElement | null>;
   isActive?: boolean;
+  planStore?: PlanFoundationStore;
+  onUpdatePlanStore?: (updater: (prev: PlanFoundationStore) => PlanFoundationStore) => void;
   activityRecords?: ActivityCompletionRecord[];
   restRecords?: RestRecord[];
   onAddManualActivity?: (input: ManualActivityInput) => void;
@@ -619,14 +642,16 @@ interface MyPlanViewProps {
 
 const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
   isActive,
+  isShortViewport = false,
 }: {
   isActive: boolean;
+  isShortViewport?: boolean;
 }) {
   const [shouldMount3D, setShouldMount3D] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
   // Defer 3D initialization until after Plan becomes active and paints its first frame
-  // so intro copy and planning content render immediately without waiting for WebGL.
+  // so header copy and planning content render immediately without waiting for WebGL.
   useEffect(() => {
     if (!isActive || shouldMount3D) return;
     let cancelled = false;
@@ -652,7 +677,7 @@ const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
   return (
     <div
       id="plan-nova-avatar-slot"
-      className="genki-plan-nova-avatar-slot"
+      className={`genki-plan-nova-avatar-slot${isShortViewport ? ' is-short-viewport' : ''}`}
       aria-hidden="true"
     >
       {!isReady && (
@@ -681,13 +706,18 @@ const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
 
 /* Plan-only visual primitives. Unlayered selectors intentionally outrank Tailwind preflight. */
 const GENKI_PLAN_UI_STYLES = `
-.genki-plan-screen {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
-.genki-plan-nova-intro {display:flex;align-items:center;gap:12px;width:100%;background:transparent;}
-.genki-plan-nova-avatar-slot {width:76px;height:76px;min-width:76px;min-height:76px;flex:0 0 76px;position:relative;display:flex;align-items:center;justify-content:center;overflow:visible;}
-.genki-plan-nova-copy {flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px;}
-.genki-plan-nova-name {font-size:13px;font-weight:600;line-height:18px;color:#6E6A80;margin:0;}
-.genki-plan-nova-lead {font-size:20px;font-weight:600;line-height:27px;letter-spacing:-0.018em;color:#302D3D;margin:0;overflow-wrap:break-word;white-space:normal;}
-.genki-plan-heading {font-size:18px;font-weight:600;line-height:24px;letter-spacing:-.015em;color:#1C1C1E;}
+.genki-plan-screen {font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;}
+.genki-plan-commitment-header {display:flex;flex-direction:column;align-items:center;text-align:center;width:100%;background:transparent;padding:0;margin:0 0 24px 0;}
+.genki-plan-nova-avatar-slot {width:96px;height:96px;min-width:96px;min-height:96px;flex:0 0 96px;position:relative;display:flex;align-items:center;justify-content:center;overflow:visible;}
+.genki-plan-nova-avatar-slot.is-short-viewport {width:80px;height:80px;min-width:80px;min-height:80px;flex:0 0 80px;}
+@media (max-height: 699px) {.genki-plan-nova-avatar-slot {width:80px;height:80px;min-width:80px;min-height:80px;flex:0 0 80px;}}
+.genki-plan-header-nova-line {margin:12px 0 0 0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;font-size:15px;font-weight:500;line-height:22px;color:#706A7C;max-width:min(320px,100%);overflow-wrap:break-word;white-space:normal;}
+.genki-plan-header-intent {margin:16px 0 0 0;font-family:var(--font-genki-handwriting);font-size:26px;font-weight:600;line-height:34px;color:#514879;max-width:min(320px,100%);width:100%;overflow-wrap:break-word;white-space:normal;}
+.genki-plan-header-strategy {margin:8px 0 0 0;font-family:var(--font-genki-handwriting);font-size:18px;font-weight:500;line-height:26px;color:#625A76;max-width:min(320px,100%);width:100%;overflow-wrap:break-word;white-space:normal;}
+.genki-plan-header-detail-btn {margin:12px 0 0 0;min-height:44px;min-width:44px;padding:0 12px;border:0;border-radius:10px;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;font-size:14px;font-weight:500;line-height:20px;color:#5E5BAE;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;touch-action:manipulation;transition:color 150ms ease,opacity 150ms ease;}
+.genki-plan-header-detail-btn:hover {color:#4B4895;}
+.genki-plan-header-detail-btn:active {opacity:.72;}
+.genki-plan-heading {font-size:18px;font-weight:600;line-height:25px;letter-spacing:-.015em;color:#302D3D;}
 .genki-plan-section-header {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;column-gap:12px;row-gap:4px;}
 .genki-plan-section-title {font-size:18px;font-weight:600;line-height:25px;letter-spacing:-0.015em;color:#302D3D;min-width:0;overflow-wrap:break-word;}
 .genki-plan-section-date {font-size:12px;font-weight:400;line-height:17px;color:#706A7C;flex-shrink:0;margin-left:auto;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
@@ -712,6 +742,39 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-week-dot-past {background:transparent;border:1px solid #C8C2D4;}
 .genki-plan-week-dot-future {background:#E7E3ED;}
 .genki-plan-week-dash-rest {width:8px;height:2px;border-radius:999px;background:#B0A9BE;display:block;}
+.genki-plan-week-unknown-mark {font-size:10px;font-weight:600;line-height:10px;color:#9A93A8;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;justify-content:center;}
+.genki-plan-rhythm-habit-name {margin:6px 0 0 0;font-size:13px;font-weight:400;line-height:18px;color:#706A7C;min-width:0;overflow-wrap:break-word;}
+.genki-plan-rhythm-status {margin:12px 0 0 0;font-size:20px;font-weight:600;line-height:27px;letter-spacing:-0.015em;color:#302D3D;min-width:0;overflow-wrap:break-word;}
+.genki-plan-rhythm-summary {margin:12px 0 0 0;font-size:15px;font-weight:500;line-height:22px;color:#302D3D;font-variant-numeric:tabular-nums;min-width:0;overflow-wrap:break-word;}
+.genki-plan-rhythm-basis {margin:6px 0 0 0;font-size:13px;font-weight:400;line-height:19px;color:#706A7C;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0;}
+.genki-plan-rhythm-journey-btn {margin:6px 0 0 0;min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:flex-start;gap:4px;cursor:pointer;touch-action:manipulation;align-self:flex-start;transition:color 140ms ease,opacity 140ms ease;}
+.genki-plan-rhythm-journey-btn:hover {color:#4B4895;}
+.genki-plan-rhythm-journey-btn:active {opacity:.72;}
+.genki-plan-rhythm-switch-btn {min-height:44px;min-width:44px;padding:0 4px;margin:-10px -4px -10px 0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:13px;font-weight:500;line-height:18px;display:inline-flex;align-items:center;justify-content:flex-end;cursor:pointer;touch-action:manipulation;white-space:nowrap;flex-shrink:0;transition:color 140ms ease,opacity 140ms ease;}
+.genki-plan-rhythm-switch-btn:hover {color:#4B4895;}
+.genki-plan-rhythm-switch-btn:active {opacity:.72;}
+.genki-plan-rhythm-retry-btn {min-height:44px;min-width:88px;padding:0 16px;border:0;border-radius:12px;background:#EEEDF6;color:#514C8C;font-size:14px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:center;align-self:flex-start;cursor:pointer;touch-action:manipulation;transition:background-color 140ms ease,opacity 140ms ease;}
+.genki-plan-rhythm-retry-btn:hover {background:#E4E2F1;}
+.genki-plan-rhythm-retry-btn:active {opacity:.75;}
+.genki-plan-week-nav-row {margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:4px;}
+.genki-plan-week-nav-btn {width:44px;height:44px;min-width:44px;min-height:44px;padding:0;flex-shrink:0;border:0;border-radius:999px;background:transparent;color:#514879;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;touch-action:manipulation;transition:background-color 140ms ease,opacity 140ms ease;}
+.genki-plan-week-nav-btn:not(:disabled):hover {background:rgba(119,112,182,0.08);}
+.genki-plan-week-nav-btn:not(:disabled):active {background:rgba(119,112,182,0.14);}
+.genki-plan-week-nav-btn:disabled {opacity:0.28;cursor:not-allowed;}
+.genki-plan-week-nav-date {flex:1;min-width:0;text-align:center;font-size:13px;font-weight:500;line-height:18px;color:#625A76;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.genki-plan-week-back-btn {min-height:44px;min-width:44px;padding:0 4px;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:13px;font-weight:500;line-height:18px;display:inline-flex;align-items:center;justify-content:flex-end;cursor:pointer;touch-action:manipulation;white-space:nowrap;flex-shrink:0;transition:color 140ms ease,opacity 140ms ease;}
+.genki-plan-week-back-btn:hover {color:#4B4895;}
+.genki-plan-week-back-btn:active {opacity:.72;}
+@keyframes genkiWeekContentFade {from{opacity:0.74;}to{opacity:1;}}
+.genki-plan-week-content-fade {animation:genkiWeekContentFade 140ms ease-out;}
+.genki-plan-workout-row {width:100%;min-height:44px;padding:10px 0;background:transparent;border:0;border-radius:0;display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;cursor:pointer;touch-action:manipulation;transition:opacity 140ms ease;}
+.genki-plan-workout-row:active {opacity:.72;}
+.genki-plan-workout-row + .genki-plan-workout-row {border-top:1px solid rgba(74,66,98,0.06);}
+.genki-plan-workout-name {font-size:15px;font-weight:500;line-height:22px;color:#302D3D;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.genki-plan-workout-stat {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0;}
+.genki-plan-view-all-btn {width:100%;min-height:44px;padding:0;border:0;border-top:1px solid rgba(74,66,98,0.06);border-radius:0;background:transparent;color:#5E5BAE;font-size:14px;font-weight:500;line-height:20px;display:flex;align-items:center;justify-content:flex-start;cursor:pointer;touch-action:manipulation;transition:color 140ms ease,opacity 140ms ease;}
+.genki-plan-view-all-btn:hover {color:#4B4895;}
+.genki-plan-view-all-btn:active {opacity:.72;}
 .genki-plan-progress-track {width:100%;height:4px;border-radius:2px;background:#ECE8F2;overflow:hidden;}
 .genki-plan-progress-fill {height:100%;border-radius:2px;background:#8B82BD;transition:width 220ms ease;}
 .genki-plan-phase-title {font-size:15px;font-weight:600;line-height:22px;}
@@ -733,13 +796,13 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-feedback-question {font-size:15px;font-weight:600;line-height:22px;color:#302D3D;}
 .genki-plan-sheet-heading {font-size:22px;font-weight:600;line-height:28px;letter-spacing:-.02em;color:#1C1C1E;}
 .genki-plan-subheading {font-size:17px;font-weight:600;line-height:23px;color:#1C1C1E;}
-.genki-plan-unified-container {width:100%;padding:20px;border-radius:28px;background:rgba(255,255,255,0.76);border:1px solid rgba(255,255,255,0.70);box-shadow:0 8px 28px rgba(49,40,75,0.04);display:flex;flex-direction:column;gap:0;}
+.genki-plan-unified-container {width:100%;padding:20px;border-radius:28px;background:rgba(255,255,255,0.76);border:1px solid rgba(255,255,255,0.70);box-shadow:0 4px 20px rgba(74,66,98,0.04);display:flex;flex-direction:column;gap:0;}
 .genki-plan-section-divider {width:100%;height:1px;background:rgba(74,66,98,0.08);margin:24px 0;flex-shrink:0;}
 .genki-plan-auxiliary-list {width:100%;padding:4px 16px;border-radius:22px;background:rgba(255,255,255,0.56);border:1px solid rgba(255,255,255,0.64);display:flex;flex-direction:column;}
 .genki-plan-label {font-size:15px;font-weight:500;line-height:22px;color:#1C1C1E;}
 .genki-plan-field {font-size:16px;line-height:22px;min-height:48px;border-radius:12px;}
 .genki-plan-control {min-height:44px;min-width:44px;font-size:15px;font-weight:500;line-height:20px;touch-action:manipulation;cursor:pointer;transition:background-color 150ms ease,color 150ms ease,opacity 150ms ease;}
-.genki-plan-screen button:focus-visible,.genki-plan-control:focus-visible,.genki-plan-field:focus-visible,.genki-plan-text-action:focus-visible,.genki-plan-week-row:focus-visible,.genki-plan-phase-row:focus-visible {outline:2px solid #7770B6;outline-offset:2px;}
+.genki-plan-screen button:focus-visible,.genki-plan-control:focus-visible,.genki-plan-field:focus-visible,.genki-plan-text-action:focus-visible,.genki-plan-header-detail-btn:focus-visible,.genki-plan-rhythm-journey-btn:focus-visible,.genki-plan-rhythm-switch-btn:focus-visible,.genki-plan-rhythm-retry-btn:focus-visible,.genki-plan-week-row:focus-visible,.genki-plan-workout-row:focus-visible,.genki-plan-week-nav-btn:focus-visible,.genki-plan-week-back-btn:focus-visible,.genki-plan-view-all-btn:focus-visible,.genki-plan-phase-row:focus-visible {outline:2px solid #7770B6;outline-offset:2px;}
 .genki-plan-control:disabled {opacity:.45;cursor:not-allowed;}
 .genki-plan-control:not(:disabled):active {opacity:.75;}
 .genki-plan-text-action {min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:flex-end;cursor:pointer;touch-action:manipulation;transition:color 150ms ease,opacity 150ms ease;}
@@ -752,7 +815,7 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-week-row + .genki-plan-week-row {border-top:1px solid rgba(74,66,98,0.06);}
 .genki-plan-phase-row {width:100%;min-height:0;padding:0;border:0;border-radius:8px;background:transparent;display:flex;align-items:stretch;gap:10px;text-align:left;cursor:pointer;touch-action:manipulation;transition:opacity 150ms ease;}
 .genki-plan-phase-row:active {opacity:.72;}
-.genki-plan-control-primary,.genki-plan-control-destructive {min-height:48px;border-radius:14px;padding:12px 16px;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:center;box-shadow:none;color:white;background:#5E5BAE;}
+.genki-plan-control-primary,.genki-plan-control-destructive {min-height:48px;border-radius:12px;padding:12px 16px;font-size:15px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:center;box-shadow:none;color:white;background:#5E5BAE;}
 .genki-plan-control-primary:not(:disabled):hover {background:#504D9D;}
 .genki-plan-control-destructive {background:#D92D4B;}
 .genki-plan-control-secondary {min-height:44px;min-width:96px;margin-right:0;padding:10px 16px;border-radius:12px;font-size:15px;font-weight:600;line-height:20px;color:#514C8C;background:#EEEDF6;display:inline-flex;align-items:center;justify-content:center;box-shadow:none;}
@@ -764,14 +827,15 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-control-feedback:hover {background:#EAE6F4;}
 .genki-plan-control-feedback[aria-pressed="true"] {border-color:#BEB4DE;background:#E5E0F3;color:#514879;}
 .genki-plan-screen [aria-label="Additional plan sections"] > button {min-height:56px;}
-.genki-plan-screen #focus-card-review,.genki-plan-screen [id$="progress"] {font-variant-numeric:tabular-nums;}
-.genki-plan-screen #focus-card-title {text-wrap:balance;}
-@media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-week-row,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill,.genki-plan-review-bar {transition:none;}}
+.genki-plan-screen [id$="progress"] {font-variant-numeric:tabular-nums;}
+@media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-header-detail-btn,.genki-plan-rhythm-journey-btn,.genki-plan-rhythm-switch-btn,.genki-plan-rhythm-retry-btn,.genki-plan-week-row,.genki-plan-workout-row,.genki-plan-week-nav-btn,.genki-plan-week-back-btn,.genki-plan-view-all-btn,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill,.genki-plan-review-bar {transition:none;} .genki-plan-week-content-fade {animation:none;}}
 `;
 
 export function MyPlanView({
   phoneFrameRef,
   isActive = true,
+  planStore,
+  onUpdatePlanStore,
   activityRecords = [],
   restRecords = [],
   onAddManualActivity,
@@ -887,18 +951,13 @@ export function MyPlanView({
   // 4. Methodology Info Popup State (Inside Your Rhythm Secondary Sheet)
   const [isMethodologyOpen, setIsMethodologyOpen] = useState<boolean>(false);
 
-  // Ensure one-time versioned prototype demo initialization ran before reading Plan stores
-  const hasCheckedDemoInitRef = useRef<boolean>(false);
-  if (!hasCheckedDemoInitRef.current) {
-    initializePrototypeDemoData(new Date(deviceToday.year, deviceToday.month, deviceToday.day));
-    hasCheckedDemoInitRef.current = true;
-  }
+  // Official user storage is loaded cleanly via PlanFoundationStore (no demo auto-seeding).
 
   // 5. Your Focus & Up Next Shared Phase State
   const [direction, setDirection] = useState<DirectionState>(() =>
     loadInitialFocus(new Date(deviceToday.year, deviceToday.month, deviceToday.day))
   );
-  const [planPath, setPlanPath] = useState<PlanPathState>(() =>
+  const [planPath] = useState<PlanPathState>(() =>
     loadInitialPlanPath(direction.phase)
   );
   const [isFocusAdjustOpen, setIsFocusAdjustOpen] = useState<boolean>(false);
@@ -908,13 +967,14 @@ export function MyPlanView({
   const [focusKeyboardInset, setFocusKeyboardInset] = useState<number>(0);
   const [directionToast, setDirectionToast] = useState<boolean>(false);
 
-  // 5a. Up Next Detail & Edit Path Sheet State
-  const [selectedPhaseId, setSelectedPhaseId] = useState<string | null>(null);
-  const [isConfirmingPhaseSwitch, setIsConfirmingPhaseSwitch] = useState<boolean>(false);
-  const [isPathEditOpen, setIsPathEditOpen] = useState<boolean>(false);
-  const [pathDraftPhases, setPathDraftPhases] = useState<PlanPhase[]>(() =>
-    planPath.phases.slice(0, 3)
-  );
+  // 5a. Your Rhythm Confirmed Habit Selection & Confirmation Sheet State
+  const [selectedRhythmHabitId, setSelectedRhythmHabitId] = useState<string | null>(null);
+  const [rhythmRetryNonce, setRhythmRetryNonce] = useState<number>(0);
+  const [isHabitConfirmOpen, setIsHabitConfirmOpen] = useState<boolean>(false);
+  const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
+  const [habitDraftLabel, setHabitDraftLabel] = useState<string>('');
+  const [habitDraftRegular, setHabitDraftRegular] = useState<string>('');
+  const [habitDraftMinimum, setHabitDraftMinimum] = useState<string>('');
 
   // 5b. Per-Week Schedules (Indexed by local Monday YYYY-MM-DD weekStartKey) & Sheet State
   const [weeklySchedulesByWeek, setWeeklySchedulesByWeek] = useState<WeeklySchedulesByWeek>(() =>
@@ -923,12 +983,24 @@ export function MyPlanView({
   const [editingWeekTarget, setEditingWeekTarget] = useState<'this_week' | 'next_week' | null>(null);
   const isWeekAdjustOpen = editingWeekTarget !== null;
   const [weekDraft, setWeekDraft] = useState<WeeklySchedule>(() => DEFAULT_WEEKLY_DRAFT);
-  const [activeWeekCategoryList, setActiveWeekCategoryList] = useState<'walk' | 'stretch' | null>(null);
+  const [selectedWeekStartKey, setSelectedWeekStartKey] = useState<string>(
+    () => getLocalWeekBounds(new Date(deviceToday.year, deviceToday.month, deviceToday.day)).weekStartKey
+  );
+  const weekNavSeqRef = useRef<number>(0);
+  const [weekActivitySheet, setWeekActivitySheet] = useState<{
+    open: boolean;
+    filterTypeKey: string | null;
+    expandAllTypes: boolean;
+  }>({ open: false, filterTypeKey: null, expandAllTypes: false });
 
   // 5c. Weekly Review Feedback & On-Demand Adjustment State (Strictly targets Next week)
   const [weeklyReviewFeedbacks, setWeeklyReviewFeedbacks] = useState<
     Record<string, WeeklyReviewFeedback>
-  >(loadWeeklyReviewFeedbacks);
+  >(() =>
+    planStore
+      ? { ...loadWeeklyReviewFeedbacks(), ...projectLegacyWeeklyReviewFeedbacks(planStore) }
+      : loadWeeklyReviewFeedbacks()
+  );
   const [resolvedAdjustmentKeys, setResolvedAdjustmentKeys] = useState<string[]>(
     loadResolvedAdjustmentKeys
   );
@@ -970,7 +1042,7 @@ export function MyPlanView({
   useEffect(() => {
     if (
       (!isFocusAdjustOpen &&
-        !isPathEditOpen &&
+        !isHabitConfirmOpen &&
         !isPrefFormOpen &&
         !isWeekAdjustOpen &&
         !isMemoryChatOpen &&
@@ -997,20 +1069,84 @@ export function MyPlanView({
     };
   }, [
     isFocusAdjustOpen,
-    isPathEditOpen,
+    isHabitConfirmOpen,
     isPrefFormOpen,
     isWeekAdjustOpen,
     isMemoryChatOpen,
     activeDayModalDate,
   ]);
 
-  // Shared phase derivations for BOTH Your focus and Up next (single source of truth)
+  // Short-screen detection (< 700px height) for Nova Avatar box (80×80 vs 96×96)
+  const [isShortViewport, setIsShortViewport] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const frameH = phoneFrameRef?.current?.clientHeight;
+    return (frameH && frameH > 0 ? frameH : window.innerHeight) < 700;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateShortViewport = () => {
+      const frameH = phoneFrameRef?.current?.clientHeight;
+      const effectiveH = frameH && frameH > 0 ? frameH : window.innerHeight;
+      setIsShortViewport(effectiveH < 700);
+    };
+    updateShortViewport();
+    window.addEventListener('resize', updateShortViewport);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && phoneFrameRef?.current) {
+      ro = new ResizeObserver(updateShortViewport);
+      ro.observe(phoneFrameRef.current);
+    }
+    return () => {
+      window.removeEventListener('resize', updateShortViewport);
+      ro?.disconnect();
+    };
+  }, [phoneFrameRef]);
+
+  // Shared phase derivations (single source of truth)
   const visiblePhases = useMemo(() => planPath.phases.slice(0, 3), [planPath.phases]);
   const currentPhaseIndex = useMemo(() => {
     const idx = visiblePhases.findIndex((p) => p.id === planPath.currentPhaseId);
     return idx >= 0 ? idx : 0;
   }, [visiblePhases, planPath.currentPhaseId]);
   const currentPhase = visiblePhases[currentPhaseIndex] ?? visiblePhases[0];
+
+  // Phase Commitment Header state derived strictly from user-confirmed commitment (never demo defaults)
+  const effectiveCommitment = useMemo(() => {
+    if (planStore) {
+      return planStore.commitment;
+    }
+    if (direction.source === 'user' && direction.goalTitle.trim().length > 0) {
+      return {
+        id: 'local-focus',
+        version: 1,
+        phaseId: currentPhase.id,
+        phaseName: currentPhase.name,
+        originalIntent: null,
+        summary: direction.goalTitle.trim(),
+        strategySummary: direction.executionApproach.trim() || null,
+        strategies: [],
+        status: direction.status,
+        lastEventKind: 'started' as const,
+        reviewRequested: false,
+        createdAt: '',
+        updatedAt: '',
+        source: 'user' as const,
+      };
+    }
+    return null;
+  }, [planStore, direction, currentPhase.id, currentPhase.name]);
+
+  const hasConfirmedCommitment = hasConfirmedPhaseCommitment(effectiveCommitment);
+  const headerNovaLine = derivePlanHeaderNovaLine(effectiveCommitment);
+  const headerActionLabel = derivePlanHeaderDetailActionLabel(effectiveCommitment);
+  const headerIntentText = hasConfirmedCommitment ? effectiveCommitment.summary.trim() : '';
+  const headerStrategyText = useMemo(() => {
+    const raw = deriveCommitmentStrategyLine(effectiveCommitment);
+    if (!raw) return '';
+    if (raw.toLowerCase() === headerIntentText.toLowerCase()) return '';
+    return raw;
+  }, [effectiveCommitment, headerIntentText]);
 
   // ============================================================================
   // 4. UNIFIED DATA DERIVATIONS (ACTIVITY + TODAY SYNC + HISTORY)
@@ -1123,12 +1259,47 @@ export function MyPlanView({
   const weeklySchedule = weeklySchedulesByWeek[currentWeekBounds.weekStartKey] ?? null;
   const nextWeekSchedule = weeklySchedulesByWeek[nextWeekBounds.weekStartKey] ?? null;
 
-  // Shared deduplication helper so This week and Weekly review use the exact same completion counting rules
+  // Shared deduplication helper backed by PlanFoundationStore Done tasks (strictly excluding manual/external exercise logs and rest)
   const getDeduplicatedWeekCompletions = useCallback(
     (weekStartKey: string, weekEndKey: string): ActivityCompletionRecord[] => {
+      if (planStore) {
+        const { completedTasks } = getWeekDoneTaskCount(planStore, weekStartKey);
+        return completedTasks.map((tc) => {
+          const primarySeg = tc.exerciseSegments[0];
+          const primaryType = primarySeg?.exerciseType ?? 'other';
+          const trustworthyMinutes = tc.exerciseSegments.reduce((sum, seg) => {
+            if (
+              seg.durationTrust &&
+              seg.durationTrust !== 'unknown' &&
+              typeof seg.actualDurationMinutes === 'number' &&
+              seg.actualDurationMinutes > 0
+            ) {
+              return sum + seg.actualDurationMinutes;
+            }
+            return sum;
+          }, 0);
+          return {
+            id: tc.id,
+            sourceKey: tc.logicalTaskId,
+            source: 'today',
+            ...(tc.cardId ? { cardId: tc.cardId } : {}),
+            planId: tc.planId,
+            title: tc.title,
+            category: mapExerciseTypeToLegacyCategory(primaryType),
+            durationMinutes: trustworthyMinutes,
+            completedAt: tc.completedAt,
+            dateKey: tc.dateKey,
+            hasExactTimestamp: tc.hasExactTimestamp,
+            ...(tc.note ? { note: tc.note } : {}),
+            isSample: false,
+          };
+        });
+      }
+
       const valid = activityRecords
         .filter(
           (record) =>
+            record.source === 'today' &&
             record.category !== 'rest' &&
             isDateKeyInWeek(record.dateKey, weekStartKey, weekEndKey)
         )
@@ -1148,130 +1319,173 @@ export function MyPlanView({
       }
       return deduped;
     },
-    [activityRecords]
+    [planStore, activityRecords]
   );
 
-  // This week reads from the SAME unified activityRecords store as History and Weekly review.
-  // Excludes rest records and deduplicates by stable task sourceKey/id so replacement plans never double-count.
-  const thisWeekCompletions = useMemo(
-    () =>
-      getDeduplicatedWeekCompletions(
-        currentWeekBounds.weekStartKey,
-        currentWeekBounds.weekEndKey
-      ),
-    [getDeduplicatedWeekCompletions, currentWeekBounds.weekStartKey, currentWeekBounds.weekEndKey]
+  // Reference Date and PlanFoundationStore for the week browser ("This week" module)
+  const referenceTodayDate = useMemo(
+    () => new Date(deviceToday.year, deviceToday.month, deviceToday.day),
+    [deviceToday.year, deviceToday.month, deviceToday.day]
   );
 
-  const thisWeekWalkRecords = useMemo(
-    () => thisWeekCompletions.filter((r) => r.category === 'walk'),
-    [thisWeekCompletions]
+  const effectivePlanStore = useMemo(
+    () => planStore ?? createEmptyPlanFoundationStore(),
+    [planStore]
   );
 
-  const thisWeekStretchRecords = useMemo(
-    () => thisWeekCompletions.filter((r) => r.category === 'stretch'),
-    [thisWeekCompletions]
-  );
-
-  // Total planned non-rest activity count for This week; null when no fixed plan targets exist (never / 0)
-  const thisWeekPlannedTotal = useMemo(() => {
-    if (!weeklySchedule) return null;
-    const walkTarget =
-      typeof weeklySchedule.walk.targetCount === 'number' && weeklySchedule.walk.targetCount > 0
-        ? weeklySchedule.walk.targetCount
-        : 0;
-    const stretchTarget =
-      typeof weeklySchedule.stretch.targetCount === 'number' &&
-      weeklySchedule.stretch.targetCount > 0
-        ? weeklySchedule.stretch.targetCount
-        : 0;
-    const total = walkTarget + stretchTarget;
-    return total > 0 ? total : null;
-  }, [weeklySchedule]);
-
-  // 7-day Monday -> Sunday behavior track derived purely from actual activityRecords & restRecords
-  const thisWeekSevenDays = useMemo(() => {
-    const weekdayLetters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
-    const weekdayFullNames = [
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
-      'Sunday',
-    ] as const;
-
-    const completionCountsByDate = new Map<string, number>();
-    for (const rec of thisWeekCompletions) {
-      completionCountsByDate.set(rec.dateKey, (completionCountsByDate.get(rec.dateKey) ?? 0) + 1);
+  // Leaving the Plan tab and returning resets the week browser back to "This week".
+  // Opening and closing the selected-week activity detail sheet preserves selectedWeekStartKey.
+  const prevIsActiveForWeekRef = useRef<boolean>(isActive);
+  useEffect(() => {
+    const wasActive = prevIsActiveForWeekRef.current;
+    prevIsActiveForWeekRef.current = isActive;
+    if (!wasActive && isActive) {
+      weekNavSeqRef.current += 1;
+      setSelectedWeekStartKey(currentWeekBounds.weekStartKey);
+      setWeekActivitySheet({ open: false, filterTypeKey: null, expandAllTypes: false });
     }
+  }, [isActive, currentWeekBounds.weekStartKey]);
 
-    const restDatesThisWeek = new Set<string>();
-    for (const rec of restRecords) {
-      if (
-        isDateKeyInWeek(
-          rec.dateKey,
-          currentWeekBounds.weekStartKey,
-          currentWeekBounds.weekEndKey
-        )
-      ) {
-        restDatesThisWeek.add(rec.dateKey);
-      }
+  // Follow live current week across local midnight rollover when user is already on This week
+  const prevCurrentWeekKeyRef = useRef<string>(currentWeekBounds.weekStartKey);
+  useEffect(() => {
+    const prevKey = prevCurrentWeekKeyRef.current;
+    prevCurrentWeekKeyRef.current = currentWeekBounds.weekStartKey;
+    if (prevKey !== currentWeekBounds.weekStartKey) {
+      setSelectedWeekStartKey((curr) =>
+        curr === prevKey ? currentWeekBounds.weekStartKey : curr
+      );
     }
+  }, [currentWeekBounds.weekStartKey]);
 
-    const todayKey = deviceToday.dateStr;
+  // Synchronously computed selected-week snapshot (single source of truth for count, 7-day track, workout types, and detail sheet)
+  const selectedWeekSnapshot = useMemo(
+    () => getPlanWeekSnapshot(effectivePlanStore, selectedWeekStartKey, referenceTodayDate),
+    [effectivePlanStore, selectedWeekStartKey, referenceTodayDate]
+  );
 
-    return weekdayLetters.map((letter, offset) => {
-      const dayDate = addLocalDays(currentWeekBounds.weekStart, offset);
-      const dateKey = toLocalDateKey(dayDate);
-      const dayNumber = dayDate.getDate();
-      const completedCount = completionCountsByDate.get(dateKey) ?? 0;
-      const isRest = restDatesThisWeek.has(dateKey);
-      const isToday = dateKey === todayKey;
-      const isPast = dateKey < todayKey;
+  // Synchronously computed Your rhythm model strictly scoped to a single user-confirmed habitId
+  const confirmedHabits = useMemo(
+    () => getConfirmedHabits(effectivePlanStore),
+    [effectivePlanStore]
+  );
 
-      let status: 'completed' | 'rest' | 'past' | 'future';
-      if (completedCount > 0) {
-        status = 'completed';
-      } else if (isRest) {
-        status = 'rest';
-      } else if (isPast) {
-        status = 'past';
-      } else {
-        status = 'future';
+  const activeRhythmHabit: ConfirmedActionStrategy | null = useMemo(() => {
+    if (confirmedHabits.length === 0) return null;
+    if (selectedRhythmHabitId) {
+      const matched = confirmedHabits.find((h) => h.habitId === selectedRhythmHabitId);
+      if (matched) return matched;
+    }
+    return confirmedHabits[0];
+  }, [confirmedHabits, selectedRhythmHabitId]);
+
+  const rhythmModel = useMemo(() => {
+    if (!activeRhythmHabit) return null;
+    void rhythmRetryNonce;
+    return getHabitRhythmModel(effectivePlanStore, activeRhythmHabit.habitId, referenceTodayDate);
+  }, [effectivePlanStore, activeRhythmHabit, referenceTodayDate, rhythmRetryNonce]);
+
+  const handleOpenHabitConfirm = useCallback((existing?: ConfirmedActionStrategy | null) => {
+    if (existing) {
+      setEditingHabitId(existing.habitId);
+      setHabitDraftLabel(existing.label);
+      setHabitDraftRegular(existing.regularAction);
+      setHabitDraftMinimum(existing.minimumAction ?? '');
+    } else {
+      setEditingHabitId(null);
+      setHabitDraftLabel('');
+      setHabitDraftRegular('');
+      setHabitDraftMinimum('');
+    }
+    setIsHabitConfirmOpen(true);
+  }, []);
+
+  const handleCloseHabitConfirm = useCallback(() => {
+    setIsHabitConfirmOpen(false);
+    setEditingHabitId(null);
+  }, []);
+
+  const handleSaveHabitConfirm = useCallback(
+    (e?: React.FormEvent) => {
+      if (e) e.preventDefault();
+      const label = habitDraftLabel.trim();
+      const regular = habitDraftRegular.trim() || label;
+      const minimum = habitDraftMinimum.trim();
+      if (!label) return;
+
+      if (onUpdatePlanStore) {
+        let savedHabitId: string | null = null;
+        onUpdatePlanStore((prev) => {
+          const res = confirmHabitStrategy(prev, {
+            habitId: editingHabitId ?? undefined,
+            label,
+            regularAction: regular,
+            minimumAction: minimum || undefined,
+            confirmTrackingStartDateKey: deviceToday.dateStr,
+          });
+          savedHabitId = res.strategy.habitId;
+          return res.store;
+        });
+        if (savedHabitId) {
+          setSelectedRhythmHabitId(savedHabitId);
+        }
       }
+      setIsHabitConfirmOpen(false);
+      setEditingHabitId(null);
+      showPlanToast(editingHabitId ? 'Habit updated' : 'Habit confirmed');
+    },
+    [
+      habitDraftLabel,
+      habitDraftRegular,
+      habitDraftMinimum,
+      editingHabitId,
+      onUpdatePlanStore,
+      deviceToday.dateStr,
+    ]
+  );
 
-      const dateText = `${weekdayFullNames[offset]}, ${formatShortMonthDay(dayDate)}${
-        isToday ? ' (Today)' : ''
-      }`;
-      const statusText =
-        completedCount > 0
-          ? `${completedCount} ${completedCount === 1 ? 'activity' : 'activities'} completed`
-          : isRest
-          ? 'Rest day'
-          : isPast
-          ? 'No completed activity'
-          : 'Upcoming';
+  const handleCycleRhythmHabit = useCallback(() => {
+    if (confirmedHabits.length <= 1) return;
+    const currentIdx = confirmedHabits.findIndex(
+      (h) => h.habitId === activeRhythmHabit?.habitId
+    );
+    const nextIdx = (currentIdx + 1) % confirmedHabits.length;
+    setSelectedRhythmHabitId(confirmedHabits[nextIdx].habitId);
+  }, [confirmedHabits, activeRhythmHabit?.habitId]);
 
-      return {
-        dateKey,
-        letter,
-        dayNumber,
-        completedCount,
-        isRest,
-        isToday,
-        status,
-        ariaLabel: `${dateText}: ${statusText}`,
-      };
+  const handleRetryRhythmQuery = useCallback(() => {
+    if (onUpdatePlanStore) {
+      const reloaded = loadPlanFoundationStore();
+      onUpdatePlanStore(() => reloaded);
+    }
+    setRhythmRetryNonce((n) => n + 1);
+  }, [onUpdatePlanStore]);
+
+  const handleStepSelectedWeek = useCallback(
+    (deltaWeeks: -1 | 1) => {
+      if (deltaWeeks === -1 && !selectedWeekSnapshot.canGoPrevious) return;
+      if (deltaWeeks === 1 && !selectedWeekSnapshot.canGoNext) return;
+      const nextKey = shiftLocalWeekStartKey(selectedWeekSnapshot.weekStartKey, deltaWeeks);
+      const seq = ++weekNavSeqRef.current;
+      setSelectedWeekStartKey((curr) => {
+        if (seq !== weekNavSeqRef.current) return curr;
+        return nextKey;
+      });
+    },
+    [
+      selectedWeekSnapshot.canGoPrevious,
+      selectedWeekSnapshot.canGoNext,
+      selectedWeekSnapshot.weekStartKey,
+    ]
+  );
+
+  const handleReturnToCurrentWeek = useCallback(() => {
+    const seq = ++weekNavSeqRef.current;
+    setSelectedWeekStartKey((curr) => {
+      if (seq !== weekNavSeqRef.current) return curr;
+      return currentWeekBounds.weekStartKey;
     });
-  }, [
-    thisWeekCompletions,
-    restRecords,
-    currentWeekBounds.weekStart,
-    currentWeekBounds.weekStartKey,
-    currentWeekBounds.weekEndKey,
-    deviceToday.dateStr,
-  ]);
+  }, [currentWeekBounds.weekStartKey]);
 
   // Last completed calendar week (Monday start -> Sunday end) for Weekly review
   const lastCompletedWeekBounds = useMemo(
@@ -1460,18 +1674,29 @@ export function MyPlanView({
 
   const handleSelectWeeklyReviewFeeling = (feeling: WeeklyReviewFeeling) => {
     const weekStartKey = lastCompletedWeekBounds.weekStartKey;
+    const nowIso = new Date().toISOString();
     const nextFeedbacks: Record<string, WeeklyReviewFeedback> = {
       ...weeklyReviewFeedbacks,
       [weekStartKey]: {
         weekStartKey,
         feeling,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nowIso,
       },
     };
     const didSave = saveWeeklyReviewFeedbacks(nextFeedbacks);
     if (!didSave) {
       setWeeklyReviewSaveError('Couldn’t save your feedback. Please try again.');
       return;
+    }
+    if (onUpdatePlanStore) {
+      onUpdatePlanStore((prev) =>
+        upsertWeeklyReviewAnswer(prev, {
+          weekStartKey,
+          questionId: DEFAULT_WEEKLY_REVIEW_QUESTION_ID,
+          rawAnswer: feeling,
+          timestamp: nowIso,
+        }).store
+      );
     }
     setWeeklyReviewSaveError(null);
     setWeeklyReviewFeedbacks(nextFeedbacks);
@@ -1493,6 +1718,27 @@ export function MyPlanView({
     };
     setWeeklySchedulesByWeek(nextByWeek);
     saveWeeklySchedulesByWeek(nextByWeek);
+
+    if (onUpdatePlanStore) {
+      onUpdatePlanStore((prev) => {
+        const withEvent = recordLifecycleEvent(prev, {
+          type: 'strategy_adjustment',
+          dateKey: deviceToday.dateStr,
+          source: 'plan',
+          title: activeAdjustmentProposal.headline,
+          note: activeAdjustmentProposal.changeLabel,
+          relatedWeekStartKey: targetWeekKey,
+          payload: {
+            proposalId: activeAdjustmentProposal.id,
+            targetActivity: activeAdjustmentProposal.targetActivity,
+            targetField: activeAdjustmentProposal.targetField,
+            previousValue: activeAdjustmentProposal.previousValue,
+            nextValue: activeAdjustmentProposal.nextValue,
+          },
+        }).store;
+        return recordCommitmentRhythmEvent(withEvent, 'adjusted');
+      });
+    }
 
     const nextResolved = Array.from(
       new Set([
@@ -1575,6 +1821,9 @@ export function MyPlanView({
     );
     setResolvedAdjustmentKeys(nextResolved);
     saveResolvedAdjustmentKeys(nextResolved);
+    if (onUpdatePlanStore) {
+      onUpdatePlanStore((prev) => recordCommitmentRhythmEvent(prev, 'kept'));
+    }
     setLastAppliedAdjustment(null);
   };
 
@@ -1899,10 +2148,10 @@ export function MyPlanView({
     setActiveDayModalDate(null);
   };
 
-  // --- Handlers for Your Focus ---
+  // --- Handlers for Phase Commitment Header / Goal Detail ---
   const handleOpenFocusAdjust = () => {
-    setFocusDraftTitle(direction.goalTitle);
-    setFocusDraftApproach(direction.executionApproach);
+    setFocusDraftTitle(hasConfirmedCommitment ? headerIntentText : '');
+    setFocusDraftApproach(hasConfirmedCommitment ? headerStrategyText : '');
     setFocusDraftReview(direction.nextReviewDate);
     setIsFocusAdjustOpen(true);
   };
@@ -1920,6 +2169,7 @@ export function MyPlanView({
     const trimmedReview =
       focusDraftReview.trim() ||
       formatReviewOnSundayLabel(new Date(deviceToday.year, deviceToday.month, deviceToday.day));
+    const wasConfirmed = hasConfirmedCommitment;
 
     const updated: DirectionState = {
       ...direction,
@@ -1934,9 +2184,36 @@ export function MyPlanView({
 
     setDirection(updated);
     persistFocusToStorage(updated);
+    if (onUpdatePlanStore) {
+      onUpdatePlanStore((prev) =>
+        upsertPhaseCommitment(prev, {
+          phaseId: currentPhase.id,
+          phaseName: currentPhase.name,
+          originalIntent: prev.commitment?.originalIntent ?? trimmedFocus,
+          summary: trimmedFocus,
+          strategySummary: trimmedApproach || null,
+          status: updated.status,
+          lastEventKind: wasConfirmed ? 'adjusted' : 'started',
+          reviewRequested: false,
+          confirmTrackingStartDateKey: deviceToday.dateStr,
+        }).store
+      );
+    }
     setIsFocusAdjustOpen(false);
     setDirectionToast(true);
     setTimeout(() => setDirectionToast(false), 2600);
+  };
+
+  const handleKeepCurrentRhythm = () => {
+    if (!hasConfirmedCommitment) {
+      setIsFocusAdjustOpen(false);
+      return;
+    }
+    if (onUpdatePlanStore) {
+      onUpdatePlanStore((prev) => recordCommitmentRhythmEvent(prev, 'kept'));
+    }
+    setIsFocusAdjustOpen(false);
+    showPlanToast('Rhythm kept');
   };
 
   const handleFieldFocusScroll = (
@@ -1946,80 +2223,6 @@ export function MyPlanView({
     window.setTimeout(() => {
       target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }, 120);
-  };
-
-  // --- Handlers for Up Next & View Path ---
-  const syncFocusPhaseName = (nextPhaseName: string) => {
-    setDirection((prev) => {
-      const updated = { ...prev, phase: nextPhaseName };
-      persistFocusToStorage(updated);
-      return updated;
-    });
-  };
-
-  const handleOpenPhaseDetail = (phaseId: string) => {
-    setSelectedPhaseId(phaseId);
-    setIsConfirmingPhaseSwitch(false);
-  };
-
-  const handleClosePhaseDetail = () => {
-    setSelectedPhaseId(null);
-    setIsConfirmingPhaseSwitch(false);
-  };
-
-  const handleConfirmPhaseSwitch = (targetPhase: PlanPhase) => {
-    const nextState: PlanPathState = {
-      phases: visiblePhases,
-      currentPhaseId: targetPhase.id,
-      source: 'user',
-      isSample: false,
-    };
-    setPlanPath(nextState);
-    savePlanPathState(nextState);
-    syncFocusPhaseName(targetPhase.name);
-    setSelectedPhaseId(null);
-    setIsConfirmingPhaseSwitch(false);
-    showPlanToast(`Current phase: ${targetPhase.name}`);
-  };
-
-  const handleOpenPathEdit = () => {
-    setPathDraftPhases(visiblePhases.map((p) => ({ ...p })));
-    setIsPathEditOpen(true);
-  };
-
-  const handleClosePathEdit = () => {
-    setIsPathEditOpen(false);
-  };
-
-  const handleSavePathEdit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const cleanedPhases: PlanPhase[] = pathDraftPhases.slice(0, 3).map((draft, idx) => {
-      const existing = visiblePhases[idx];
-      return {
-        id: draft.id,
-        name: draft.name.trim(),
-        description: draft.description.trim() || existing?.description || '',
-      };
-    });
-
-    if (cleanedPhases.some((p) => !p.name)) return;
-
-    const nextState: PlanPathState = {
-      phases: cleanedPhases,
-      currentPhaseId: currentPhase.id,
-      source: 'user',
-      isSample: false,
-    };
-    setPlanPath(nextState);
-    savePlanPathState(nextState);
-
-    const updatedCurrent = cleanedPhases.find((p) => p.id === currentPhase.id) ?? cleanedPhases[0];
-    if (updatedCurrent) {
-      syncFocusPhaseName(updatedCurrent.name);
-    }
-
-    setIsPathEditOpen(false);
-    showPlanToast('Path updated');
   };
 
   // --- Handlers for This Week / Next Week Schedule Editing ---
@@ -2433,7 +2636,7 @@ export function MyPlanView({
   };
 
   return (
-    <div className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[14px] pb-[calc(112px+env(safe-area-inset-bottom,0px))] flex flex-col gap-5 z-10 scrollbar-none select-none">
+    <div className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(8rem+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none">
       <style>{GENKI_PLAN_UI_STYLES}</style>
       {/* Toast Notifications */}
       <AnimatePresence>
@@ -2442,7 +2645,7 @@ export function MyPlanView({
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-[13px] leading-[18px] font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
+            className="mb-4 bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-[13px] leading-[18px] font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
           >
             <div className="flex items-center gap-2">
               <Check className="w-4 h-4 stroke-[2.5]" />
@@ -2459,7 +2662,7 @@ export function MyPlanView({
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-[13px] leading-[18px] font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
+            className="mb-4 bg-[#5E5BAE] text-white px-4 py-2.5 rounded-[18px] text-[13px] leading-[18px] font-semibold shadow-md flex items-center justify-between z-20 shrink-0"
           >
             <div className="flex items-center gap-2">
               <Check className="w-4 h-4 stroke-[2.5]" />
@@ -2471,316 +2674,374 @@ export function MyPlanView({
       </AnimatePresence>
 
       {/* ============================================================ */}
-      {/* Nova Guide Intro + Unified Nova Planning Container           */}
+      {/* Centered Phase Commitment Header (Directly on Page Canvas)    */}
       {/* ============================================================ */}
-      <div className="flex flex-col gap-4">
-        <div id="plan-nova-intro" className="genki-plan-nova-intro">
-          <PlanNovaGuideAvatar isActive={isActive} />
-          <div className="genki-plan-nova-copy">
-            <p id="plan-nova-name" className="genki-plan-nova-name">
-              Nova
+      <section
+        id="plan-commitment-header"
+        aria-label="Phase commitment"
+        data-commitment-state={
+          !hasConfirmedCommitment
+            ? 'unconfirmed'
+            : effectiveCommitment?.reviewRequested
+            ? 'review'
+            : effectiveCommitment?.lastEventKind ?? 'started'
+        }
+        className="genki-plan-commitment-header"
+      >
+        <PlanNovaGuideAvatar isActive={isActive} isShortViewport={isShortViewport} />
+
+        <p id="plan-header-nova-line" className="genki-plan-header-nova-line">
+          {headerNovaLine}
+        </p>
+
+        {hasConfirmedCommitment && (
+          <>
+            <p id="plan-header-intent" className="genki-plan-header-intent">
+              {headerIntentText}
             </p>
-            <p id="plan-nova-lead" className="genki-plan-nova-lead">
-              Let’s find a rhythm that feels good.
-            </p>
-          </div>
-        </div>
 
-        <div id="plan-unified-container" className="genki-plan-unified-container">
-        {/* 1. Your focus */}
-        {(() => {
-          const focusHeadline = formatFocusHeadline(direction.goalTitle);
-          const focusApproach = formatFocusApproach(direction.executionApproach);
-          const showFocusApproach =
-            Boolean(focusApproach) &&
-            focusApproach.toLowerCase() !== direction.goalTitle.trim().toLowerCase() &&
-            focusApproach.toLowerCase() !== focusHeadline.trim().toLowerCase();
-          const reviewDisplayLabel = formatFocusReviewLabel(
-            direction.nextReviewDate,
-            new Date(deviceToday.year, deviceToday.month, deviceToday.day)
-          );
+            {headerStrategyText && (
+              <p id="plan-header-strategy" className="genki-plan-header-strategy">
+                {headerStrategyText}
+              </p>
+            )}
+          </>
+        )}
 
-          return (
-            <section
-              id="plan-module-focus"
-              aria-labelledby="plan-heading-focus"
-              className="flex flex-col"
-            >
-              <div className="genki-plan-section-header">
-                <h2 id="plan-heading-focus" className="genki-plan-section-title">
-                  Your focus
-                </h2>
-                <span id="focus-card-review" className="genki-plan-section-date">
-                  {reviewDisplayLabel}
-                </span>
-              </div>
+        <button
+          type="button"
+          id="plan-header-detail-btn"
+          onClick={handleOpenFocusAdjust}
+          className="genki-plan-header-detail-btn"
+        >
+          {headerActionLabel}
+        </button>
+      </section>
 
-              <div className="mt-[16px] flex flex-col">
-                <p id="focus-card-title" className="genki-plan-focus-goal">
-                  {focusHeadline}
-                </p>
-
-                {showFocusApproach && (
-                  <p id="focus-card-approach" className="genki-plan-body mt-[8px]">
-                    {focusApproach}
-                  </p>
-                )}
-              </div>
-
-              <div className="mt-[8px] flex items-center justify-end">
-                <button
-                  type="button"
-                  id="plan-focus-action-btn"
-                  onClick={handleOpenFocusAdjust}
-                  className="genki-plan-text-action"
-                >
-                  Adjust
-                </button>
-              </div>
-            </section>
-          );
-        })()}
-
-        <div aria-hidden="true" className="genki-plan-section-divider" />
-
-        {/* 2. This week */}
+      {/* ============================================================ */}
+      {/* Single Continuous Unified Container:                         */}
+      {/* Your rhythm -> This week -> Weekly review                    */}
+      {/* ============================================================ */}
+      <div id="plan-unified-container" className="genki-plan-unified-container">
+        {/* 1. Your rhythm (single confirmed habit rolling 7-day rhythm) */}
         <section
-          id="plan-module-this-week"
-          aria-labelledby="plan-heading-this-week"
+          id="plan-module-rhythm"
+          aria-labelledby="plan-heading-rhythm"
+          data-rhythm-habit-id={rhythmModel?.habitId ?? ''}
+          data-rhythm-status={rhythmModel?.statusCode ?? 'unconfirmed'}
           className="flex flex-col"
         >
           <div className="genki-plan-section-header">
-            <h2 id="plan-heading-this-week" className="genki-plan-section-title">
-              This week
+            <h2 id="plan-heading-rhythm" className="genki-plan-section-title">
+              Your rhythm
             </h2>
-            <span id="this-week-date-range" className="genki-plan-section-date">
-              {currentWeekBounds.rangeLabel}
-            </span>
-          </div>
-
-          {/* 2a. Hero completion count */}
-          <div id="this-week-summary-metric" className="mt-[16px] flex flex-col">
-            <div className="genki-plan-metric-row">
-              <span id="this-week-completed-count" className="genki-plan-metric-value">
-                {thisWeekCompletions.length}
-              </span>
-              {thisWeekPlannedTotal !== null && (
-                <span id="this-week-planned-denom" className="genki-plan-metric-denom">
-                  / {thisWeekPlannedTotal}
-                </span>
-              )}
-            </div>
-            <p id="this-week-metric-caption" className="genki-plan-metric-caption mt-[4px]">
-              activities completed
-            </p>
-          </div>
-
-          {/* 2b. Non-interactive 7-day behavior track */}
-          <div
-            id="this-week-seven-day-track"
-            role="list"
-            aria-label="This week daily activity"
-            className="genki-plan-week-track mt-[16px]"
-          >
-            {thisWeekSevenDays.map((day) => (
-              <div
-                key={day.dateKey}
-                role="listitem"
-                aria-label={day.ariaLabel}
-                data-date-key={day.dateKey}
-                data-day-status={day.status}
-                data-completed-count={day.completedCount}
-                data-is-today={day.isToday ? 'true' : undefined}
-                className="genki-plan-week-day"
+            {confirmedHabits.length > 1 && (
+              <button
+                type="button"
+                id="plan-rhythm-switch-habit-btn"
+                onClick={handleCycleRhythmHabit}
+                className="genki-plan-rhythm-switch-btn"
               >
-                <span aria-hidden="true" className="genki-plan-week-day-letter">
-                  {day.letter}
-                </span>
-                <span
-                  aria-hidden="true"
-                  className={`genki-plan-week-day-num ${
-                    day.isToday ? 'genki-plan-week-day-num-today' : ''
-                  }`}
-                >
-                  {day.dayNumber}
-                </span>
-                <span aria-hidden="true" className="genki-plan-week-day-indicator">
-                  {day.status === 'completed' ? (
-                    <span className="genki-plan-week-dot genki-plan-week-dot-completed" />
-                  ) : day.status === 'rest' ? (
-                    <span className="genki-plan-week-dash-rest" />
-                  ) : day.status === 'past' ? (
-                    <span className="genki-plan-week-dot genki-plan-week-dot-past" />
-                  ) : (
-                    <span className="genki-plan-week-dot genki-plan-week-dot-future" />
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* 2c. Activity list (Walk, Stretch, Rest) */}
-          <div id="this-week-activity-list" className="mt-[16px] flex flex-col">
-            {!weeklySchedule ? (
-              <p id="this-week-empty-text" className="genki-plan-body">
-                Start with a simple week.
-              </p>
-            ) : (
-              <div className="flex flex-col">
-                {/* Row 1: Walk */}
-                {(() => {
-                  const walkCount = thisWeekWalkRecords.length;
-                  const walkTarget = weeklySchedule.walk.targetCount;
-                  const walkPct =
-                    walkTarget !== null && walkTarget > 0
-                      ? Math.min(100, Math.max(0, (walkCount / walkTarget) * 100))
-                      : null;
-
-                  return (
-                    <button
-                      type="button"
-                      id="this-week-row-walk"
-                      onClick={() => setActiveWeekCategoryList('walk')}
-                      className="genki-plan-week-row"
-                    >
-                      <div className="w-full flex items-center justify-between gap-3">
-                        <span
-                          id="this-week-walk-title"
-                          className="genki-plan-row-title shrink-0"
-                        >
-                          Walk
-                        </span>
-
-                        <div className="flex items-center justify-end gap-1.5 min-w-0">
-                          <span
-                            id="this-week-walk-count"
-                            className="genki-plan-activity-count whitespace-nowrap"
-                          >
-                            {walkTarget !== null
-                              ? `${walkCount} / ${walkTarget}`
-                              : walkCount > 0
-                              ? `${walkCount} · Flexible`
-                              : 'Flexible'}
-                          </span>
-                          <ChevronRight className="w-4 h-4 text-[#706A7C]/70 stroke-[2] shrink-0" />
-                        </div>
-                      </div>
-
-                      {walkPct !== null && (
-                        <div
-                          id="this-week-walk-progress-bar"
-                          className="genki-plan-progress-track mt-[8px]"
-                          role="progressbar"
-                          aria-label="Walk weekly progress"
-                          aria-valuenow={walkCount}
-                          aria-valuemin={0}
-                          aria-valuemax={walkTarget ?? undefined}
-                        >
-                          <div
-                            id="this-week-walk-progress-fill"
-                            className="genki-plan-progress-fill"
-                            style={{ width: `${walkPct}%` }}
-                          />
-                        </div>
-                      )}
-                    </button>
-                  );
-                })()}
-
-                {/* Row 2: Stretch */}
-                {(() => {
-                  const stretchCount = thisWeekStretchRecords.length;
-                  const stretchTarget = weeklySchedule.stretch.targetCount;
-                  const stretchPct =
-                    stretchTarget !== null && stretchTarget > 0
-                      ? Math.min(100, Math.max(0, (stretchCount / stretchTarget) * 100))
-                      : null;
-
-                  return (
-                    <button
-                      type="button"
-                      id="this-week-row-stretch"
-                      onClick={() => setActiveWeekCategoryList('stretch')}
-                      className="genki-plan-week-row"
-                    >
-                      <div className="w-full flex items-center justify-between gap-3">
-                        <span
-                          id="this-week-stretch-title"
-                          className="genki-plan-row-title shrink-0"
-                        >
-                          Stretch
-                        </span>
-
-                        <div className="flex items-center justify-end gap-1.5 min-w-0">
-                          <span
-                            id="this-week-stretch-count"
-                            className="genki-plan-activity-count whitespace-nowrap"
-                          >
-                            {stretchTarget !== null
-                              ? `${stretchCount} / ${stretchTarget}`
-                              : stretchCount > 0
-                              ? `${stretchCount} · Flexible`
-                              : 'Flexible'}
-                          </span>
-                          <ChevronRight className="w-4 h-4 text-[#706A7C]/70 stroke-[2] shrink-0" />
-                        </div>
-                      </div>
-
-                      {stretchPct !== null && (
-                        <div
-                          id="this-week-stretch-progress-bar"
-                          className="genki-plan-progress-track mt-[8px]"
-                          role="progressbar"
-                          aria-label="Stretch weekly progress"
-                          aria-valuenow={stretchCount}
-                          aria-valuemin={0}
-                          aria-valuemax={stretchTarget ?? undefined}
-                        >
-                          <div
-                            id="this-week-stretch-progress-fill"
-                            className="genki-plan-progress-fill"
-                            style={{ width: `${stretchPct}%` }}
-                          />
-                        </div>
-                      )}
-                    </button>
-                  );
-                })()}
-
-                {/* Row 3: Rest (As needed, never counted as exercise target, no progress bar) */}
-                <div
-                  id="this-week-row-rest"
-                  className="genki-plan-week-row genki-plan-week-row-static"
-                >
-                  <div className="w-full flex items-center justify-between gap-3">
-                    <span
-                      id="this-week-rest-title"
-                      className="genki-plan-row-title shrink-0"
-                    >
-                      Rest
-                    </span>
-
-                    <span
-                      id="this-week-rest-subtitle"
-                      className="genki-plan-activity-count whitespace-nowrap"
-                    >
-                      As needed
-                    </span>
-                  </div>
-                </div>
-              </div>
+                Switch habit
+              </button>
             )}
           </div>
 
-          <div className="mt-[8px] flex items-center justify-end">
+          {!rhythmModel || !activeRhythmHabit ? (
+            <div id="plan-rhythm-unconfirmed" className="flex flex-col">
+              <p className="genki-plan-rhythm-habit-name">
+                No confirmed habit yet
+              </p>
+              <p className="genki-plan-rhythm-summary">
+                Choose a habit to see your rolling 7-day rhythm.
+              </p>
+              <p className="genki-plan-rhythm-basis">
+                Past Done tasks are kept separate until linked to a habit you confirm.
+              </p>
+              <button
+                type="button"
+                id="plan-rhythm-confirm-habit-btn"
+                onClick={() => handleOpenHabitConfirm(null)}
+                className="genki-plan-rhythm-journey-btn"
+              >
+                Confirm a habit
+                <ChevronRight className="w-4 h-4 stroke-[2.2]" aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <>
+              <p id="plan-rhythm-habit-name" className="genki-plan-rhythm-habit-name">
+                {rhythmModel.habitLabel}
+              </p>
+
+              <p id="plan-rhythm-status" className="genki-plan-rhythm-status">
+                {rhythmModel.statusLabel}
+              </p>
+
+              {rhythmModel.statusCode === 'unavailable' ? (
+                <div
+                  id="rhythm-unavailable-state"
+                  className="mt-[16px] rounded-[16px] bg-[#F7F5FB]/90 border border-[#7770B6]/10 px-3.5 py-3.5 flex flex-col gap-3"
+                >
+                  <p className="text-[13px] font-normal leading-[19px] text-[#706A7C]">
+                    We couldn’t read your recent practice records right now. Try reloading to check again.
+                  </p>
+                  <button
+                    type="button"
+                    id="rhythm-retry-btn"
+                    onClick={handleRetryRhythmQuery}
+                    className="genki-plan-rhythm-retry-btn"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <PlanRhythmChart model={rhythmModel} />
+              )}
+
+              <p id="plan-rhythm-summary" className="genki-plan-rhythm-summary">
+                {rhythmModel.numericSummary}
+              </p>
+
+              {rhythmModel.factualBasis && (
+                <p id="plan-rhythm-basis" className="genki-plan-rhythm-basis">
+                  {rhythmModel.factualBasis}
+                </p>
+              )}
+
+              <button
+                type="button"
+                id="plan-rhythm-view-journey-btn"
+                onClick={() => setSelectedModule('journey')}
+                className="genki-plan-rhythm-journey-btn"
+              >
+                View journey
+                <ChevronRight className="w-4 h-4 stroke-[2.2]" aria-hidden="true" />
+              </button>
+            </>
+          )}
+        </section>
+
+        <div aria-hidden="true" className="genki-plan-section-divider" />
+
+        {/* 2. This week (weekly action records with week navigation; no targets or scoring) */}
+        <section
+          id="plan-module-this-week"
+          aria-labelledby="plan-heading-this-week"
+          data-selected-week-start={selectedWeekSnapshot.weekStartKey}
+          data-selected-week-offset={selectedWeekSnapshot.weekOffset}
+          className="flex flex-col"
+        >
+          {/* 2a. Dynamic title + low-key Back to this week action on historical weeks */}
+          <div className="genki-plan-section-header min-h-[28px]">
+            <h2 id="plan-heading-this-week" className="genki-plan-section-title">
+              {selectedWeekSnapshot.title}
+            </h2>
+            {!selectedWeekSnapshot.isCurrentWeek && (
+              <button
+                type="button"
+                id="this-week-back-to-current-btn"
+                onClick={handleReturnToCurrentWeek}
+                className="genki-plan-week-back-btn"
+              >
+                Back to this week
+              </button>
+            )}
+          </div>
+
+          {/* 2b. Dedicated week navigation row (8px below title) */}
+          <div id="this-week-nav-row" className="genki-plan-week-nav-row">
             <button
               type="button"
-              id="plan-week-action-btn"
-              onClick={() => handleOpenWeekAdjust('this_week')}
-              className="genki-plan-text-action"
+              id="this-week-prev-btn"
+              onClick={() => handleStepSelectedWeek(-1)}
+              disabled={!selectedWeekSnapshot.canGoPrevious}
+              aria-label="Previous week"
+              className="genki-plan-week-nav-btn"
             >
-              {weeklySchedule ? 'Adjust week' : 'Set up'}
+              <ChevronLeft className="w-[18px] h-[18px] stroke-[2]" />
             </button>
+
+            <span id="this-week-date-range" className="genki-plan-week-nav-date">
+              {selectedWeekSnapshot.rangeLabel}
+            </span>
+
+            <button
+              type="button"
+              id="this-week-next-btn"
+              onClick={() => handleStepSelectedWeek(1)}
+              disabled={!selectedWeekSnapshot.canGoNext}
+              aria-label="Next week"
+              className="genki-plan-week-nav-btn"
+            >
+              <ChevronRight className="w-[18px] h-[18px] stroke-[2]" />
+            </button>
+          </div>
+
+          {selectedWeekSnapshot.showEarlierUnavailableNote && (
+            <p
+              id="this-week-coverage-note"
+              className="mt-[2px] text-center text-[12px] font-normal leading-[17px] text-[#8B8498]"
+            >
+              Earlier records unavailable
+            </p>
+          )}
+
+          {/* Synchronized weekly data block (gentle <= 160ms opacity fade, zero layout jump) */}
+          <div
+            key={selectedWeekSnapshot.weekStartKey}
+            id="this-week-synced-body"
+            className="genki-plan-week-content-fade flex flex-col"
+          >
+            {/* 2c. Done task count (no denominator, no target, no progress bar) */}
+            <div id="this-week-summary-metric" className="mt-[12px] flex flex-col">
+              <div className="genki-plan-metric-row">
+                <span
+                  id="this-week-completed-count"
+                  data-coverage-unknown={
+                    selectedWeekSnapshot.isWeekCoverageUnknown ? 'true' : 'false'
+                  }
+                  className={`genki-plan-metric-value ${
+                    selectedWeekSnapshot.isWeekCoverageUnknown ? 'text-[#8B8498]' : ''
+                  }`}
+                >
+                  {selectedWeekSnapshot.isWeekCoverageUnknown
+                    ? '—'
+                    : selectedWeekSnapshot.doneTaskCount}
+                </span>
+              </div>
+              <p id="this-week-metric-caption" className="genki-plan-metric-caption mt-[4px]">
+                {selectedWeekSnapshot.isWeekCoverageUnknown
+                  ? selectedWeekSnapshot.hasLoadFailure
+                    ? 'Unable to load records'
+                    : 'Records unavailable'
+                  : 'tasks completed'}
+              </p>
+            </div>
+
+            {/* 2d. 7-day Monday-Sunday track */}
+            <div
+              id="this-week-seven-day-track"
+              role="list"
+              aria-label={`${selectedWeekSnapshot.title} daily activity`}
+              className="genki-plan-week-track mt-[16px]"
+            >
+              {selectedWeekSnapshot.days.map((day) => (
+                <div
+                  key={day.dateKey}
+                  role="listitem"
+                  aria-label={day.ariaLabel}
+                  data-date-key={day.dateKey}
+                  data-day-status={day.visualState}
+                  data-completed-count={day.doneTaskCount}
+                  data-is-today={day.isToday ? 'true' : undefined}
+                  className="genki-plan-week-day"
+                >
+                  <span aria-hidden="true" className="genki-plan-week-day-letter">
+                    {day.weekdayLetter}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className={`genki-plan-week-day-num ${
+                      day.isToday ? 'genki-plan-week-day-num-today' : ''
+                    }`}
+                  >
+                    {day.dayNumber}
+                  </span>
+                  <span aria-hidden="true" className="genki-plan-week-day-indicator">
+                    {day.visualState === 'done' ? (
+                      <span className="genki-plan-week-dot genki-plan-week-dot-completed" />
+                    ) : day.visualState === 'rest' ? (
+                      <span className="genki-plan-week-dash-rest" />
+                    ) : day.visualState === 'past' ? (
+                      <span className="genki-plan-week-dot genki-plan-week-dot-past" />
+                    ) : day.visualState === 'unknown' ? (
+                      <span className="genki-plan-week-unknown-mark">?</span>
+                    ) : (
+                      <span className="genki-plan-week-dot genki-plan-week-dot-future" />
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* 2e. Specific workout types summary (max 3 rows, sorted count desc then name asc) */}
+            {selectedWeekSnapshot.workoutSummary.topTypes.length > 0 ? (
+              <div id="this-week-workout-types" className="mt-[16px] flex flex-col">
+                {selectedWeekSnapshot.workoutSummary.topTypes.map((row) => (
+                  <button
+                    key={row.key}
+                    type="button"
+                    data-workout-type-row={row.key}
+                    data-workout-count={row.count}
+                    data-workout-duration={
+                      row.hasCompleteDurationData && row.trustworthyDurationMinutes > 0
+                        ? row.trustworthyDurationMinutes
+                        : ''
+                    }
+                    onClick={() =>
+                      setWeekActivitySheet({
+                        open: true,
+                        filterTypeKey: row.key,
+                        expandAllTypes: false,
+                      })
+                    }
+                    className="genki-plan-workout-row"
+                  >
+                    <span className="genki-plan-workout-name">{row.label}</span>
+                    <span className="genki-plan-workout-stat">
+                      {row.hasCompleteDurationData && row.trustworthyDurationMinutes > 0
+                        ? `${row.count} · ${row.trustworthyDurationMinutes} min`
+                        : `${row.count}`}
+                    </span>
+                  </button>
+                ))}
+
+                {selectedWeekSnapshot.workoutSummary.hasMoreTypes && (
+                  <button
+                    type="button"
+                    id="this-week-view-all-types-btn"
+                    onClick={() =>
+                      setWeekActivitySheet({
+                        open: true,
+                        filterTypeKey: null,
+                        expandAllTypes: true,
+                      })
+                    }
+                    className="genki-plan-view-all-btn"
+                  >
+                    View all ({selectedWeekSnapshot.workoutSummary.totalTypeCount})
+                  </button>
+                )}
+              </div>
+            ) : !selectedWeekSnapshot.isWeekCoverageUnknown ? (
+              <p
+                id="this-week-no-workouts"
+                className="mt-[16px] text-[14px] font-normal leading-[20px] text-[#8B8498]"
+              >
+                {selectedWeekSnapshot.isCurrentWeek
+                  ? 'No workouts recorded yet.'
+                  : 'No workouts recorded.'}
+              </p>
+            ) : null}
+
+            {/* 2f. View activity detail entry (preserves selected week on return) */}
+            <div className="mt-[8px] flex items-center justify-end">
+              <button
+                type="button"
+                id="this-week-view-activity-btn"
+                onClick={() =>
+                  setWeekActivitySheet({
+                    open: true,
+                    filterTypeKey: null,
+                    expandAllTypes: false,
+                  })
+                }
+                className="genki-plan-text-action"
+              >
+                View activity
+              </button>
+            </div>
           </div>
         </section>
 
@@ -2863,7 +3124,7 @@ export function MyPlanView({
                         type="button"
                         id="plan-adjustment-accept-btn"
                         onClick={handleAcceptAdjustment}
-                        className="genki-plan-control genki-plan-control-primary min-h-[44px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold leading-[20px] transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-primary min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold leading-[20px] transition-colors cursor-pointer"
                       >
                         Try this
                       </button>
@@ -2872,7 +3133,7 @@ export function MyPlanView({
                         type="button"
                         id="plan-adjustment-dismiss-btn"
                         onClick={handleDismissAdjustment}
-                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-3.5 rounded-[12px] text-[14px] font-medium leading-[20px] transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-3.5 rounded-[12px] text-[15px] font-semibold leading-[20px] transition-colors cursor-pointer"
                       >
                         Keep my plan
                       </button>
@@ -2886,115 +3147,7 @@ export function MyPlanView({
 
         <div aria-hidden="true" className="genki-plan-section-divider" />
 
-        {/* 3. Up next */}
-        <section
-          id="plan-module-up-next"
-          aria-labelledby="plan-heading-up-next"
-          className="flex flex-col"
-        >
-          <div className="genki-plan-section-header">
-            <h2 id="plan-heading-up-next" className="genki-plan-section-title">
-              Up next
-            </h2>
-          </div>
-
-          <div id="up-next-phase-timeline" className="mt-[16px] flex flex-col">
-            {visiblePhases.map((phase, idx) => {
-              const isCurrent = idx === currentPhaseIndex;
-              const isNext = idx === currentPhaseIndex + 1;
-              const hasTopLine = idx > 0;
-              const hasBottomLine = idx < visiblePhases.length - 1;
-
-              return (
-                <button
-                  key={phase.id}
-                  type="button"
-                  id={`up-next-phase-row-${idx}`}
-                  data-phase-id={phase.id}
-                  data-phase-state={isCurrent ? 'current' : isNext ? 'next' : 'upcoming'}
-                  onClick={() => handleOpenPhaseDetail(phase.id)}
-                  className="genki-plan-phase-row group"
-                >
-                  {/* Vertical timeline rail: 16px column, 8px node, 1px line */}
-                  <div
-                    className="w-[16px] shrink-0 flex flex-col items-center"
-                    aria-hidden="true"
-                  >
-                    <div
-                      className={`w-px h-[7px] shrink-0 ${
-                        hasTopLine ? 'bg-[#E5E1EC]' : 'bg-transparent'
-                      }`}
-                    />
-                    <span
-                      data-phase-dot={isCurrent ? 'current' : 'future'}
-                      className={`w-[8px] h-[8px] rounded-full shrink-0 ${
-                        isCurrent ? 'bg-[#7770B6]' : 'bg-[#D9D5E5]'
-                      }`}
-                    />
-                    <div
-                      className={`w-px flex-1 ${
-                        hasBottomLine ? 'bg-[#E5E1EC]' : 'bg-transparent'
-                      }`}
-                    />
-                  </div>
-
-                  {/* Phase content */}
-                  <div
-                    className={`flex-1 min-w-0 flex items-start justify-between gap-2 ${
-                      hasBottomLine ? 'pb-[16px]' : 'pb-0'
-                    }`}
-                  >
-                    <div className="flex-1 min-w-0 flex flex-col">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span
-                          className={`genki-plan-phase-title ${
-                            isCurrent ? 'text-[#302D3D]' : 'text-[#706A7C]'
-                          }`}
-                        >
-                          {phase.name}
-                        </span>
-                        {isCurrent && (
-                          <span
-                            id="up-next-current-label"
-                            className="genki-plan-phase-current"
-                          >
-                            Current
-                          </span>
-                        )}
-                      </div>
-
-                      {isCurrent && phase.description && (
-                        <p
-                          id="up-next-current-desc"
-                          className="genki-plan-phase-desc mt-[2px]"
-                        >
-                          {phase.description}
-                        </p>
-                      )}
-                    </div>
-
-                    <ChevronRight className="w-4 h-4 text-[#706A7C]/70 stroke-[2] shrink-0 mt-[3px]" />
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="mt-[8px] flex items-center justify-end">
-            <button
-              type="button"
-              id="plan-up-next-view-path-btn"
-              onClick={() => setSelectedModule('path')}
-              className="genki-plan-text-action"
-            >
-              View path
-            </button>
-          </div>
-        </section>
-
-        <div aria-hidden="true" className="genki-plan-section-divider" />
-
-        {/* 4. Weekly review */}
+        {/* 3. Weekly review */}
         <section
           id="plan-module-weekly-review"
           aria-labelledby="plan-heading-weekly-review"
@@ -3156,16 +3309,15 @@ export function MyPlanView({
             </button>
           </div>
         </section>
-        </div>
       </div>
 
       {/* ============================================================ */}
-      {/* 5. Bottom Auxiliary Entries: History, Preferences, Health data */}
+      {/* 4. Bottom Auxiliary Entries: History, Preferences, Health data */}
       {/* ============================================================ */}
       <section
         id="plan-auxiliary-entries"
         aria-label="Additional plan sections"
-        className="genki-plan-auxiliary-list divide-y divide-[rgba(74,66,98,0.08)]"
+        className="genki-plan-auxiliary-list mt-[20px] divide-y divide-[rgba(74,66,98,0.08)]"
       >
         <button
           type="button"
@@ -3291,13 +3443,16 @@ export function MyPlanView({
 
                     <div>
                       <h3 className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
-                        {selectedModule === 'path' && 'Your path'}
+                        {selectedModule === 'journey' && 'Your journey'}
                         {selectedModule === 'history' && 'History'}
                         {selectedModule === 'preferences' && 'Preferences'}
                         {selectedModule === 'health' && 'Health data'}
                       </h3>
                       <p className="text-[13px] leading-[18px] text-[#6E6E78] mt-0.5">
-                        {selectedModule === 'path' && 'Flexible pacing phases · move only when you choose'}
+                        {selectedModule === 'journey' &&
+                          (activeRhythmHabit
+                            ? `${activeRhythmHabit.label} · ${rhythmModel?.statusLabel ?? ''}`
+                            : 'Habit rhythm overview')}
                         {selectedModule === 'history' && 'Activity calendar, 6-month trend & detailed stats'}
                         {selectedModule === 'preferences' && 'Saved preferences and pending questions'}
                         {selectedModule === 'health' && 'Wearable & Apple Health connection status'}
@@ -3306,87 +3461,106 @@ export function MyPlanView({
                   </div>
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 0: VIEW PATH (All 3 Phases + Edit Entry) */}
+                  {/* SECONDARY PAGE 0: YOUR JOURNEY (Interim Stage 4 View)   */}
                   {/* ======================================================= */}
-                  {selectedModule === 'path' && (
-                    <div id="view-path-secondary-page" className="flex flex-col gap-4 text-[#1C1C1E]">
-                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                        Staying at your current pace, stepping back, or taking a rest day are all valid choices. Phases never advance automatically.
-                      </p>
-
-                      <div className="rounded-[24px] p-4 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col">
-                        <div className="flex flex-col">
-                          {visiblePhases.map((phase, idx) => {
-                            const isCurrent = idx === currentPhaseIndex;
-                            const hasTopLine = idx > 0;
-                            const hasBottomLine = idx < visiblePhases.length - 1;
-
-                            return (
+                  {selectedModule === 'journey' && (
+                    <div id="view-journey-secondary-page" className="flex flex-col gap-4 text-[#1C1C1E]">
+                      {activeRhythmHabit && rhythmModel ? (
+                        <>
+                          <div className="rounded-[24px] p-5 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+                                  Confirmed habit
+                                </span>
+                                <h4 className="mt-1 text-[18px] font-semibold leading-[24px] text-[#302D3D]">
+                                  {activeRhythmHabit.label}
+                                </h4>
+                              </div>
                               <button
-                                key={phase.id}
                                 type="button"
-                                id={`view-path-phase-row-${idx}`}
-                                onClick={() => handleOpenPhaseDetail(phase.id)}
-                                className="genki-plan-control genki-plan-control-base w-full min-h-[44px] flex items-stretch gap-3 text-left transition-opacity active:opacity-70 cursor-pointer"
+                                id="journey-edit-habit-btn"
+                                onClick={() => handleOpenHabitConfirm(activeRhythmHabit)}
+                                className="genki-plan-text-action shrink-0"
                               >
-                                <div
-                                  className="w-4 shrink-0 flex flex-col items-center"
-                                  aria-hidden="true"
-                                >
-                                  <div
-                                    className={`w-[1.5px] ${
-                                      isCurrent ? 'h-[13px]' : 'h-[14px]'
-                                    } shrink-0 ${hasTopLine ? 'bg-[#DEDCEB]' : 'bg-transparent'}`}
-                                  />
-                                  <span
-                                    className={`rounded-full shrink-0 ${
-                                      isCurrent
-                                        ? 'w-2.5 h-2.5 bg-[#5E5BAE] ring-[3px] ring-[#5E5BAE]/15'
-                                        : 'w-2 h-2 bg-[#CFCDE3]'
-                                    }`}
-                                  />
-                                  <div
-                                    className={`w-[1.5px] flex-1 min-h-[10px] ${
-                                      hasBottomLine ? 'bg-[#DEDCEB]' : 'bg-transparent'
-                                    }`}
-                                  />
-                                </div>
-
-                                <div className="flex-1 min-w-0 py-2.5 flex items-start justify-between gap-2">
-                                  <div className="flex-1 min-w-0 flex flex-col">
-                                    <div className="flex items-baseline justify-between gap-2">
-                                      <span className="text-[15px] font-semibold leading-[20px] text-[#1C1C1E]">
-                                        {phase.name}
-                                      </span>
-                                      {isCurrent && (
-                                        <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
-                                          Current
-                                        </span>
-                                      )}
-                                    </div>
-                                    <p className="mt-1 text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                                      {phase.description}
-                                    </p>
-                                  </div>
-
-                                  <ChevronRight className="w-4 h-4 text-[#6E6E78]/70 stroke-[2] shrink-0 mt-0.5" />
-                                </div>
+                                Edit
                               </button>
-                            );
-                          })}
-                        </div>
+                            </div>
 
-                        <div className="mt-2 pt-2 border-t border-black/[0.06] flex items-center justify-end">
+                            <div className="pt-2 border-t border-black/[0.06] flex flex-col gap-2 text-[14px] leading-[20px]">
+                              <div className="flex flex-col">
+                                <span className="text-[12px] text-[#706A7C]">Regular action</span>
+                                <span className="text-[#302D3D] font-medium">
+                                  {activeRhythmHabit.regularAction}
+                                </span>
+                              </div>
+                              {activeRhythmHabit.minimumAction && (
+                                <div className="flex flex-col">
+                                  <span className="text-[12px] text-[#706A7C]">Minimum action</span>
+                                  <span className="text-[#302D3D] font-medium">
+                                    {activeRhythmHabit.minimumAction}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="pt-2 border-t border-black/[0.06] flex flex-col gap-1">
+                              <span className="text-[15px] font-semibold leading-[21px] text-[#302D3D]">
+                                {rhythmModel.statusLabel}
+                              </span>
+                              <p className="text-[14px] font-normal leading-[20px] text-[#625A76]">
+                                {rhythmModel.numericSummary}
+                              </p>
+                              {rhythmModel.factualBasis && (
+                                <p className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+                                  {rhythmModel.factualBasis}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-[24px] p-5 bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2.5">
+                            <span className="text-[14px] font-semibold leading-[20px] text-[#302D3D]">
+                              Recorded practice dates
+                            </span>
+                            {rhythmModel.formattedPracticeDates.length > 0 ? (
+                              <p className="text-[13px] font-normal leading-[19px] text-[#625A76]">
+                                {rhythmModel.formattedPracticeDates.slice(-14).join(' · ')}
+                              </p>
+                            ) : (
+                              <p className="text-[13px] font-normal leading-[19px] text-[#706A7C]">
+                                No practice dates recorded for this habit yet.
+                              </p>
+                            )}
+                            <div className="pt-2 border-t border-black/[0.06] flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                id="journey-open-history-btn"
+                                onClick={() => setSelectedModule('history')}
+                                className="genki-plan-text-action"
+                              >
+                                View history
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="rounded-[24px] p-5 bg-white border border-black/[0.04] flex flex-col gap-3">
+                          <p className="text-[14px] leading-[20px] text-[#625A76]">
+                            Confirm a habit first to follow your rhythm and journey here.
+                          </p>
                           <button
                             type="button"
-                            id="view-path-edit-btn"
-                            onClick={handleOpenPathEdit}
-                            className="genki-plan-control genki-plan-control-base min-h-[44px] min-w-[44px] px-2 -mr-2 flex items-center justify-end text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer shrink-0"
+                            onClick={() => {
+                              setSelectedModule(null);
+                              handleOpenHabitConfirm(null);
+                            }}
+                            className="genki-plan-control genki-plan-control-primary self-start"
                           >
-                            Edit
+                            Confirm a habit
                           </button>
                         </div>
-                      </div>
+                      )}
                     </div>
                   )}
 
@@ -4445,7 +4619,7 @@ export function MyPlanView({
                       type="button"
                       onClick={() => handleSendMemoryChat()}
                       disabled={!memoryChatInput.trim()}
-                      className={`genki-plan-control genki-plan-control-icon w-9 h-9 rounded-full flex items-center justify-center transition-all ${
+                      className={`genki-plan-control genki-plan-control-icon w-11 h-11 min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all ${
                         memoryChatInput.trim()
                           ? 'bg-[#5E5BAE] text-white cursor-pointer shadow-xs'
                           : 'bg-black/10 text-black/30 cursor-not-allowed'
@@ -4468,10 +4642,15 @@ export function MyPlanView({
       })()}
 
       {/* ============================================================ */}
-      {/* YOUR FOCUS ADJUST BOTTOM SHEET FORM                          */}
+      {/* PHASE COMMITMENT / GOAL DETAIL BOTTOM SHEET                  */}
       {/* ============================================================ */}
       {(() => {
         const isSaveDisabled = !focusDraftTitle.trim();
+        const focusSheetHeading = !hasConfirmedCommitment
+          ? 'Set a focus'
+          : effectiveCommitment?.reviewRequested
+          ? 'Review together'
+          : 'About this goal';
 
         const focusAdjustPortal = (
           <AnimatePresence>
@@ -4503,9 +4682,9 @@ export function MyPlanView({
                   <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
                     <h3
                       id="focus-adjust-sheet-title"
-                      className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
+                      className="genki-plan-sheet-heading text-[18px] font-semibold leading-[25px] tracking-[-0.015em] text-[#302D3D]"
                     >
-                      Your focus
+                      {focusSheetHeading}
                     </h3>
 
                     <button
@@ -4527,9 +4706,9 @@ export function MyPlanView({
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="focus-input-title"
-                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#706A7C]"
                         >
-                          Focus
+                          Your focus
                         </label>
                         <input
                           id="focus-input-title"
@@ -4537,17 +4716,17 @@ export function MyPlanView({
                           value={focusDraftTitle}
                           onChange={(e) => setFocusDraftTitle(e.target.value)}
                           onFocus={handleFieldFocusScroll}
-                          placeholder="What are you focusing on?"
-                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                          placeholder="What are you focusing on right now?"
+                          className="genki-plan-field w-full min-h-[48px] px-3.5 py-2.5 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#302D3D] placeholder-[#706A7C]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
                         />
                       </div>
 
                       <div className="flex flex-col gap-1.5">
                         <label
                           htmlFor="focus-input-approach"
-                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#706A7C]"
                         >
-                          Current approach
+                          Movement approach (optional)
                         </label>
                         <textarea
                           id="focus-input-approach"
@@ -4555,56 +4734,45 @@ export function MyPlanView({
                           value={focusDraftApproach}
                           onChange={(e) => setFocusDraftApproach(e.target.value)}
                           onFocus={handleFieldFocusScroll}
-                          placeholder="One short note on how you want to keep this doable"
-                          className="genki-plan-field w-full px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
+                          placeholder="One short sentence on how you want to approach this"
+                          className="genki-plan-field w-full px-3.5 py-2.5 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#302D3D] placeholder-[#706A7C]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors resize-none"
                         />
                       </div>
 
-                      <div className="flex flex-col gap-1.5">
-                        <label
-                          htmlFor="focus-input-review"
-                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
-                        >
-                          Review date
-                        </label>
-                        <input
-                          id="focus-input-review"
-                          type="text"
-                          value={focusDraftReview}
-                          onChange={(e) => setFocusDraftReview(e.target.value)}
-                          onFocus={handleFieldFocusScroll}
-                          placeholder={`e.g. ${formatReviewOnSundayLabel(
-                            new Date(deviceToday.year, deviceToday.month, deviceToday.day)
-                          )}`}
-                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
-                        />
-                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                          A gentle check-in date you can change anytime.
-                        </p>
-                      </div>
                     </div>
 
-                    <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
-                      <button
-                        type="button"
-                        id="focus-cancel-btn"
-                        onClick={handleCloseFocusAdjust}
-                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
-                      >
-                        Cancel
-                      </button>
+                    <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex flex-wrap items-center gap-2.5">
+                      {hasConfirmedCommitment ? (
+                        <button
+                          type="button"
+                          id="focus-keep-rhythm-btn"
+                          onClick={handleKeepCurrentRhythm}
+                          className="genki-plan-control genki-plan-control-secondary flex-1 min-h-[48px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors cursor-pointer"
+                        >
+                          Keep rhythm
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          id="focus-cancel-btn"
+                          onClick={handleCloseFocusAdjust}
+                          className="genki-plan-control genki-plan-control-secondary min-h-[48px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      )}
 
                       <button
                         type="submit"
                         id="focus-save-btn"
                         disabled={isSaveDisabled}
-                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
+                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[48px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors ${
                           isSaveDisabled
                             ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
                             : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
                         }`}
                       >
-                        Save
+                        {hasConfirmedCommitment ? 'Save changes' : 'Save focus'}
                       </button>
                     </div>
                   </form>
@@ -4917,38 +5085,52 @@ export function MyPlanView({
       })()}
 
       {/* ============================================================ */}
-      {/* THIS WEEK CATEGORY ACTIVITY LIST SHEET (WALK / STRETCH)      */}
+      {/* SELECTED WEEK ACTIVITY DETAIL SHEET (VIEW ACTIVITY / ALL)    */}
       {/* ============================================================ */}
       {(() => {
-        const recordsForModal =
-          activeWeekCategoryList === 'walk'
-            ? thisWeekWalkRecords
-            : activeWeekCategoryList === 'stretch'
-            ? thisWeekStretchRecords
-            : [];
+        const activeFilterKey = weekActivitySheet.filterTypeKey;
+        const allWorkoutTypes = selectedWeekSnapshot.workoutSummary.allTypes;
+        const matchedFilterType = activeFilterKey
+          ? allWorkoutTypes.find((t) => t.key === activeFilterKey) ?? null
+          : null;
 
-        const categoryTitle = activeWeekCategoryList === 'walk' ? 'Walk' : 'Stretch';
+        const filteredActivityItems = activeFilterKey
+          ? selectedWeekSnapshot.activityItems.filter((item) =>
+              item.workoutTypeKeys.includes(activeFilterKey)
+            )
+          : selectedWeekSnapshot.activityItems;
 
-        const formatCompletionDateTime = (iso: string) => {
+        const sheetTitle = matchedFilterType
+          ? matchedFilterType.label
+          : weekActivitySheet.expandAllTypes
+          ? 'All workouts'
+          : `${selectedWeekSnapshot.title} activity`;
+
+        const formatItemDateTime = (dateKey: string, iso: string, hasExactTime: boolean) => {
+          const localDt = parseLocalDateKey(dateKey);
+          const datePart = localDt
+            ? `${SHORT_WEEKDAYS[localDt.getDay()]}, ${SHORT_MONTH_NAMES[localDt.getMonth()]} ${localDt.getDate()}`
+            : dateKey;
+          if (!hasExactTime) return datePart;
           const d = new Date(iso);
-          if (Number.isNaN(d.getTime())) return '';
-          const weekday = SHORT_WEEKDAYS[d.getDay()];
-          const month = SHORT_MONTH_NAMES[d.getMonth()];
-          const day = d.getDate();
+          if (Number.isNaN(d.getTime())) return datePart;
           const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-          return `${weekday}, ${month} ${day} · ${time}`;
+          return `${datePart} · ${time}`;
         };
+
+        const closeActivitySheet = () =>
+          setWeekActivitySheet({ open: false, filterTypeKey: null, expandAllTypes: false });
 
         const activityListPortal = (
           <AnimatePresence>
-            {activeWeekCategoryList && (
+            {weekActivitySheet.open && (
               <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  transition={{ duration: 0.18 }}
-                  onClick={() => setActiveWeekCategoryList(null)}
+                  transition={{ duration: 0.16 }}
+                  onClick={closeActivitySheet}
                   className="absolute inset-0 bg-black/30 backdrop-blur-xs"
                 />
 
@@ -4961,34 +5143,29 @@ export function MyPlanView({
                   aria-modal="true"
                   aria-labelledby="this-week-activity-sheet-title"
                   id="this-week-activity-sheet"
-                  className="relative w-full max-h-[80%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                  data-week-start={selectedWeekSnapshot.weekStartKey}
+                  className="relative w-full max-h-[84%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
                 >
-                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-[10px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
-                        {activeWeekCategoryList === 'walk' ? (
-                          <Footprints className="w-4 h-4 stroke-[2]" />
-                        ) : (
-                          <Sparkles className="w-4 h-4 stroke-[2]" />
-                        )}
-                      </div>
-                      <div>
-                        <h3
-                          id="this-week-activity-sheet-title"
-                          className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-                        >
-                          {categoryTitle}
-                        </h3>
-                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                          {currentWeekBounds.rangeLabel}
-                        </p>
-                      </div>
+                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between gap-3 shrink-0">
+                    <div className="min-w-0">
+                      <h3
+                        id="this-week-activity-sheet-title"
+                        className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#302D3D] truncate"
+                      >
+                        {sheetTitle}
+                      </h3>
+                      <p
+                        id="this-week-activity-sheet-range"
+                        className="text-[13px] font-normal leading-[18px] text-[#706A7C] tabular-nums"
+                      >
+                        {selectedWeekSnapshot.rangeLabel}
+                      </p>
                     </div>
 
                     <button
                       type="button"
                       id="this-week-activity-close-btn"
-                      onClick={() => setActiveWeekCategoryList(null)}
+                      onClick={closeActivitySheet}
                       className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
@@ -4996,55 +5173,148 @@ export function MyPlanView({
                     </button>
                   </div>
 
-                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col">
-                    {recordsForModal.length === 0 ? (
-                      <div className="py-4 flex flex-col gap-1">
-                        <p
-                          id="this-week-activity-empty"
-                          className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]"
-                        >
-                          Nothing recorded yet.
-                        </p>
-                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                          Completed {categoryTitle.toLowerCase()} sessions from Today will show here.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col divide-y divide-black/[0.06] -my-1">
-                        {recordsForModal.map((rec) => (
-                          <div
-                            key={rec.id}
-                            data-week-activity-item={rec.id}
-                            className="min-h-[60px] py-3 flex items-center justify-between gap-3"
-                          >
-                            <div className="flex flex-col min-w-0">
-                              <span className="text-[15px] font-medium leading-[21px] text-[#1C1C1E] truncate">
-                                {rec.title}
-                              </span>
-                              <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                                {formatCompletionDateTime(rec.completedAt)}
-                              </span>
-                            </div>
-                            <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE] shrink-0">
-                              {rec.durationMinutes} min
-                            </span>
-                          </div>
-                        ))}
+                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-4">
+                    {/* Full workout type summary (shown in View all or when multiple types exist) */}
+                    {allWorkoutTypes.length > 0 && (
+                      <div id="this-week-sheet-type-summary" className="flex flex-col">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[12px] font-medium uppercase tracking-[0.04em] text-[#8B8498]">
+                            Workout types ({allWorkoutTypes.length})
+                          </span>
+                          {activeFilterKey && (
+                            <button
+                              type="button"
+                              id="this-week-sheet-clear-filter-btn"
+                              onClick={() =>
+                                setWeekActivitySheet((prev) => ({
+                                  ...prev,
+                                  filterTypeKey: null,
+                                }))
+                              }
+                              className="min-h-[32px] px-1 text-[13px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
+                            >
+                              Show all
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-col divide-y divide-black/[0.06] border-y border-black/[0.06]">
+                          {allWorkoutTypes.map((row) => {
+                            const isSelected = activeFilterKey === row.key;
+                            return (
+                              <button
+                                key={row.key}
+                                type="button"
+                                data-sheet-workout-type={row.key}
+                                aria-pressed={isSelected}
+                                onClick={() =>
+                                  setWeekActivitySheet((prev) => ({
+                                    ...prev,
+                                    filterTypeKey: prev.filterTypeKey === row.key ? null : row.key,
+                                  }))
+                                }
+                                className={`min-h-[44px] py-2 px-1.5 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer ${
+                                  isSelected ? 'bg-[#F3F0FA] rounded-[8px]' : ''
+                                }`}
+                              >
+                                <span
+                                  className={`text-[15px] leading-[22px] truncate ${
+                                    isSelected
+                                      ? 'font-semibold text-[#514879]'
+                                      : 'font-medium text-[#302D3D]'
+                                  }`}
+                                >
+                                  {row.label}
+                                </span>
+                                <span className="text-[13px] font-normal leading-[18px] text-[#706A7C] tabular-nums whitespace-nowrap shrink-0">
+                                  {row.hasCompleteDurationData && row.trustworthyDurationMinutes > 0
+                                    ? `${row.count} · ${row.trustworthyDurationMinutes} min`
+                                    : `${row.count}`}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
+
+                    {/* Chronological activity records for the selected week */}
+                    <div className="flex flex-col">
+                      <span className="text-[12px] font-medium uppercase tracking-[0.04em] text-[#8B8498] mb-1">
+                        Records
+                      </span>
+
+                      {selectedWeekSnapshot.isWeekCoverageUnknown &&
+                      filteredActivityItems.length === 0 ? (
+                        <div className="py-3 flex flex-col gap-1">
+                          <p
+                            id="this-week-activity-empty"
+                            className="text-[15px] font-normal leading-[22px] text-[#302D3D]"
+                          >
+                            {selectedWeekSnapshot.hasLoadFailure
+                              ? 'Unable to load records for this week.'
+                              : 'Earlier records are unavailable for this week.'}
+                          </p>
+                        </div>
+                      ) : filteredActivityItems.length === 0 ? (
+                        <div className="py-3 flex flex-col gap-1">
+                          <p
+                            id="this-week-activity-empty"
+                            className="text-[15px] font-normal leading-[22px] text-[#302D3D]"
+                          >
+                            Nothing recorded for this week.
+                          </p>
+                          <p className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+                            Completed tasks, logged workouts, and rest days will show here.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col divide-y divide-black/[0.06] -my-1">
+                          {filteredActivityItems.map((item) => (
+                            <div
+                              key={item.id}
+                              data-week-activity-item={item.id}
+                              data-week-activity-kind={item.kind}
+                              className="min-h-[60px] py-3 flex items-center justify-between gap-3"
+                            >
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-[15px] font-medium leading-[21px] text-[#302D3D] truncate">
+                                  {item.title}
+                                </span>
+                                <span className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+                                  {formatItemDateTime(
+                                    item.dateKey,
+                                    item.occurredAt,
+                                    item.hasExactTimestamp
+                                  )}
+                                  {' · '}
+                                  {item.sourceLabel}
+                                </span>
+                                {item.workoutTypeLabels.length > 0 && (
+                                  <span className="text-[12px] font-normal leading-[17px] text-[#8B8498] mt-0.5 truncate">
+                                    {item.workoutTypeLabels.join(' · ')}
+                                  </span>
+                                )}
+                              </div>
+                              {item.trustworthyDurationMinutes !== null && (
+                                <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE] tabular-nums whitespace-nowrap shrink-0">
+                                  {item.trustworthyDurationMinutes} min
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white">
                     <button
                       type="button"
-                      id="this-week-view-today-btn"
-                      onClick={() => {
-                        setActiveWeekCategoryList(null);
-                        onNavigateToToday?.();
-                      }}
+                      id="this-week-sheet-done-btn"
+                      onClick={closeActivitySheet}
                       className="genki-plan-control genki-plan-control-primary w-full min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
                     >
-                      View Today
+                      Done
                     </button>
                   </div>
                 </motion.div>
@@ -5060,195 +5330,14 @@ export function MyPlanView({
       })()}
 
       {/* ============================================================ */}
-      {/* UP NEXT PHASE DETAIL & CONFIRMATION SHEET                    */}
+      {/* CONFIRM / EDIT HABIT BOTTOM SHEET (For Your rhythm)          */}
       {/* ============================================================ */}
       {(() => {
-        const selectedPhaseIdx = selectedPhaseId
-          ? visiblePhases.findIndex((p) => p.id === selectedPhaseId)
-          : -1;
-        const selectedPhase = selectedPhaseIdx >= 0 ? visiblePhases[selectedPhaseIdx] : null;
-        const isSelectedCurrent = selectedPhase ? selectedPhase.id === currentPhase.id : false;
+        const isHabitSaveDisabled = !habitDraftLabel.trim();
 
-        const phaseContextLabel = !selectedPhase
-          ? ''
-          : isSelectedCurrent
-          ? 'Current phase'
-          : selectedPhaseIdx === currentPhaseIndex + 1
-          ? 'Next phase'
-          : selectedPhaseIdx < currentPhaseIndex
-          ? 'Earlier phase'
-          : 'Later phase';
-
-        const phaseDetailPortal = (
+        const habitConfirmPortal = (
           <AnimatePresence>
-            {selectedPhase && (
-              <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.18 }}
-                  onClick={handleClosePhaseDetail}
-                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
-                />
-
-                <motion.div
-                  initial={{ y: '100%' }}
-                  animate={{ y: 0 }}
-                  exit={{ y: '100%' }}
-                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
-                  role="dialog"
-                  aria-modal="true"
-                  aria-labelledby="up-next-detail-title"
-                  id="up-next-phase-detail-sheet"
-                  className="relative w-full max-h-[82%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
-                >
-                  <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
-                    <div>
-                      <h3
-                        id="up-next-detail-title"
-                        className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
-                      >
-                        {selectedPhase.name}
-                      </h3>
-                      <p
-                        id="up-next-detail-context"
-                        className={`text-[13px] font-medium leading-[18px] ${
-                          isSelectedCurrent ? 'text-[#5E5BAE]' : 'text-[#6E6E78]'
-                        }`}
-                      >
-                        {phaseContextLabel}
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      id="up-next-detail-close-btn"
-                      onClick={handleClosePhaseDetail}
-                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
-                      aria-label="Close"
-                    >
-                      <X className="w-4 h-4 stroke-[2.2]" />
-                    </button>
-                  </div>
-
-                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-3.5">
-                    <p
-                      id="up-next-detail-description"
-                      className="text-[15px] font-normal leading-[22px] text-[#1C1C1E]"
-                    >
-                      {selectedPhase.description}
-                    </p>
-
-                    <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                      {isSelectedCurrent
-                        ? 'Stay at this pace as long as it feels helpful. Keeping your rhythm, easing back, or resting are all valid choices.'
-                        : 'Phases only shift when you confirm. Switching won’t change your Today tasks or activity history.'}
-                    </p>
-
-                    {!isSelectedCurrent && isConfirmingPhaseSwitch && (
-                      <div
-                        id="up-next-switch-confirm-box"
-                        className="mt-1 rounded-[18px] p-4 bg-[#F5F4FB] border border-[#5E5BAE]/20 flex flex-col gap-2"
-                      >
-                        <p className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
-                          Switch current phase to “{selectedPhase.name}”?
-                        </p>
-                        <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                          Your focus will update to this phase. Today tasks and past logs remain unchanged.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
-                    {isSelectedCurrent ? (
-                      <>
-                        {selectedModule !== 'path' && (
-                          <button
-                            type="button"
-                            id="up-next-detail-view-path-btn"
-                            onClick={() => {
-                              handleClosePhaseDetail();
-                              setSelectedModule('path');
-                            }}
-                            className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
-                          >
-                            View path
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          id="up-next-keep-pace-btn"
-                          onClick={handleClosePhaseDetail}
-                          className="genki-plan-control genki-plan-control-secondary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
-                        >
-                          Keep current pace
-                        </button>
-                      </>
-                    ) : !isConfirmingPhaseSwitch ? (
-                      <>
-                        <button
-                          type="button"
-                          id="up-next-detail-cancel-btn"
-                          onClick={handleClosePhaseDetail}
-                          className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          id="up-next-request-switch-btn"
-                          onClick={() => setIsConfirmingPhaseSwitch(true)}
-                          className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
-                        >
-                          {selectedPhaseIdx < currentPhaseIndex
-                            ? 'Step back to this phase'
-                            : 'Switch to this phase'}
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          id="up-next-confirm-cancel-btn"
-                          onClick={() => setIsConfirmingPhaseSwitch(false)}
-                          className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          id="up-next-confirm-switch-btn"
-                          onClick={() => handleConfirmPhaseSwitch(selectedPhase)}
-                          className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold transition-colors cursor-pointer"
-                        >
-                          Confirm switch
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
-        );
-
-        if (phoneFrameRef?.current) {
-          return createPortal(phaseDetailPortal, phoneFrameRef.current);
-        }
-        return phaseDetailPortal;
-      })()}
-
-      {/* ============================================================ */}
-      {/* EDIT PATH BOTTOM SHEET FORM (Opened from View path -> Edit)  */}
-      {/* ============================================================ */}
-      {(() => {
-        const isPathSaveDisabled = pathDraftPhases.some((p) => !p.name.trim());
-
-        const editPathPortal = (
-          <AnimatePresence>
-            {isPathEditOpen && (
+            {isHabitConfirmOpen && (
               <div
                 style={focusKeyboardInset > 0 ? { paddingBottom: `${focusKeyboardInset}px` } : undefined}
                 className="absolute inset-0 z-65 flex flex-col justify-end pointer-events-auto overflow-hidden"
@@ -5258,7 +5347,7 @@ export function MyPlanView({
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.18 }}
-                  onClick={handleClosePathEdit}
+                  onClick={handleCloseHabitConfirm}
                   className="absolute inset-0 bg-black/30 backdrop-blur-xs"
                 />
 
@@ -5269,27 +5358,27 @@ export function MyPlanView({
                   transition={{ type: 'spring', damping: 28, stiffness: 290 }}
                   role="dialog"
                   aria-modal="true"
-                  aria-labelledby="edit-path-sheet-title"
-                  id="edit-path-sheet"
-                  className="relative w-full max-h-[88%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                  aria-labelledby="rhythm-habit-confirm-title"
+                  id="rhythm-habit-confirm-sheet"
+                  className="relative w-full max-h-[85%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
                 >
                   <div className="px-5 pt-5 pb-3 border-b border-black/[0.06] flex items-center justify-between shrink-0">
                     <div>
                       <h3
-                        id="edit-path-sheet-title"
+                        id="rhythm-habit-confirm-title"
                         className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#1C1C1E]"
                       >
-                        Edit path
+                        {editingHabitId ? 'Edit habit' : 'Confirm a habit'}
                       </h3>
-                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                        Update phase names and short pacing notes
+                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78] mt-0.5">
+                        Your rhythm follows one confirmed habit at a time.
                       </p>
                     </div>
 
                     <button
                       type="button"
-                      id="edit-path-close-btn"
-                      onClick={handleClosePathEdit}
+                      id="rhythm-habit-confirm-close-btn"
+                      onClick={handleCloseHabitConfirm}
                       className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
                       aria-label="Close"
                     >
@@ -5298,105 +5387,89 @@ export function MyPlanView({
                   </div>
 
                   <form
-                    onSubmit={handleSavePathEdit}
+                    onSubmit={handleSaveHabitConfirm}
                     className="flex-1 min-h-0 flex flex-col overflow-hidden"
                   >
-                    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-5">
-                      {pathDraftPhases.map((draft, idx) => {
-                        const isDraftCurrent = draft.id === currentPhase.id;
-                        return (
-                          <div
-                            key={draft.id}
-                            className={`flex flex-col gap-2.5 ${
-                              idx > 0 ? 'pt-4 border-t border-black/[0.06]' : ''
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="text-[13px] font-semibold leading-[18px] text-[#1C1C1E]">
-                                Phase {idx + 1}
-                              </span>
-                              {isDraftCurrent && (
-                                <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE]">
-                                  Current
-                                </span>
-                              )}
-                            </div>
+                    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-4">
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="rhythm-habit-label-input"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#706A7C]"
+                        >
+                          Habit name
+                        </label>
+                        <input
+                          id="rhythm-habit-label-input"
+                          type="text"
+                          value={habitDraftLabel}
+                          onChange={(e) => setHabitDraftLabel(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="e.g. Evening walk"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#302D3D] placeholder-[#706A7C]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                      </div>
 
-                            <div className="flex flex-col gap-1.5">
-                              <label
-                                htmlFor={`edit-path-name-${idx}`}
-                                className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
-                              >
-                                Phase name
-                              </label>
-                              <input
-                                id={`edit-path-name-${idx}`}
-                                type="text"
-                                value={draft.name}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPathDraftPhases((prev) =>
-                                    prev.map((item, i) =>
-                                      i === idx ? { ...item, name: val } : item
-                                    )
-                                  );
-                                }}
-                                onFocus={handleFieldFocusScroll}
-                                placeholder="Phase name"
-                                className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
-                              />
-                            </div>
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="rhythm-habit-regular-input"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#706A7C]"
+                        >
+                          Regular action
+                        </label>
+                        <input
+                          id="rhythm-habit-regular-input"
+                          type="text"
+                          value={habitDraftRegular}
+                          onChange={(e) => setHabitDraftRegular(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="e.g. 20 min outdoor walk"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#302D3D] placeholder-[#706A7C]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                      </div>
 
-                            <div className="flex flex-col gap-1.5">
-                              <label
-                                htmlFor={`edit-path-desc-${idx}`}
-                                className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#6E6E78]"
-                              >
-                                Short description
-                              </label>
-                              <input
-                                id={`edit-path-desc-${idx}`}
-                                type="text"
-                                value={draft.description}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPathDraftPhases((prev) =>
-                                    prev.map((item, i) =>
-                                      i === idx ? { ...item, description: val } : item
-                                    )
-                                  );
-                                }}
-                                onFocus={handleFieldFocusScroll}
-                                placeholder="One-line pacing direction"
-                                className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[14px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#1C1C1E] placeholder-[#6E6E78]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
+                      <div className="flex flex-col gap-1.5">
+                        <label
+                          htmlFor="rhythm-habit-minimum-input"
+                          className="genki-plan-label text-[13px] font-medium leading-[18px] text-[#706A7C]"
+                        >
+                          Minimum action (optional)
+                        </label>
+                        <input
+                          id="rhythm-habit-minimum-input"
+                          type="text"
+                          value={habitDraftMinimum}
+                          onChange={(e) => setHabitDraftMinimum(e.target.value)}
+                          onFocus={handleFieldFocusScroll}
+                          placeholder="e.g. 5 min stretch or short loop"
+                          className="genki-plan-field w-full min-h-[44px] px-3.5 py-2.5 rounded-[12px] bg-[#F2F2F7] border border-black/[0.06] text-[15px] font-normal leading-[22px] text-[#302D3D] placeholder-[#706A7C]/70 focus:outline-none focus:border-[#5E5BAE] focus:bg-white transition-colors"
+                        />
+                        <p className="text-[12px] font-normal leading-[17px] text-[#706A7C]">
+                          Regular and minimum actions count equally toward your rhythm days.
+                        </p>
+                      </div>
                     </div>
 
                     <div className="shrink-0 px-5 pt-3 pb-[calc(16px+env(safe-area-inset-bottom,0px))] border-t border-black/[0.06] bg-white flex items-center gap-3">
                       <button
                         type="button"
-                        id="edit-path-cancel-btn"
-                        onClick={handleClosePathEdit}
-                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[15px] font-medium text-[#1C1C1E] transition-colors cursor-pointer"
+                        id="rhythm-habit-confirm-cancel-btn"
+                        onClick={handleCloseHabitConfirm}
+                        className="genki-plan-control genki-plan-control-secondary min-h-[44px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors cursor-pointer"
                       >
                         Cancel
                       </button>
 
                       <button
                         type="submit"
-                        id="edit-path-save-btn"
-                        disabled={isPathSaveDisabled}
-                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] text-[15px] font-semibold transition-colors ${
-                          isPathSaveDisabled
+                        id="rhythm-habit-confirm-save-btn"
+                        disabled={isHabitSaveDisabled}
+                        className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors ${
+                          isHabitSaveDisabled
                             ? 'bg-[#5E5BAE]/40 text-white/80 cursor-not-allowed'
                             : 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
                         }`}
                       >
-                        Save
+                        {editingHabitId ? 'Save changes' : 'Confirm habit'}
                       </button>
                     </div>
                   </form>
@@ -5407,9 +5480,9 @@ export function MyPlanView({
         );
 
         if (phoneFrameRef?.current) {
-          return createPortal(editPathPortal, phoneFrameRef.current);
+          return createPortal(habitConfirmPortal, phoneFrameRef.current);
         }
-        return editPathPortal;
+        return habitConfirmPortal;
       })()}
 
       {/* ============================================================ */}

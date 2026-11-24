@@ -1,3 +1,5 @@
+@import "@fontsource/caveat/latin-500.css";
+@import "@fontsource/caveat/latin-600.css";
 @import "tailwindcss";
 
 @layer base {
@@ -9,6 +11,7 @@
     --ios-label-secondary: #6C6C70;
     --ios-label-tertiary: #8E8E93;
     --ios-accent: #5E5BAE;
+    --font-genki-handwriting: 'Caveat', -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
   }
 
   body {
