@@ -14,7 +14,7 @@ import {
   upsertPhaseCommitment,
 } from './planDataFoundation';
 
-export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v4-this-week-preview';
+export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v5-this-week-9-workouts';
 export const PROTOTYPE_DEMO_SEED_VERSION_KEY = 'genki.plan.demoSeedVersion.v1';
 
 /**
@@ -76,13 +76,39 @@ export function getPreviewProfileStorageKey(profileId: string): string {
   return `${PREVIEW_FIXTURE_STORAGE_PREFIX}${clean}`;
 }
 
+function isAiStudioDevPreviewHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (!host) return false;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return true;
+  if (/^ais-(dev|pre)-[a-z0-9-]+\.run\.app$/i.test(host)) return true;
+  return false;
+}
+
+function isViteDevMode(): boolean {
+  try {
+    return Boolean((import.meta as unknown as { env?: { DEV?: boolean } })?.env?.DEV);
+  } catch {
+    return false;
+  }
+}
+
 export function getActivePreviewProfileIdFromUrl(): string | null {
   if (typeof window === 'undefined') return null;
   try {
     const params = new URLSearchParams(window.location.search);
     const raw = params.get(PLAN_PREVIEW_QUERY_PARAM)?.trim().toLowerCase();
-    if (!raw) return null;
-    if (raw === PLAN_REVIEW_PREVIEW_PROFILE_ID || raw === 'plan' || raw === '1' || raw === 'true') {
+    if (raw) {
+      if (raw === 'off' || raw === 'false' || raw === '0' || raw === 'none' || raw === 'user') {
+        return null;
+      }
+      if (raw === PLAN_REVIEW_PREVIEW_PROFILE_ID || raw === 'plan' || raw === '1' || raw === 'true') {
+        return PLAN_REVIEW_PREVIEW_PROFILE_ID;
+      }
+      return null;
+    }
+    // AI Studio default development preview entry loads the isolated preview profile automatically;
+    // official production deployments continue reading real user storage.
+    if (isViteDevMode() || isAiStudioDevPreviewHost(window.location.hostname)) {
       return PLAN_REVIEW_PREVIEW_PROFILE_ID;
     }
     return null;
@@ -486,10 +512,14 @@ export function createIsolatedPlanPreviewFixture(
     });
   }
 
-  // Current week Mon, Tue, Wed (e.g. Nov 23, 24, 25): 1 Done task card each, 2 explicit exercise segments
-  addComboTaskCard(currentWeekStartOffset + 0, 'wk0-mon-walk-stretch', {
-    planId: 'walk-stretch-combo',
-    title: 'Walk & stretch',
+  // Current week Mon, Tue, Wed (e.g. Nov 23, 24, 25):
+  // 1 Done task card per day, 3 distinct HealthKit workout segments each (3 tasks total, 9 workout records total):
+  //   - Mon (+0 / Nov 23): Walking 10 min, Cycling 20 min, Yoga 15 min
+  //   - Tue (+1 / Nov 24): Running 12 min, Swimming 25 min, Functional Strength Training 18 min
+  //   - Wed (+2 / Nov 25): Hiking 30 min, Pilates 15 min, Jump Rope 6 min
+  addComboTaskCard(currentWeekStartOffset + 0, 'wk0-mon-multi-workout', {
+    planId: 'mon-movement-mix',
+    title: 'Walk, cycling & yoga',
     hour: 8,
     minute: 15,
     segments: [
@@ -502,61 +532,85 @@ export function createIsolatedPlanPreviewFixture(
         linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
       },
       {
-        exerciseType: 'stretch',
-        workoutActivityType: 'HKWorkoutActivityTypeFlexibility',
+        exerciseType: 'cardio',
+        workoutActivityType: 'HKWorkoutActivityTypeCycling',
+        locationContext: 'outdoor',
+        title: 'Cycling',
+        minutes: 20,
+        linkedHabitId: null,
+      },
+      {
+        exerciseType: 'other',
+        workoutActivityType: 'HKWorkoutActivityTypeYoga',
         locationContext: 'indoor',
-        title: 'Stretching',
-        minutes: 5,
+        title: 'Yoga',
+        minutes: 15,
         linkedHabitId: null,
       },
     ],
   });
 
-  addComboTaskCard(currentWeekStartOffset + 1, 'wk0-tue-walk-run', {
-    planId: 'walk-run-combo',
-    title: 'Walk & easy run',
+  addComboTaskCard(currentWeekStartOffset + 1, 'wk0-tue-multi-workout', {
+    planId: 'tue-movement-mix',
+    title: 'Run, swim & strength',
     hour: 8,
     minute: 30,
     segments: [
-      {
-        exerciseType: 'walk',
-        workoutActivityType: 'HKWorkoutActivityTypeWalking',
-        locationContext: 'outdoor',
-        title: 'Walking',
-        minutes: 12,
-        linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
-      },
       {
         exerciseType: 'cardio',
         workoutActivityType: 'HKWorkoutActivityTypeRunning',
         locationContext: 'outdoor',
         title: 'Running',
-        minutes: 8,
+        minutes: 12,
+        linkedHabitId: null,
+      },
+      {
+        exerciseType: 'cardio',
+        workoutActivityType: 'HKWorkoutActivityTypeSwimming',
+        locationContext: 'indoor',
+        title: 'Swimming',
+        minutes: 25,
+        linkedHabitId: null,
+      },
+      {
+        exerciseType: 'strength',
+        workoutActivityType: 'HKWorkoutActivityTypeFunctionalStrengthTraining',
+        locationContext: 'indoor',
+        title: 'Functional Strength Training',
+        minutes: 18,
         linkedHabitId: null,
       },
     ],
   });
 
-  addComboTaskCard(currentWeekStartOffset + 2, 'wk0-wed-walk-run', {
-    planId: 'walk-run-combo',
-    title: 'Walk & easy run',
+  addComboTaskCard(currentWeekStartOffset + 2, 'wk0-wed-multi-workout', {
+    planId: 'wed-movement-mix',
+    title: 'Hike, Pilates & jump rope',
     hour: 8,
     minute: 45,
     segments: [
       {
         exerciseType: 'walk',
-        workoutActivityType: 'HKWorkoutActivityTypeWalking',
+        workoutActivityType: 'HKWorkoutActivityTypeHiking',
         locationContext: 'outdoor',
-        title: 'Walking',
+        title: 'Hiking',
+        minutes: 30,
+        linkedHabitId: null,
+      },
+      {
+        exerciseType: 'other',
+        workoutActivityType: 'HKWorkoutActivityTypePilates',
+        locationContext: 'indoor',
+        title: 'Pilates',
         minutes: 15,
-        linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
+        linkedHabitId: null,
       },
       {
         exerciseType: 'cardio',
-        workoutActivityType: 'HKWorkoutActivityTypeRunning',
-        locationContext: 'outdoor',
-        title: 'Running',
-        minutes: 10,
+        workoutActivityType: 'HKWorkoutActivityTypeJumpRope',
+        locationContext: 'indoor',
+        title: 'Jump Rope',
+        minutes: 6,
         linkedHabitId: null,
       },
     ],

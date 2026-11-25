@@ -800,9 +800,12 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-metric-caption {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;}
 .genki-plan-week-track {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));height:60px;align-items:center;}
 .genki-plan-week-day {display:flex;flex-direction:column;align-items:center;justify-content:center;height:60px;min-width:0;}
-.genki-plan-week-day-btn {display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:60px;min-height:44px;min-width:0;padding:0;border:0;border-radius:12px;background:transparent;cursor:pointer;touch-action:manipulation;transition:background-color 140ms ease,opacity 140ms ease;}
+.genki-plan-week-day-btn {display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:60px;min-height:44px;min-width:0;padding:0;border:1px solid transparent;border-radius:12px;background:transparent;cursor:pointer;touch-action:manipulation;transition:background-color 140ms ease,border-color 140ms ease,opacity 140ms ease;}
 .genki-plan-week-day-btn:not(:disabled):hover {background:rgba(119,112,182,0.08);}
 .genki-plan-week-day-btn:not(:disabled):active {background:rgba(119,112,182,0.14);}
+.genki-plan-week-day-btn[data-selected="true"] {background:rgba(119,112,182,0.14);border-color:rgba(119,112,182,0.28);}
+.genki-plan-week-day-btn[data-selected="true"] .genki-plan-week-day-letter {color:#514879;font-weight:600;}
+.genki-plan-week-day-btn[data-selected="true"] .genki-plan-week-day-num {color:#3B3459;font-weight:600;}
 .genki-plan-week-day-btn:disabled {cursor:default;}
 .genki-plan-week-day-letter {font-size:11px;font-weight:500;line-height:16px;color:#8B8498;}
 .genki-plan-week-day-num {font-size:13px;font-weight:400;line-height:18px;color:#706A7C;font-variant-numeric:tabular-nums;margin-top:2px;}
@@ -814,10 +817,8 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-week-dot-future {background:#E7E3ED;}
 .genki-plan-week-dash-rest {width:8px;height:2px;border-radius:999px;background:#B0A9BE;display:block;}
 .genki-plan-week-unknown-mark {font-size:10px;font-weight:600;line-height:10px;color:#9A93A8;font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;justify-content:center;}
-.genki-plan-workout-icon-row {margin-top:16px;display:flex;flex-wrap:wrap;align-items:center;column-gap:16px;row-gap:8px;}
-.genki-plan-workout-icon-item {display:inline-flex;align-items:center;gap:6px;min-height:44px;margin:-10px 0;padding:0;border:0;border-radius:8px;background:transparent;color:#625A76;cursor:pointer;touch-action:manipulation;transition:color 140ms ease,opacity 140ms ease;}
-.genki-plan-workout-icon-item:hover {color:#514879;}
-.genki-plan-workout-icon-item:active {opacity:.72;}
+.genki-plan-workout-icon-row {margin-top:16px;min-height:24px;display:flex;flex-wrap:wrap;align-items:center;column-gap:16px;row-gap:10px;}
+.genki-plan-workout-icon-item {display:inline-flex;align-items:center;gap:6px;padding:0;border:0;background:transparent;color:#625A76;}
 .genki-plan-workout-icon-count {font-size:15px;font-weight:500;line-height:20px;color:#514879;font-variant-numeric:tabular-nums;}
 .genki-plan-rhythm-graphic-canvas {position:relative;margin-top:12px;width:100%;height:152px;border-radius:18px;background:linear-gradient(180deg,rgba(244,240,252,0.78) 0%,rgba(248,246,253,0.44) 100%);border:1px solid rgba(119,112,182,0.11);overflow:hidden;user-select:none;}
 .genki-plan-rhythm-node-btn {position:absolute;min-width:44px;min-height:44px;padding:0;border:0;border-radius:12px;background:transparent;cursor:pointer;touch-action:manipulation;z-index:1;transition:background-color 140ms ease;}
@@ -1112,6 +1113,8 @@ export function MyPlanView({
   const isWeekAdjustOpen = editingWeekTarget !== null;
   const [weekDraft, setWeekDraft] = useState<WeeklySchedule>(() => DEFAULT_WEEKLY_DRAFT);
   const weekNavSeqRef = useRef<number>(0);
+  // In-place selected date on the first-level This week 7-day track (null = full week summary)
+  const [selectedTrackDateKey, setSelectedTrackDateKey] = useState<string | null>(null);
   const [weekActivitySheet, setWeekActivitySheet] = useState<{
     open: boolean;
     weekStartKey: string;
@@ -1475,6 +1478,7 @@ export function MyPlanView({
     prevIsActiveForWeekRef.current = isActive;
     if (!wasActive && isActive) {
       weekNavSeqRef.current += 1;
+      setSelectedTrackDateKey(null);
       setWeekActivitySheet({
         open: false,
         weekStartKey: currentWeekBounds.weekStartKey,
@@ -1491,6 +1495,7 @@ export function MyPlanView({
     const prevKey = prevCurrentWeekKeyRef.current;
     prevCurrentWeekKeyRef.current = currentWeekBounds.weekStartKey;
     if (prevKey !== currentWeekBounds.weekStartKey) {
+      setSelectedTrackDateKey(null);
       setWeekActivitySheet((curr) =>
         curr.weekStartKey === prevKey
           ? { ...curr, weekStartKey: currentWeekBounds.weekStartKey }
@@ -3438,7 +3443,7 @@ export function MyPlanView({
               </p>
             </div>
 
-            {/* 2c. Clickable 7-day Monday-Sunday track */}
+            {/* 2c. Clickable 7-day Monday-Sunday track (toggles in-place day filter below; no popup) */}
             <div
               id="this-week-seven-day-track"
               role="group"
@@ -3451,25 +3456,23 @@ export function MyPlanView({
                   day.doneTaskCount === 0 &&
                   day.standaloneExerciseCount === 0 &&
                   !day.explicitRest;
+                const isSelected = selectedTrackDateKey === day.dateKey;
                 return (
                   <button
                     key={day.dateKey}
                     type="button"
                     disabled={isFutureDisabled}
                     aria-disabled={isFutureDisabled ? 'true' : undefined}
+                    aria-pressed={isSelected}
                     aria-label={day.ariaLabel}
                     data-date-key={day.dateKey}
                     data-day-status={day.visualState}
                     data-completed-count={day.doneTaskCount}
                     data-is-today={day.isToday ? 'true' : undefined}
+                    data-selected={isSelected ? 'true' : undefined}
                     onClick={() => {
                       if (isFutureDisabled) return;
-                      openWeekActivitySheet({
-                        weekStartKey: currentWeekSnapshot.weekStartKey,
-                        selectedDateKey: day.dateKey,
-                        filterTypeKey: null,
-                        expandAllTypes: false,
-                      });
+                      setSelectedTrackDateKey((prev) => (prev === day.dateKey ? null : day.dateKey));
                     }}
                     className="genki-plan-week-day-btn"
                   >
@@ -3502,51 +3505,66 @@ export function MyPlanView({
               })}
             </div>
 
-            {/* 2d. Compact horizontal workout category row (20px icon + 6px gap + 15px count, 16px group gap) */}
-            {currentWeekSnapshot.workoutSummary.allTypes.length > 0 ? (
-              <div
-                id="this-week-workout-icons"
-                role="group"
-                aria-label="This week workout summary"
-                className="genki-plan-workout-icon-row"
-              >
-                {currentWeekSnapshot.workoutSummary.allTypes.map((row) => {
-                  const displayLabel = getWorkoutDisplayLabel(row.key, row.label);
-                  const sessionWord = row.count === 1 ? 'session' : 'sessions';
-                  return (
-                    <button
-                      key={row.key}
-                      type="button"
-                      data-workout-type-item={row.key}
-                      data-workout-label={displayLabel}
-                      data-workout-count={row.count}
-                      aria-label={`${displayLabel}, ${row.count} ${sessionWord}`}
-                      onClick={() =>
-                        openWeekActivitySheet({
-                          weekStartKey: currentWeekSnapshot.weekStartKey,
-                          selectedDateKey: null,
-                          filterTypeKey: row.key,
-                          expandAllTypes: false,
-                        })
-                      }
-                      className="genki-plan-workout-icon-item"
-                    >
-                      <WorkoutActivityIcon typeKey={row.key} size={20} className="shrink-0" />
-                      <span aria-hidden="true" className="genki-plan-workout-icon-count">
-                        {row.count}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : !currentWeekSnapshot.isWeekCoverageUnknown ? (
-              <p
-                id="this-week-no-workouts"
-                className="mt-[16px] text-[14px] font-normal leading-[20px] text-[#8B8498]"
-              >
-                No workouts recorded yet.
-              </p>
-            ) : null}
+            {/* 2d. Compact horizontal workout category row (full week by default; swaps in-place for selected day) */}
+            {(() => {
+              const displayedWorkoutTypes = selectedTrackDateKey
+                ? getDayWorkoutTypeSummary(currentWeekSnapshot, selectedTrackDateKey)
+                : currentWeekSnapshot.workoutSummary.allTypes;
+
+              if (displayedWorkoutTypes.length > 0) {
+                return (
+                  <div
+                    id="this-week-workout-icons"
+                    role="list"
+                    aria-live="polite"
+                    aria-label={
+                      selectedTrackDateKey
+                        ? `Workout summary for ${selectedTrackDateKey}`
+                        : 'This week workout summary'
+                    }
+                    data-scope={selectedTrackDateKey ? 'day' : 'week'}
+                    data-selected-date={selectedTrackDateKey ?? ''}
+                    className="genki-plan-workout-icon-row"
+                  >
+                    {displayedWorkoutTypes.map((row) => {
+                      const displayLabel = getWorkoutDisplayLabel(row.key, row.label);
+                      const sessionWord = row.count === 1 ? 'session' : 'sessions';
+                      return (
+                        <div
+                          key={row.key}
+                          role="listitem"
+                          data-workout-type-item={row.key}
+                          data-workout-label={displayLabel}
+                          data-workout-count={row.count}
+                          aria-label={`${displayLabel}, ${row.count} ${sessionWord}`}
+                          className="genki-plan-workout-icon-item"
+                        >
+                          <WorkoutActivityIcon typeKey={row.key} size={20} className="shrink-0" />
+                          <span aria-hidden="true" className="genki-plan-workout-icon-count">
+                            {row.count}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+
+              if (!currentWeekSnapshot.isWeekCoverageUnknown) {
+                return (
+                  <p
+                    id="this-week-no-workouts"
+                    className="mt-[16px] text-[14px] font-normal leading-[20px] text-[#8B8498]"
+                  >
+                    {selectedTrackDateKey
+                      ? 'No workouts recorded on this day.'
+                      : 'No workouts recorded yet.'}
+                  </p>
+                );
+              }
+
+              return null;
+            })()}
           </div>
         </section>
 
