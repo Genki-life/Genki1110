@@ -7,7 +7,7 @@ export function PlanLoadingView() {
       role="status"
       aria-label="Loading plan"
       aria-busy="true"
-      className="flex-1 overflow-y-auto px-5 pt-[18px] pb-[calc(88px+env(safe-area-inset-bottom,0px))] flex flex-col gap-6"
+      className="flex-1 overflow-y-auto px-5 pt-[18px] pb-[calc(100px+env(safe-area-inset-bottom,0px))] flex flex-col gap-6"
     >
       <span className="sr-only">Loading plan…</span>
       {['Your focus', 'This week', 'Up next'].map((title, index) => (

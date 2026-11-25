@@ -1791,9 +1791,7 @@ export default function App() {
   const companionContentRef = useRef<HTMLDivElement>(null);
   const [companionGroupHeight, setCompanionGroupHeight] = useState<number | null>(null);
   const bottomBarRef = useRef<HTMLDivElement>(null);
-  const [bottomBarHeight, setBottomBarHeight] = useState<number>(64);
-  const [isBottomNovaExpanded, setIsBottomNovaExpanded] = useState<boolean>(false);
-  const [bottomNovaDraft, setBottomNovaDraft] = useState<string>('');
+  const [bottomBarHeight, setBottomBarHeight] = useState<number>(76);
   const shouldReduceMotion = Boolean(useReducedMotion());
 
   const [frameSize, setFrameSize] = useState<{ width: number; height: number }>(() => ({
@@ -1803,7 +1801,7 @@ export default function App() {
   const [sheetMeasuredHeight, setSheetMeasuredHeight] = useState<number>(0);
 
   // Exact bottom offset for expanded suggestion card: strictly above shared bottom navigation with guaranteed spacing (>= 14px)
-  const cardBottomOffset = Math.max(bottomBarHeight + 14, 78);
+  const cardBottomOffset = Math.max(bottomBarHeight + 14, 90);
 
   // Maximum card height to guarantee it stays strictly above Talk to Nova and leaves Nova's face visible
   const maxCardAllowedHeight = useMemo(() => {
@@ -2962,73 +2960,11 @@ export default function App() {
     });
   }, [openChatWithTransition]);
 
-  const handleSubmitBottomNovaMessage = useCallback((rawText: string) => {
-    const trimmed = rawText.trim();
-    if (!trimmed && chatAttachments.length === 0) return;
-
-    setBottomNovaDraft('');
-    setIsBottomNovaExpanded(false);
-    setSheetInput('');
-    setIsTyping(false);
-    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    isNearBottomRef.current = true;
-
-    openChatWithTransition(() => {
-      adjustSessionRef.current = null;
-      setInputPlaceholder('Type your response…');
-      if (trimmed) {
-        const now = Date.now();
-        setChatMessages([
-          {
-            id: `usr-${now}`,
-            sender: 'user',
-            text: trimmed,
-          },
-          {
-            id: `ai-${now + 1}`,
-            sender: 'ai',
-            text: "Got it! Listening to your body is what matters most. How about a 5-minute breather or taking today off?",
-            options: [
-              {
-                label: 'Sounds good (5-min stretch)',
-                action: 'accept',
-                targetPlan: STRETCH_PLAN,
-              },
-              {
-                label: 'Take today off',
-                action: 'accept',
-                targetPlan: REST_DAY_PLAN,
-              },
-              {
-                label: 'Keep current plan',
-                action: 'keep_plan',
-              },
-            ],
-          },
-        ]);
-      } else {
-        setChatMessages([
-          {
-            id: 'msg-open-input',
-            sender: 'ai',
-            text: "Hi! How's your day shaping up? Tell me whatever is on your mind.",
-          },
-        ]);
-      }
-    });
-  }, [chatAttachments.length, openChatWithTransition]);
-
   const isSharedBottomNavHidden =
     isChatOpen ||
     isDetailOpen ||
     isSavedSheetOpen ||
     (activeTab === 'Plan' && isPlanOverlayOpen);
-
-  useEffect(() => {
-    if (isSharedBottomNavHidden && isBottomNovaExpanded) {
-      setIsBottomNovaExpanded(false);
-    }
-  }, [isSharedBottomNavHidden, isBottomNovaExpanded]);
 
   const handleAttachmentButtonClick = (source: 'home' | 'drawer') => {
     attachmentSourceRef.current = source;
@@ -3070,7 +3006,7 @@ export default function App() {
 
     if (added.length > 0) {
       setChatAttachments((prev) => [...prev, ...added]);
-      if (source === 'home' && !isChatOpen && !isBottomNovaExpanded) {
+      if (source === 'home' && !isChatOpen) {
         openGeneralNovaChat();
       }
     }
@@ -4167,7 +4103,7 @@ export default function App() {
             }
           }}
           style={{
-            paddingBottom: `${Math.max(bottomBarHeight + 16, 80)}px`,
+            paddingBottom: `${Math.max(bottomBarHeight + 16, 92)}px`,
           }}
           className={`flex-1 relative ${
             isPlanCardOpen ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden no-scrollbar'
@@ -4200,7 +4136,7 @@ export default function App() {
                   exit={{ opacity: 0 }}
                   transition={{ duration: shouldReduceMotion ? 0.05 : 0.24 }}
                   style={{
-                    bottom: `${Math.max(bottomBarHeight - 16, 48)}px`,
+                    bottom: `${Math.max(bottomBarHeight - 16, 60)}px`,
                     WebkitMaskImage:
                       'linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.65) 38%, rgba(0,0,0,0.95) 72%, transparent 100%)',
                     maskImage:
@@ -4885,8 +4821,8 @@ export default function App() {
                 style={{
                   bottom:
                     frameSize.height < 700
-                      ? `${Math.max(bottomBarHeight + 8, 72)}px`
-                      : `${Math.max(bottomBarHeight + 12, 76)}px`,
+                      ? `${Math.max(bottomBarHeight + 8, 84)}px`
+                      : `${Math.max(bottomBarHeight + 12, 88)}px`,
                 }}
                 className="absolute inset-x-0 w-full z-30 flex flex-col items-center justify-end pointer-events-none"
               >
@@ -5538,7 +5474,7 @@ export default function App() {
           )}
         </div>
 
-        {/* 4. Shared Single-Row Floating Bottom Navigation: Left Tab Capsule + Right Morphing Nova Button */}
+        {/* 4. Shared Single-Row Floating Bottom Navigation: Left Tab Capsule + Right Morphing Nova Bubble */}
         <SharedBottomNav
           activeTab={activeTab as PrimaryTabId}
           onSelectTab={(nextTab) => {
@@ -5555,15 +5491,8 @@ export default function App() {
             if (tabId === 'Plan') void loadPlanView().catch(() => {});
             if (tabId === 'Discover') void loadDiscoverView().catch(() => {});
           }}
+          onOpenNovaChat={openGeneralNovaChat}
           isHidden={isSharedBottomNavHidden}
-          isExpanded={isBottomNovaExpanded}
-          onExpandedChange={setIsBottomNovaExpanded}
-          inputValue={bottomNovaDraft}
-          onInputChange={setBottomNovaDraft}
-          onSubmitMessage={handleSubmitBottomNovaMessage}
-          onAttachClick={() => handleAttachmentButtonClick('home')}
-          attachments={chatAttachments}
-          onRemoveAttachment={handleRemoveAttachment}
           barRef={bottomBarRef}
           shouldReduceMotion={shouldReduceMotion}
         />

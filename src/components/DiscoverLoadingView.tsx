@@ -7,7 +7,7 @@ export function DiscoverLoadingView() {
       role="status"
       aria-label="Loading discover"
       aria-busy="true"
-      className="flex-1 overflow-y-auto px-5 pt-3 pb-[calc(88px+env(safe-area-inset-bottom,0px))] flex flex-col gap-3"
+      className="flex-1 overflow-y-auto px-5 pt-3 pb-[calc(100px+env(safe-area-inset-bottom,0px))] flex flex-col gap-3"
     >
       <span className="sr-only">Loading discover…</span>
       <div aria-hidden="true" className="h-[18px] w-36 rounded-md bg-[#5E5BAE]/10 motion-safe:animate-pulse" />

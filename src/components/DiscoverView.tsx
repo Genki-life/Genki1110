@@ -202,7 +202,7 @@ export function DiscoverView({
       id="discover-feed-scroll"
       inert={hasOpenOverlay || undefined}
       aria-hidden={hasOpenOverlay || undefined}
-      className="flex-1 overflow-y-auto px-5 pt-3 pb-[calc(88px+env(safe-area-inset-bottom,0px))] flex flex-col gap-3 scrollbar-none overscroll-contain z-10 text-[#1C1C1E]"
+      className="flex-1 overflow-y-auto px-5 pt-3 pb-[calc(100px+env(safe-area-inset-bottom,0px))] flex flex-col gap-3 scrollbar-none overscroll-contain z-10 text-[#1C1C1E]"
     >
       {/* Intro Subtitle */}
       <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78] m-0">

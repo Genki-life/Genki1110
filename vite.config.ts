@@ -13,6 +13,11 @@ export default defineConfig(() => {
     },
     optimizeDeps: {
       entries: ['index.html'],
+      include: [
+        'three',
+        'three/examples/jsm/misc/GPUComputationRenderer.js',
+        'react-dom',
+      ],
     },
     server: {
       host: '0.0.0.0',

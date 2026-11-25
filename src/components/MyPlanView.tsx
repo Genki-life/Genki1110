@@ -3852,7 +3852,7 @@ export function MyPlanView({
   return (
     <div
       ref={planScrollRef}
-      className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(88px+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none"
+      className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(100px+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none"
     >
       <style>{GENKI_PLAN_UI_STYLES}</style>
       {/* Toast Notifications */}
