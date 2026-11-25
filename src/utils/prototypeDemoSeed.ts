@@ -80,13 +80,13 @@ function isAiStudioDevPreviewHost(hostname: string): boolean {
   const host = hostname.trim().toLowerCase();
   if (!host) return false;
   if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return true;
-  if (/^ais-(dev|pre)-[a-z0-9-]+\.run\.app$/i.test(host)) return true;
+  if (/^ais-dev-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app$/i.test(host)) return true;
   return false;
 }
 
 function isViteDevMode(): boolean {
   try {
-    return Boolean((import.meta as unknown as { env?: { DEV?: boolean } })?.env?.DEV);
+    return Boolean(import.meta.env && import.meta.env.DEV);
   } catch {
     return false;
   }
