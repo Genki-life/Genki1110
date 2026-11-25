@@ -1,10 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { 
-  Mic, 
-  Calendar, 
-  Sliders, 
-  Compass,
   ArrowUp,
   Check,
   ChevronRight,
@@ -22,9 +18,10 @@ import {
   FileText,
   Plus
 } from 'lucide-react';
+import { SharedBottomNav, type PrimaryTabId } from './components/SharedBottomNav';
 
-import { NovaAvatar3D } from './components/Avatar3D/NovaAvatar3D';
 import { FurryNovaStaticAvatar } from './components/Avatar3D/FurryNovaStaticAvatar';
+import { LazyNovaAvatar3D, loadNovaAvatar3D } from './components/Avatar3D/loadNovaAvatar3D';
 import {
   ActivityCategory,
   ActivityUpdatePatch,
@@ -40,6 +37,7 @@ import {
   addExerciseSession,
   clearRecordsForDate,
   completeTaskCard,
+  createEmptyPlanFoundationStore,
   loadPlanFoundationStore,
   mapActivityCategoryToExerciseType,
   projectLegacyActivityRecords,
@@ -63,9 +61,27 @@ import {
   getActivePreviewProfileIdFromUrl,
   getInitialTabFromUrl,
   isPreviewResetRequestedFromUrl,
-  loadPreviewProfileStore,
-  savePreviewProfileStore,
-} from './utils/prototypeDemoSeed';
+} from './utils/previewRuntime';
+import type {
+  PlanNovaChatRequest,
+  PlanNovaChatTextEvent,
+} from './components/PlanNovaChatWidgets';
+
+let planNovaWidgetPromise: Promise<{
+  default: typeof import('./components/PlanNovaChatWidgets').PlanNovaChatWidget;
+}> | null = null;
+function loadPlanNovaChatWidget() {
+  if (!planNovaWidgetPromise) {
+    planNovaWidgetPromise = import('./components/PlanNovaChatWidgets')
+      .then((module) => ({ default: module.PlanNovaChatWidget }))
+      .catch((error) => {
+        planNovaWidgetPromise = null;
+        throw error;
+      });
+  }
+  return planNovaWidgetPromise;
+}
+const LazyPlanNovaChatWidget = React.lazy(loadPlanNovaChatWidget);
 
 let planViewPromise: Promise<{ default: typeof import('./components/MyPlanView').MyPlanView }> | null = null;
 function loadPlanView() {
@@ -1025,38 +1041,16 @@ export default function App() {
     }
   }, [activePreviewProfileId]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const warmPlan = () => {
-      void loadPlanView()
-        .then(() => {
-          if (!cancelled) React.startTransition(() => setHasVisitedPlan(true));
-        })
-        .catch(() => {});
-    };
-    const idleId =
-      typeof window.requestIdleCallback === 'function'
-        ? window.requestIdleCallback(warmPlan, { timeout: 800 })
-        : null;
-    const timerId = idleId === null ? window.setTimeout(warmPlan, 250) : null;
-    return () => {
-      cancelled = true;
-      if (idleId !== null) window.cancelIdleCallback(idleId);
-      if (timerId !== null) window.clearTimeout(timerId);
-    };
-  }, []);
-  
   // Single shared persistent PlanFoundationStore backing Today, Plan, History, This week, and Weekly review.
-  // When an explicit preview profile URL (?preview=plan-review) is active, it loads and persists strictly
-  // inside its isolated preview storage namespace so official user records remain completely untouched.
+  // In production shared URLs (activePreviewProfileId === null), prototypeDemoSeed.ts is NEVER imported or downloaded.
+  // In AI Studio dev preview or explicit ?preview=plan-review, prototypeDemoSeed.ts loads dynamically on mount
+  // into its isolated preview storage namespace so official user records remain untouched.
+  const previewSeedModuleRef = useRef<typeof import('./utils/prototypeDemoSeed') | null>(null);
   const initialPlanStoreRef = useRef<PlanFoundationStore | null>(null);
   if (initialPlanStoreRef.current === null) {
     const bootNow = new Date();
     initialPlanStoreRef.current = activePreviewProfileId
-      ? loadPreviewProfileStore(activePreviewProfileId, {
-          now: bootNow,
-          reset: isPreviewResetRequestedFromUrl(),
-        })
+      ? createEmptyPlanFoundationStore()
       : loadPlanFoundationStore({ now: bootNow });
   }
   const initialTodayDateKeyRef = useRef<string>(toLocalDateKey(new Date()));
@@ -1068,20 +1062,38 @@ export default function App() {
   planStoreRef.current = planStore;
 
   const updatePlanStore = useCallback(
-    (updater: (prev: PlanFoundationStore) => PlanFoundationStore) => {
-      setPlanStore((prev) => {
-        const next = updater(prev);
-        if (next === prev) return prev;
-        if (activePreviewProfileId) {
-          savePreviewProfileStore(activePreviewProfileId, next);
-          return next;
+    (updater: (prev: PlanFoundationStore) => PlanFoundationStore): boolean => {
+      const prev = planStoreRef.current;
+      const next = updater(prev);
+      if (next === prev) return true;
+      let saved = false;
+      if (activePreviewProfileId) {
+        if (previewSeedModuleRef.current) {
+          saved = previewSeedModuleRef.current.savePreviewProfileStore(
+            activePreviewProfileId,
+            next
+          );
+        } else {
+          saved = true;
+          void import('./utils/prototypeDemoSeed')
+            .then((mod) => {
+              previewSeedModuleRef.current = mod;
+              mod.savePreviewProfileStore(activePreviewProfileId, next);
+            })
+            .catch(() => {});
         }
-        savePlanFoundationStore(next);
-        // Mirror clean non-demo legacy keys for compatibility across reload/external readers
-        saveUnifiedActivities(projectLegacyActivityRecords(next));
-        saveUnifiedRestRecords(projectLegacyRestRecords(next));
-        return next;
-      });
+      } else {
+        saved = savePlanFoundationStore(next);
+        if (saved) {
+          // Mirror clean non-demo legacy keys for compatibility across reload/external readers
+          saveUnifiedActivities(projectLegacyActivityRecords(next));
+          saveUnifiedRestRecords(projectLegacyRestRecords(next));
+        }
+      }
+      if (!saved) return false;
+      planStoreRef.current = next;
+      setPlanStore(next);
+      return true;
     },
     [activePreviewProfileId]
   );
@@ -1271,13 +1283,13 @@ export default function App() {
 
   // Unified History / Plan mutations (single source of truth synchronized with Today)
   // Manual exercise logs NEVER create or increment Done task counts.
-  const handleAddManualActivity = useCallback((input: ManualActivityInput) => {
+  const handleAddManualActivity = useCallback((input: ManualActivityInput): boolean => {
     const exerciseType = mapActivityCategoryToExerciseType(input.category);
     const cleanDuration =
       typeof input.durationMinutes === 'number' && input.durationMinutes > 0
         ? Math.round(input.durationMinutes)
         : null;
-    updatePlanStore((prev) => {
+    return updatePlanStore((prev) => {
       const { store } = addExerciseSession(prev, {
         exerciseType,
         dateKey: input.dateKey,
@@ -1293,13 +1305,13 @@ export default function App() {
     });
   }, [updatePlanStore]);
 
-  const handleUpdateActivity = useCallback((recordId: string, patch: ActivityUpdatePatch) => {
+  const handleUpdateActivity = useCallback((recordId: string, patch: ActivityUpdatePatch): boolean => {
     const exerciseType = mapActivityCategoryToExerciseType(patch.category);
     const cleanDuration =
       typeof patch.durationMinutes === 'number' && patch.durationMinutes > 0
         ? Math.round(patch.durationMinutes)
         : null;
-    updatePlanStore((prev) =>
+    return updatePlanStore((prev) =>
       updateExerciseSession(prev, recordId, {
         ...(patch.dateKey ? { dateKey: patch.dateKey } : {}),
         exerciseType,
@@ -1311,10 +1323,11 @@ export default function App() {
     );
   }, [updatePlanStore]);
 
-  const handleDeleteActivity = useCallback((recordId: string) => {
-    updatePlanStore((prev) =>
+  const handleDeleteActivity = useCallback((recordId: string): boolean => {
+    const ok = updatePlanStore((prev) =>
       removeExerciseSession(prev, recordId, { cascadeTaskUndo: true })
     );
+    if (!ok) return false;
     // If a Today card was linked to this deleted record, clear its completed binding so Today stays consistent
     setCardsState((prev) =>
       prev.map((item) =>
@@ -1323,10 +1336,11 @@ export default function App() {
           : item
       )
     );
+    return true;
   }, [updatePlanStore]);
 
-  const handleUpsertRestDay = useCallback((dateKey: string, note?: string) => {
-    updatePlanStore((prev) => {
+  const handleUpsertRestDay = useCallback((dateKey: string, note?: string): boolean => {
+    return updatePlanStore((prev) => {
       const { store } = recordLifecycleEvent(prev, {
         type: 'rest',
         dateKey,
@@ -1339,15 +1353,17 @@ export default function App() {
     });
   }, [updatePlanStore]);
 
-  const handleDeleteRestRecord = useCallback((restId: string) => {
-    updatePlanStore((prev) => removeLifecycleEvent(prev, restId));
+  const handleDeleteRestRecord = useCallback((restId: string): boolean => {
+    const ok = updatePlanStore((prev) => removeLifecycleEvent(prev, restId));
+    if (!ok) return false;
     if (todayRestRecordIdRef.current === restId) {
       todayRestRecordIdRef.current = null;
       setIsRestDay(false);
     }
+    return true;
   }, [updatePlanStore]);
 
-  const handleClearDayRecords = useCallback((dateKey: string) => {
+  const handleClearDayRecords = useCallback((dateKey: string): boolean => {
     const removedActivityIds = new Set(
       activityRecordsRef.current.filter((r) => r.dateKey === dateKey).map((r) => r.id)
     );
@@ -1355,7 +1371,8 @@ export default function App() {
       (r) => r.dateKey === dateKey && r.id === todayRestRecordIdRef.current
     );
 
-    updatePlanStore((prev) => clearRecordsForDate(prev, dateKey));
+    const ok = updatePlanStore((prev) => clearRecordsForDate(prev, dateKey));
+    if (!ok) return false;
 
     if (hadTodayRest) {
       todayRestRecordIdRef.current = null;
@@ -1375,6 +1392,7 @@ export default function App() {
         )
       );
     }
+    return true;
   }, [updatePlanStore]);
 
   const setShowPlanBHint = useCallback((show: boolean, targetIdx?: number) => {
@@ -1552,14 +1570,88 @@ export default function App() {
   }, [bubbleDisplayMode]);
 
   
-  // Avatar mode: '3d' procedural fur character (default for test) or '2d' legacy image
+  // Avatar mode: '3d' procedural fur character (default) or '2d' static fallback
   const [avatarMode, setAvatarMode] = useState<'3d' | '2d'>('3d');
+  const [shouldMountToday3D, setShouldMountToday3D] = useState<boolean>(false);
   const [isAvatarFirstFrameReady, setIsAvatarFirstFrameReady] = useState<boolean>(false);
   const [isHomeLayoutReady, setIsHomeLayoutReady] = useState<boolean>(false);
+
+  // Hydrate isolated dev preview profile asynchronously ONLY when activePreviewProfileId is active
+  // (never loaded in production shared deployments without ?preview=plan-review).
+  useEffect(() => {
+    if (!activePreviewProfileId) return;
+    let cancelled = false;
+    const resetRequested = isPreviewResetRequestedFromUrl();
+    void import('./utils/prototypeDemoSeed')
+      .then((mod) => {
+        if (cancelled) return;
+        previewSeedModuleRef.current = mod;
+        const loaded = mod.loadPreviewProfileStore(activePreviewProfileId, {
+          now: new Date(),
+          reset: resetRequested,
+        });
+        planStoreRef.current = loaded;
+        setPlanStore(loaded);
+
+        const todayKey = initialTodayDateKeyRef.current;
+        const doneTasks = loaded.taskCompletions.filter((t) => t.status === 'done');
+        setCardsState((prev) =>
+          prev.map((item) => {
+            const matched = doneTasks.find(
+              (rec) =>
+                rec.logicalTaskId === item.taskInstanceId ||
+                rec.logicalTaskId === `${todayKey}::${item.id}`
+            );
+            if (!matched) return item;
+            return {
+              ...item,
+              taskInstanceId: matched.logicalTaskId ?? item.taskInstanceId,
+              completedRecordId: matched.id,
+              originalPlanId: matched.originalPlanId ?? item.originalPlanId,
+              replacedFromPlanIds: matched.replacedFromPlanIds ?? item.replacedFromPlanIds,
+              planState: 'completed',
+            };
+          })
+        );
+        const todayRest = loaded.lifecycleEvents.find(
+          (e) => e.type === 'rest' && e.source === 'today' && e.dateKey === todayKey
+        );
+        if (todayRest) {
+          todayRestRecordIdRef.current = todayRest.legacyRestRecordId ?? todayRest.id;
+          setIsRestDay(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activePreviewProfileId]);
+
+  // Defer Today 3D Avatar chunk download & WebGL initialization until after interactive UI & static Nova paint
+  useEffect(() => {
+    if (avatarMode !== '3d' || shouldMountToday3D) return;
+    if (activeTab !== 'Today') return;
+    let cancelled = false;
+    let rafId2: number | null = null;
+    const rafId1 = window.requestAnimationFrame(() => {
+      rafId2 = window.requestAnimationFrame(() => {
+        if (!cancelled) {
+          void loadNovaAvatar3D().catch(() => {});
+          setShouldMountToday3D(true);
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(rafId1);
+      if (rafId2 !== null) window.cancelAnimationFrame(rafId2);
+    };
+  }, [avatarMode, shouldMountToday3D, activeTab]);
 
   // Discover tab saved bookmarks state (versioned localStorage, starts empty when unset)
   const [savedItemIds, setSavedItemIds] = useState<string[]>(() => loadSavedDiscoverIds());
   const [isSavedSheetOpen, setIsSavedSheetOpen] = useState<boolean>(false);
+  const [isPlanOverlayOpen, setIsPlanOverlayOpen] = useState<boolean>(false);
 
   const handleToggleSave = useCallback((id: string) => {
     setSavedItemIds((prev) => {
@@ -1569,36 +1661,37 @@ export default function App() {
     });
   }, []);
 
-  // Idle prefetch Discover module only after initial home paint so Avatar first frame is never blocked
+  // Lightly idle-prefetch Plan & Discover JS chunks ONLY after Today UI & Avatar settle (never blocks first paint)
   useEffect(() => {
     if (!isHomeLayoutReady) return;
     let cancelled = false;
     let idleId: number | null = null;
     let timerId: number | null = null;
 
-    const prefetchDiscover = () => {
+    const prefetchSecondaryTabs = () => {
       if (cancelled) return;
+      void loadPlanView().catch(() => {});
       void loadDiscoverView().catch(() => {});
     };
 
-    const rafId = window.requestAnimationFrame(() => {
+    const delayMs = isAvatarFirstFrameReady || avatarMode === '2d' ? 350 : 2200;
+    timerId = window.setTimeout(() => {
       if (cancelled) return;
       if (typeof window.requestIdleCallback === 'function') {
-        idleId = window.requestIdleCallback(prefetchDiscover, { timeout: 1500 });
+        idleId = window.requestIdleCallback(prefetchSecondaryTabs, { timeout: 1500 });
       } else {
-        timerId = window.setTimeout(prefetchDiscover, 400);
+        prefetchSecondaryTabs();
       }
-    });
+    }, delayMs);
 
     return () => {
       cancelled = true;
-      window.cancelAnimationFrame(rafId);
       if (idleId !== null && typeof window.cancelIdleCallback === 'function') {
         window.cancelIdleCallback(idleId);
       }
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [isHomeLayoutReady]);
+  }, [isHomeLayoutReady, isAvatarFirstFrameReady, avatarMode]);
 
   // Hold-to-complete animation state (3 seconds = 3000ms)
   const HOLD_DURATION_MS = 3000;
@@ -1625,6 +1718,9 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [sheetInput, setSheetInput] = useState('');
   const [inputPlaceholder, setInputPlaceholder] = useState('Type your response…');
+  const [activePlanChat, setActivePlanChat] = useState<PlanNovaChatRequest | null>(null);
+  const [planChatTextEvent, setPlanChatTextEvent] = useState<PlanNovaChatTextEvent | null>(null);
+  const lastPlanUserMessageRef = useRef<string>('');
   interface PendingChatAttachment {
     id: string;
     file: File;
@@ -1695,7 +1791,9 @@ export default function App() {
   const companionContentRef = useRef<HTMLDivElement>(null);
   const [companionGroupHeight, setCompanionGroupHeight] = useState<number | null>(null);
   const bottomBarRef = useRef<HTMLDivElement>(null);
-  const [bottomBarHeight, setBottomBarHeight] = useState<number>(136);
+  const [bottomBarHeight, setBottomBarHeight] = useState<number>(64);
+  const [isBottomNovaExpanded, setIsBottomNovaExpanded] = useState<boolean>(false);
+  const [bottomNovaDraft, setBottomNovaDraft] = useState<string>('');
   const shouldReduceMotion = Boolean(useReducedMotion());
 
   const [frameSize, setFrameSize] = useState<{ width: number; height: number }>(() => ({
@@ -1704,8 +1802,8 @@ export default function App() {
   }));
   const [sheetMeasuredHeight, setSheetMeasuredHeight] = useState<number>(0);
 
-  // Exact bottom offset for expanded suggestion card: strictly above Talk to Nova input with guaranteed spacing (>= 14px)
-  const cardBottomOffset = Math.max(bottomBarHeight + 14, 150);
+  // Exact bottom offset for expanded suggestion card: strictly above shared bottom navigation with guaranteed spacing (>= 14px)
+  const cardBottomOffset = Math.max(bottomBarHeight + 14, 78);
 
   // Maximum card height to guarantee it stays strictly above Talk to Nova and leaves Nova's face visible
   const maxCardAllowedHeight = useMemo(() => {
@@ -2318,6 +2416,9 @@ export default function App() {
   // Coordinated Transition Open / Close triggers
   const openChatWithTransition = useCallback((chatSetup?: () => void) => {
     cancelPendingAndActiveCardUpdate();
+    setActivePlanChat(null);
+    setPlanChatTextEvent(null);
+    lastPlanUserMessageRef.current = '';
     const liveRect = getLiveHomeAvatarRect();
     if (liveRect && liveRect.width > 0) {
       setHomeAvatarRect(liveRect);
@@ -2328,12 +2429,47 @@ export default function App() {
     setTransitionPhase('opening');
   }, [cancelPendingAndActiveCardUpdate, getLiveHomeAvatarRect]);
 
+  const openPlanNovaChat = useCallback((request: PlanNovaChatRequest) => {
+    adjustSessionRef.current = null;
+    setActivePlanChat(request);
+    setPlanChatTextEvent(null);
+    lastPlanUserMessageRef.current = '';
+    setSheetInput('');
+    setInputPlaceholder(request.inputPlaceholder || 'Type to update draft…');
+    isNearBottomRef.current = true;
+    setChatMessages([
+      {
+        id: `plan-intro-${request.id}`,
+        sender: 'ai',
+        text: request.introMessage,
+      },
+    ]);
+    setIsChatSheetExited(false);
+    setIsChatOpen(true);
+    setTransitionPhase('opening');
+  }, []);
+
+  const handleAppendPlanNovaNotice = useCallback((text: string) => {
+    isNearBottomRef.current = true;
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `plan-ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        sender: 'ai',
+        text,
+      },
+    ]);
+  }, []);
+
   const closeChatWithTransition = useCallback(() => {
     const liveRect = getLiveHomeAvatarRect();
     if (liveRect && liveRect.width > 0) {
       setHomeAvatarRect(liveRect);
     }
     setIsChatOpen(false);
+    setActivePlanChat(null);
+    setPlanChatTextEvent(null);
+    lastPlanUserMessageRef.current = '';
     setTransitionPhase('closing');
     setIsTyping(false);
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
@@ -2826,6 +2962,74 @@ export default function App() {
     });
   }, [openChatWithTransition]);
 
+  const handleSubmitBottomNovaMessage = useCallback((rawText: string) => {
+    const trimmed = rawText.trim();
+    if (!trimmed && chatAttachments.length === 0) return;
+
+    setBottomNovaDraft('');
+    setIsBottomNovaExpanded(false);
+    setSheetInput('');
+    setIsTyping(false);
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    isNearBottomRef.current = true;
+
+    openChatWithTransition(() => {
+      adjustSessionRef.current = null;
+      setInputPlaceholder('Type your response…');
+      if (trimmed) {
+        const now = Date.now();
+        setChatMessages([
+          {
+            id: `usr-${now}`,
+            sender: 'user',
+            text: trimmed,
+          },
+          {
+            id: `ai-${now + 1}`,
+            sender: 'ai',
+            text: "Got it! Listening to your body is what matters most. How about a 5-minute breather or taking today off?",
+            options: [
+              {
+                label: 'Sounds good (5-min stretch)',
+                action: 'accept',
+                targetPlan: STRETCH_PLAN,
+              },
+              {
+                label: 'Take today off',
+                action: 'accept',
+                targetPlan: REST_DAY_PLAN,
+              },
+              {
+                label: 'Keep current plan',
+                action: 'keep_plan',
+              },
+            ],
+          },
+        ]);
+      } else {
+        setChatMessages([
+          {
+            id: 'msg-open-input',
+            sender: 'ai',
+            text: "Hi! How's your day shaping up? Tell me whatever is on your mind.",
+          },
+        ]);
+      }
+    });
+  }, [chatAttachments.length, openChatWithTransition]);
+
+  const isSharedBottomNavHidden =
+    isChatOpen ||
+    isDetailOpen ||
+    isSavedSheetOpen ||
+    (activeTab === 'Plan' && isPlanOverlayOpen);
+
+  useEffect(() => {
+    if (isSharedBottomNavHidden && isBottomNovaExpanded) {
+      setIsBottomNovaExpanded(false);
+    }
+  }, [isSharedBottomNavHidden, isBottomNovaExpanded]);
+
   const handleAttachmentButtonClick = (source: 'home' | 'drawer') => {
     attachmentSourceRef.current = source;
     chatFileInputRef.current?.click();
@@ -2866,7 +3070,7 @@ export default function App() {
 
     if (added.length > 0) {
       setChatAttachments((prev) => [...prev, ...added]);
-      if (source === 'home' && !isChatOpen) {
+      if (source === 'home' && !isChatOpen && !isBottomNovaExpanded) {
         openGeneralNovaChat();
       }
     }
@@ -2891,6 +3095,22 @@ export default function App() {
     setIsTyping(false);
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     isNearBottomRef.current = true;
+
+    if (activePlanChat) {
+      // Prevent duplicate submission of identical unconfirmed user text
+      if (lastPlanUserMessageRef.current === text) return;
+      lastPlanUserMessageRef.current = text;
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `plan-usr-${Date.now()}`,
+          sender: 'user',
+          text,
+        },
+      ]);
+      setPlanChatTextEvent((prev) => ({ seq: (prev?.seq ?? 0) + 1, text }));
+      return;
+    }
 
     setChatMessages((prev) => [
       ...prev.map((m) => ({ ...m, disabled: true })),
@@ -3665,24 +3885,33 @@ export default function App() {
               activeTab === 'Today' ? 'pointer-events-auto' : 'pointer-events-none'
             }`}
           >
-            {avatarMode === '3d' ? (
-              <NovaAvatar3D
-                isActiveTab={activeTab === 'Today'}
-                isTransitioning={transitionPhase === 'opening' || transitionPhase === 'closing'}
-                className="w-full h-full"
-                mode="3d"
-                isListening={isChatOpen && (isTyping || sheetInput.trim().length > 0)}
-                onReady={() => setIsAvatarFirstFrameReady(true)}
-                onBoop={() => {
-                  // gentle boop feedback
-                }}
-              />
-            ) : (
+            {(avatarMode === '2d' || !isAvatarFirstFrameReady) && (
               <FurryNovaStaticAvatar
                 size={isChatOpen ? drawerWidth : homeAvatarRect.width}
                 isListening={isChatOpen && (isTyping || sheetInput.trim().length > 0)}
                 className="w-full h-full"
               />
+            )}
+            {avatarMode === '3d' && shouldMountToday3D && (
+              <div
+                className={`absolute inset-0 w-full h-full transition-opacity duration-200 ${
+                  isAvatarFirstFrameReady ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                }`}
+              >
+                <React.Suspense fallback={null}>
+                  <LazyNovaAvatar3D
+                    isActiveTab={activeTab === 'Today'}
+                    isTransitioning={transitionPhase === 'opening' || transitionPhase === 'closing'}
+                    className="w-full h-full"
+                    mode="3d"
+                    isListening={isChatOpen && (isTyping || sheetInput.trim().length > 0)}
+                    onReady={() => setIsAvatarFirstFrameReady(true)}
+                    onBoop={() => {
+                      // gentle boop feedback
+                    }}
+                  />
+                </React.Suspense>
+              </div>
             )}
           </div>
         </motion.div>
@@ -3938,7 +4167,7 @@ export default function App() {
             }
           }}
           style={{
-            paddingBottom: `${Math.max(bottomBarHeight + 16, 152)}px`,
+            paddingBottom: `${Math.max(bottomBarHeight + 16, 80)}px`,
           }}
           className={`flex-1 relative ${
             isPlanCardOpen ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden no-scrollbar'
@@ -3971,7 +4200,7 @@ export default function App() {
                   exit={{ opacity: 0 }}
                   transition={{ duration: shouldReduceMotion ? 0.05 : 0.24 }}
                   style={{
-                    bottom: `${Math.max(bottomBarHeight - 24, 96)}px`,
+                    bottom: `${Math.max(bottomBarHeight - 16, 48)}px`,
                     WebkitMaskImage:
                       'linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.65) 38%, rgba(0,0,0,0.95) 72%, transparent 100%)',
                     maskImage:
@@ -4656,8 +4885,8 @@ export default function App() {
                 style={{
                   bottom:
                     frameSize.height < 700
-                      ? `${Math.max(bottomBarHeight + 2, 134)}px`
-                      : `${Math.max(bottomBarHeight + 6, 140)}px`,
+                      ? `${Math.max(bottomBarHeight + 8, 72)}px`
+                      : `${Math.max(bottomBarHeight + 12, 76)}px`,
                 }}
                 className="absolute inset-x-0 w-full z-30 flex flex-col items-center justify-end pointer-events-none"
               >
@@ -5285,6 +5514,9 @@ export default function App() {
                 onDeleteRestRecord={handleDeleteRestRecord}
                 onClearDayRecords={handleClearDayRecords}
                 onNavigateToToday={() => setActiveTab('Today')}
+                isNovaChatOpen={isChatOpen}
+                onOpenPlanNovaChat={openPlanNovaChat}
+                onOverlayChange={setIsPlanOverlayOpen}
               />
             </React.Suspense>
           )}
@@ -5306,105 +5538,35 @@ export default function App() {
           )}
         </div>
 
-        {/* 4. Bottom Floating Section: Liquid Glass Input (Hidden on Plan) & Apple Health Style Liquid Glass Tab Capsule */}
-        <div 
-          ref={bottomBarRef}
-          className="absolute bottom-0 inset-x-0 px-5 pt-2 pb-1 flex flex-col gap-2 pointer-events-none"
-        >
-          {/* Conversational Input Entry (Hidden on Plan tab to increase viewport space) */}
-          {activeTab !== 'Plan' && (
-            <div
-              id="bottom-talk-to-nova-bar"
-              className="liquid-glass-pill liquid-glass-pill-interactive relative z-30 pointer-events-auto w-full rounded-full pl-[6px] pr-4.5 py-[2px] flex items-center min-h-[48px] transition-colors"
-            >
-              <button
-                type="button"
-                id="home-add-attachment-btn"
-                onClick={() => handleAttachmentButtonClick('home')}
-                aria-label="Add attachment"
-                className="genki-chat-attach-btn mr-[4px]"
-              >
-                <Plus className="w-5 h-5" strokeWidth={1.75} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                id="bottom-talk-to-nova-btn"
-                onClick={openGeneralNovaChat}
-                className="genki-mobile-chat-entry genki-mobile-focus flex-1 min-w-0 min-h-[44px] flex items-center gap-3 text-left bg-transparent border-0 rounded-full cursor-pointer active:opacity-75 transition-opacity"
-                aria-label="Talk to Nova"
-              >
-                <span className="flex-1 min-w-0 truncate text-[15px] leading-[22px] text-[#3C3C43] font-medium select-none tracking-[-0.01em]">
-                  Talk to Nova…
-                </span>
-                <span
-                  aria-hidden="true"
-                  className="w-7 h-7 rounded-full liquid-glass-icon-well text-[#5E5BAE] flex items-center justify-center shrink-0"
-                >
-                  <Mic className="w-4 h-4 stroke-[2.2]" />
-                </span>
-              </button>
-            </div>
-          )}
-
-          {/* 3 Bottom Navigation Tabs in Floating Liquid Glass Capsule (Apple Health Reference Style) */}
-          <nav
-            aria-label="Primary navigation"
-            className="liquid-glass-pill relative z-30 pointer-events-auto p-1 rounded-full grid grid-cols-3 gap-1"
-          >
-            {[
-              { id: 'Today', icon: Calendar },
-              { id: 'Plan', icon: Sliders },
-              { id: 'Discover', icon: Compass },
-            ].map((tab) => {
-              const isActive = activeTab === tab.id;
-              const Icon = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  id={`nav-tab-${tab.id.toLowerCase()}`}
-                  type="button"
-                  onPointerEnter={() => {
-                    if (tab.id === 'Plan') void loadPlanView().catch(() => {});
-                    if (tab.id === 'Discover') void loadDiscoverView().catch(() => {});
-                  }}
-                  onFocus={() => {
-                    if (tab.id === 'Plan') void loadPlanView().catch(() => {});
-                    if (tab.id === 'Discover') void loadDiscoverView().catch(() => {});
-                  }}
-                  onPointerDown={() => {
-                    if (tab.id === 'Plan') void loadPlanView().catch(() => {});
-                    if (tab.id === 'Discover') void loadDiscoverView().catch(() => {});
-                  }}
-                  onClick={() => {
-                    const nextTab = tab.id as 'Today' | 'Plan' | 'Discover';
-                    if (nextTab === 'Plan') {
-                      setHasVisitedPlan(true);
-                      if (activeTab !== 'Plan') {
-                        setPlanEntryCount((count) => count + 1);
-                      }
-                    }
-                    if (nextTab === 'Discover') setHasVisitedDiscover(true);
-                    setActiveTab(nextTab);
-                  }}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={`genki-mobile-focus flex flex-col items-center gap-0.5 py-1.5 px-3 rounded-full transition-all min-h-[46px] justify-center cursor-pointer active:scale-[0.97] ${
-                    isActive
-                      ? 'liquid-glass-active-tab text-[#5E5BAE] font-semibold'
-                      : 'text-[#2C2C2E] hover:text-[#1C1C1E] font-medium'
-                  }`}
-                >
-                  <Icon className={`w-[19px] h-[19px] ${isActive ? 'stroke-[2.4]' : 'stroke-[2]'}`} />
-                  <span className="text-[13px] tracking-[-0.01em] leading-none mt-0.5">{tab.id}</span>
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* 5. iOS Home Gesture Indicator Bar */}
-          <div className="relative z-30 pt-0.5 pb-1 flex items-center justify-center select-none shrink-0">
-            <div className="w-32 h-1 bg-[#1C1C1E]/20 rounded-full" />
-          </div>
-        </div>
+        {/* 4. Shared Single-Row Floating Bottom Navigation: Left Tab Capsule + Right Morphing Nova Button */}
+        <SharedBottomNav
+          activeTab={activeTab as PrimaryTabId}
+          onSelectTab={(nextTab) => {
+            if (nextTab === 'Plan') {
+              setHasVisitedPlan(true);
+              if (activeTab !== 'Plan') {
+                setPlanEntryCount((count) => count + 1);
+              }
+            }
+            if (nextTab === 'Discover') setHasVisitedDiscover(true);
+            setActiveTab(nextTab);
+          }}
+          onPrefetchTab={(tabId) => {
+            if (tabId === 'Plan') void loadPlanView().catch(() => {});
+            if (tabId === 'Discover') void loadDiscoverView().catch(() => {});
+          }}
+          isHidden={isSharedBottomNavHidden}
+          isExpanded={isBottomNovaExpanded}
+          onExpandedChange={setIsBottomNovaExpanded}
+          inputValue={bottomNovaDraft}
+          onInputChange={setBottomNovaDraft}
+          onSubmitMessage={handleSubmitBottomNovaMessage}
+          onAttachClick={() => handleAttachmentButtonClick('home')}
+          attachments={chatAttachments}
+          onRemoveAttachment={handleRemoveAttachment}
+          barRef={bottomBarRef}
+          shouldReduceMotion={shouldReduceMotion}
+        />
 
         {/* 6. Rich Media Plan Detail Sheet with Smooth Entrance & Exit */}
         <AnimatePresence>
@@ -5580,7 +5742,10 @@ export default function App() {
         {/* 7. AI Conversation Drawer / Sheet with smooth entrance and exit */}
         <AnimatePresence onExitComplete={() => setIsChatSheetExited(true)}>
           {isChatOpen && (
-            <div className="absolute inset-0 z-40 overflow-hidden flex flex-col justify-end pointer-events-auto">
+            <div
+              id="nova-chat-drawer-overlay"
+              className={`absolute inset-0 ${activePlanChat ? 'z-[70]' : 'z-40'} overflow-hidden flex flex-col justify-end pointer-events-auto`}
+            >
               {/* Dimmed Backdrop (Softened to bg-black/16 backdrop-blur-[1.5px] so Home contours remain discernible) */}
               <motion.div 
                 onClick={closeChatWithTransition} 
@@ -5605,7 +5770,9 @@ export default function App() {
                         ease: [0.32, 0.72, 0, 1],
                       }
                 }
-                className="relative bg-white/95 backdrop-blur-2xl rounded-t-[32px] border-t border-white/90 shadow-[0_-16px_48px_rgba(28,28,45,0.14)] flex flex-col h-[74%] max-h-[580px] z-10 text-[#1C1C1E]"
+                className={`relative bg-white/95 backdrop-blur-2xl rounded-t-[32px] border-t border-white/90 shadow-[0_-16px_48px_rgba(28,28,45,0.14)] flex flex-col ${
+                  activePlanChat ? 'h-[86%] max-h-[720px]' : 'h-[74%] max-h-[580px]'
+                } z-10 text-[#1C1C1E]`}
               >
                 {/* Close Button Top-Right (Independent of Nova) */}
                 <button
@@ -5617,12 +5784,31 @@ export default function App() {
                   <X className="w-4 h-4 stroke-[2.2]" />
                 </button>
 
-                {/* Header with Centered Nickname "Nova" */}
-                <div className="pt-14 pb-2 px-5 border-b border-black/[0.06] flex items-center justify-center shrink-0">
-                  <h3 className="genki-mobile-sheet-title text-[17px] font-bold text-[#1C1C1E] tracking-tight text-center">
-                    Nova
-                  </h3>
-                </div>
+                {/* Header: Plan edit action title + compact Nova avatar, or centered "Nova" for Today chat */}
+                {activePlanChat ? (
+                  <div className="pt-4 pb-3 px-5 pr-14 border-b border-black/[0.06] flex items-center gap-2.5 shrink-0">
+                    <div className="w-8 h-8 rounded-full overflow-hidden shrink-0 bg-[#F3F0FA] flex items-center justify-center">
+                      <FurryNovaStaticAvatar size={32} isListening={isTyping} className="w-8 h-8" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3
+                        id="nova-chat-header-title"
+                        className="text-[17px] leading-[22px] font-bold text-[#1C1C1E] tracking-tight truncate"
+                      >
+                        {activePlanChat.actionTitle}
+                      </h3>
+                      <p className="text-[12px] leading-[16px] text-[#787287] truncate">
+                        Nova · {activePlanChat.sourceLabel}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pt-14 pb-2 px-5 border-b border-black/[0.06] flex items-center justify-center shrink-0">
+                    <h3 className="genki-mobile-sheet-title text-[17px] font-bold text-[#1C1C1E] tracking-tight text-center">
+                      Nova
+                    </h3>
+                  </div>
+                )}
 
                 {/* Animated Inner Content (Header, Messages, Input) */}
                 <motion.div
@@ -5709,6 +5895,23 @@ export default function App() {
                         </div>
                       );
                     })}
+                    {activePlanChat && (
+                      <div className="pt-1">
+                        <React.Suspense
+                          fallback={
+                            <div className="w-full h-24 rounded-[20px] bg-white/80 border border-black/[0.06] animate-pulse" />
+                          }
+                        >
+                          <LazyPlanNovaChatWidget
+                            key={activePlanChat.id}
+                            request={activePlanChat}
+                            incomingTextEvent={planChatTextEvent}
+                            onAppendNovaNotice={handleAppendPlanNovaNotice}
+                            onClose={closeChatWithTransition}
+                          />
+                        </React.Suspense>
+                      </div>
+                    )}
                     <div ref={chatMessagesEndRef} />
                   </div>
 

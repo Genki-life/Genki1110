@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pencil } from 'lucide-react';
+import '@fontsource/caveat/latin-600.css';
 import {
   isCaveat600Loaded,
   preloadCaveat600,

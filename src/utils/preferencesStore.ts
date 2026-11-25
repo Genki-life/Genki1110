@@ -293,11 +293,12 @@ export function loadPreferences(): PreferenceItem[] {
   return [];
 }
 
-export function savePreferences(items: PreferenceItem[]): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
+export function savePreferences(items: PreferenceItem[]): boolean {
+  if (typeof window === 'undefined' || !window.localStorage) return false;
   try {
     window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(items));
+    return true;
   } catch {
-    // Ignore storage quota or private mode errors
+    return false;
   }
 }

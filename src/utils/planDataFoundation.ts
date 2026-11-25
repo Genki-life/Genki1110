@@ -18,7 +18,7 @@ import {
   toLocalDateKey,
 } from './weeklyPlanStore';
 import { PLAN_PATH_STORAGE_KEY } from './planPhaseStore';
-import { FOCUS_STORAGE_KEY, LEGACY_DIRECTION_STORAGE_KEYS } from './prototypeDemoSeed';
+import { FOCUS_STORAGE_KEY, LEGACY_DIRECTION_STORAGE_KEYS } from './previewRuntime';
 
 // ============================================================================
 // SCHEMA VERSION & STORAGE KEYS

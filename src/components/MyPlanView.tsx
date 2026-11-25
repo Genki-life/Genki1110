@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { HandwrittenGoalText } from './HandwrittenGoalText';
 import { FurryNovaStaticAvatar } from './Avatar3D/FurryNovaStaticAvatar';
-import { NovaAvatar3D } from './Avatar3D/NovaAvatar3D';
+import { LazyNovaAvatar3D } from './Avatar3D/loadNovaAvatar3D';
 import {
   ActivityCategory,
   ActivityCompletionRecord,
@@ -66,9 +66,7 @@ import {
   FOCUS_STORAGE_KEY,
   LEGACY_DIRECTION_STORAGE_KEYS,
   PLAN_REVIEW_PREVIEW_PROFILE_ID,
-  loadPreviewProfileStore,
-  savePreviewProfileStore,
-} from '../utils/prototypeDemoSeed';
+} from '../utils/previewRuntime';
 import { IllustrativeRhythmGraphic } from './IllustrativeRhythmGraphic';
 import { WorkoutActivityIcon, getWorkoutDisplayLabel } from './WorkoutActivityIcon';
 import { YourJourneyView, type JourneyActionResult } from './YourJourneyView';
@@ -136,6 +134,11 @@ import {
   loadPreferences,
   savePreferences,
 } from '../utils/preferencesStore';
+import type {
+  PlanNovaChatRequest,
+  PlanNovaCommitResult,
+} from './PlanNovaChatWidgets';
+import type { CompletedGoalNextStepChoice } from '../utils/planDataFoundation';
 
 export type { MemoryCategory };
 export type MemoryItem = PreferenceItem;
@@ -671,16 +674,19 @@ interface MyPlanViewProps {
   planEntryToken?: number;
   previewProfileId?: string | null;
   planStore?: PlanFoundationStore;
-  onUpdatePlanStore?: (updater: (prev: PlanFoundationStore) => PlanFoundationStore) => void;
+  onUpdatePlanStore?: (updater: (prev: PlanFoundationStore) => PlanFoundationStore) => boolean | void;
   activityRecords?: ActivityCompletionRecord[];
   restRecords?: RestRecord[];
-  onAddManualActivity?: (input: ManualActivityInput) => void;
-  onUpdateActivity?: (recordId: string, patch: ActivityUpdatePatch) => void;
-  onDeleteActivity?: (recordId: string) => void;
-  onUpsertRestDay?: (dateKey: string, note?: string) => void;
-  onDeleteRestRecord?: (restId: string) => void;
-  onClearDayRecords?: (dateKey: string) => void;
+  onAddManualActivity?: (input: ManualActivityInput) => boolean | void;
+  onUpdateActivity?: (recordId: string, patch: ActivityUpdatePatch) => boolean | void;
+  onDeleteActivity?: (recordId: string) => boolean | void;
+  onUpsertRestDay?: (dateKey: string, note?: string) => boolean | void;
+  onDeleteRestRecord?: (restId: string) => boolean | void;
+  onClearDayRecords?: (dateKey: string) => boolean | void;
   onNavigateToToday?: () => void;
+  isNovaChatOpen?: boolean;
+  onOpenPlanNovaChat?: (request: PlanNovaChatRequest) => void;
+  onOverlayChange?: (hasOverlay: boolean) => void;
 }
 
 const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
@@ -734,12 +740,14 @@ const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
             isReady ? 'opacity-100' : 'opacity-0'
           }`}
         >
-          <NovaAvatar3D
-            variant="compact"
-            isActiveTab={isActive}
-            onReady={handleReady}
-            className="w-full h-full"
-          />
+          <React.Suspense fallback={null}>
+            <LazyNovaAvatar3D
+              variant="compact"
+              isActiveTab={isActive}
+              onReady={handleReady}
+              className="w-full h-full"
+            />
+          </React.Suspense>
         </div>
       )}
     </div>
@@ -771,15 +779,6 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-section-header {display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;column-gap:12px;row-gap:4px;}
 .genki-plan-section-header-row {display:flex;align-items:center;justify-content:space-between;column-gap:8px;min-height:28px;}
 .genki-plan-section-header-right {display:inline-flex;align-items:center;justify-content:flex-end;gap:6px;flex-shrink:0;}
-.genki-plan-section-header-with-date {display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;column-gap:6px;min-height:28px;}
-.genki-plan-section-header-with-date .genki-plan-section-title {grid-row:1;grid-column:1;}
-.genki-plan-section-header-with-date .genki-plan-section-date {grid-row:1;grid-column:2;margin-left:0;}
-.genki-plan-section-header-with-date .genki-plan-section-chevron-btn {grid-row:1;grid-column:3;}
-@media (max-width: 359px) {
-  .genki-plan-section-header-with-date {grid-template-columns:minmax(0,1fr) auto;row-gap:2px;}
-  .genki-plan-section-header-with-date .genki-plan-section-chevron-btn {grid-row:1;grid-column:2;}
-  .genki-plan-section-header-with-date .genki-plan-section-date {grid-row:2;grid-column:1 / -1;text-align:left;justify-self:start;}
-}
 .genki-plan-section-chevron-btn {width:44px;height:44px;min-width:44px;min-height:44px;padding:0;margin:-9px -14px -9px 0;border:0;border-radius:999px;background:transparent;color:#706A7C;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;touch-action:manipulation;transition:color 140ms ease,background-color 140ms ease,opacity 140ms ease;}
 .genki-plan-section-chevron-btn:hover {color:#514879;background:rgba(119,112,182,0.08);}
 .genki-plan-section-chevron-btn:active {opacity:.72;}
@@ -889,15 +888,45 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-control-secondary:not(:disabled):hover {background:#E4E2F1;}
 .genki-plan-control-icon {width:44px;height:44px;min-width:44px;min-height:44px;padding:0;flex-shrink:0;border-radius:999px;background:#F2F2F7;display:inline-flex;align-items:center;justify-content:center;}
 .genki-plan-control-icon svg {width:20px;height:20px;}
+.genki-plan-last-week-metrics {margin-top:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px;row-gap:8px;align-items:start;}
+.genki-plan-last-week-metric-item {display:flex;flex-direction:column;min-width:0;}
+.genki-plan-last-week-metric-value {font-size:32px;font-weight:600;line-height:36px;letter-spacing:-0.025em;color:#302D3D;font-variant-numeric:tabular-nums;}
+.genki-plan-last-week-metric-value-unknown {color:#8B8498;}
+.genki-plan-last-week-metric-label {margin-top:4px;font-size:12px;font-weight:400;line-height:17px;color:#706A7C;}
 .genki-plan-feedback-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}
 @media (max-width: 359px) {.genki-plan-feedback-grid {grid-template-columns:1fr;}}
 .genki-plan-control-feedback {width:100%;min-width:0;min-height:56px;padding:10px 8px;border-radius:12px;border:1px solid transparent;background:#F1EFF6;color:#615B73;font-size:14px;font-weight:500;line-height:18px;display:flex;align-items:center;justify-content:center;text-align:center;white-space:normal;overflow-wrap:break-word;}
+.genki-plan-control-feedback-stacked {flex-direction:column;gap:5px;min-height:68px;padding:10px 6px;}
+.genki-plan-control-feedback-emoji {font-size:20px;line-height:22px;display:block;}
+.genki-plan-control-feedback-label {font-size:13px;font-weight:500;line-height:17px;display:block;}
 .genki-plan-control-feedback:hover {background:#EAE6F4;}
 .genki-plan-control-feedback[aria-pressed="true"] {border-color:#BEB4DE;background:#E5E0F3;color:#514879;}
+.genki-plan-feedback-hint {margin-top:8px;font-size:12px;font-weight:400;line-height:17px;color:#706A7C;white-space:normal;overflow-wrap:break-word;}
 .genki-plan-screen [aria-label="Additional plan sections"] > button {min-height:56px;}
 .genki-plan-screen [id$="progress"] {font-variant-numeric:tabular-nums;}
 @media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-header-goal-btn,.genki-plan-header-inline-pencil,.genki-plan-section-chevron-btn,.genki-plan-section-date-chevron-btn,.genki-plan-week-day-btn,.genki-plan-workout-icon-item,.genki-plan-rhythm-node-btn,.genki-plan-rhythm-node-label,.genki-plan-rhythm-journey-btn,.genki-plan-week-row,.genki-plan-workout-row,.genki-plan-week-nav-btn,.genki-plan-week-back-btn,.genki-plan-view-all-btn,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill {transition:none;} .genki-plan-week-content-fade {animation:none;}}
 `;
+
+const PRIMARY_WEEKLY_FIT_DISPLAY: Record<
+  WeeklyReviewFitAnswer,
+  { emoji: string; label: string; hint: string }
+> = {
+  hard_to_fit_in: {
+    emoji: '😕',
+    label: 'Hard to fit',
+    hint: 'We can make it easier.',
+  },
+  about_right: {
+    emoji: '🙂',
+    label: 'About right',
+    hint: 'Let’s keep this pace.',
+  },
+  room_for_more: {
+    emoji: '🙌',
+    label: 'Room for more',
+    hint: 'We can build gently.',
+  },
+};
 
 export function MyPlanView({
   phoneFrameRef,
@@ -915,6 +944,9 @@ export function MyPlanView({
   onDeleteRestRecord,
   onClearDayRecords,
   onNavigateToToday,
+  isNovaChatOpen = false,
+  onOpenPlanNovaChat,
+  onOverlayChange,
 }: MyPlanViewProps) {
   // Real device date state with automatic local midnight & background-resume sync
   const [deviceToday, setDeviceToday] = useState(getDeviceTodayState);
@@ -1023,6 +1055,49 @@ export function MyPlanView({
   const [historyReturnModule, setHistoryReturnModule] = useState<'plan' | 'journey' | 'weekly_review'>('plan');
   const planScrollRef = useRef<HTMLDivElement | null>(null);
   const savedPlanScrollTopRef = useRef<number>(0);
+  const secondarySheetScrollRef = useRef<HTMLDivElement | null>(null);
+  const savedSecondaryScrollTopRef = useRef<number>(0);
+  const prevNovaChatOpenRef = useRef<boolean>(false);
+
+  // Preserve and restore originating Plan primary or secondary sheet scroll position across Nova chat open/close
+  useEffect(() => {
+    const wasOpen = prevNovaChatOpenRef.current;
+    prevNovaChatOpenRef.current = isNovaChatOpen;
+    if (!wasOpen && isNovaChatOpen && selectedModule === null && planScrollRef.current) {
+      savedPlanScrollTopRef.current = planScrollRef.current.scrollTop;
+    }
+    if (wasOpen && !isNovaChatOpen) {
+      if (selectedModule) {
+        const targetTop = savedSecondaryScrollTopRef.current;
+        if (typeof window !== 'undefined') {
+          window.requestAnimationFrame(() => {
+            if (secondarySheetScrollRef.current) {
+              secondarySheetScrollRef.current.scrollTop = targetTop;
+            }
+          });
+        }
+      } else {
+        const targetTop = savedPlanScrollTopRef.current;
+        if (typeof window !== 'undefined') {
+          window.requestAnimationFrame(() => {
+            if (planScrollRef.current) {
+              planScrollRef.current.scrollTop = targetTop;
+            }
+          });
+        }
+      }
+    }
+  }, [isNovaChatOpen, selectedModule]);
+
+  const launchPlanNovaChat = useCallback(
+    (request: PlanNovaChatRequest) => {
+      if (secondarySheetScrollRef.current) {
+        savedSecondaryScrollTopRef.current = secondarySheetScrollRef.current.scrollTop;
+      }
+      onOpenPlanNovaChat?.(request);
+    },
+    [onOpenPlanNovaChat]
+  );
 
   const openSecondaryModule = useCallback(
     (
@@ -1043,9 +1118,9 @@ export function MyPlanView({
   );
 
   const openUnifiedGoalAdjustFlow = useCallback(() => {
-    setGoalSheetInitialMode('adjust');
-    setGoalSheetActiveMode('adjust');
-    setGoalOpenedDirectlyForAdjust(true);
+    setGoalSheetInitialMode('overview');
+    setGoalSheetActiveMode('overview');
+    setGoalOpenedDirectlyForAdjust(false);
     openSecondaryModule('goal', 'plan');
   }, [openSecondaryModule]);
 
@@ -1113,8 +1188,10 @@ export function MyPlanView({
   const isWeekAdjustOpen = editingWeekTarget !== null;
   const [weekDraft, setWeekDraft] = useState<WeeklySchedule>(() => DEFAULT_WEEKLY_DRAFT);
   const weekNavSeqRef = useRef<number>(0);
-  // In-place selected date on the first-level This week 7-day track (null = full week summary)
-  const [selectedTrackDateKey, setSelectedTrackDateKey] = useState<string | null>(null);
+  // In-place selected date on the first-level This week 7-day track (defaults to local today)
+  const [selectedTrackDateKey, setSelectedTrackDateKey] = useState<string>(
+    () => deviceToday.dateStr
+  );
   const [weekActivitySheet, setWeekActivitySheet] = useState<{
     open: boolean;
     weekStartKey: string;
@@ -1166,6 +1243,31 @@ export function MyPlanView({
   const [memoryChatMessages, setMemoryChatMessages] = useState<MemoryChatMessage[]>([]);
   const [memoryChatInput, setMemoryChatInput] = useState<string>('');
   const memoryChatEndRef = useRef<HTMLDivElement>(null);
+
+  // Notify App when any Plan secondary sheet or modal overlay is open so persistent Talk to Nova bar stays hidden underneath
+  const hasPlanOverlay =
+    selectedModule !== null ||
+    weekActivitySheet.open ||
+    isFocusAdjustOpen ||
+    isHabitConfirmOpen ||
+    isWeekAdjustOpen ||
+    isMonthPickerOpen ||
+    activeDayModalDate !== null ||
+    selectedMemory !== null ||
+    memoryToDelete !== null ||
+    isMemoryInfoModalOpen ||
+    isPrefFormOpen ||
+    isMemoryChatOpen;
+
+  useEffect(() => {
+    onOverlayChange?.(hasPlanOverlay);
+  }, [hasPlanOverlay, onOverlayChange]);
+
+  useEffect(() => {
+    return () => {
+      onOverlayChange?.(false);
+    };
+  }, [onOverlayChange]);
 
   // Scroll chat containers to bottom
   useEffect(() => {
@@ -1471,14 +1573,17 @@ export function MyPlanView({
     [planStore]
   );
 
-  // Leaving the Plan tab and returning closes the activity detail sheet and resets its week back to current week.
+  // Leaving or returning to the Plan tab resets the 7-day track to local today (so re-entering Plan
+  // never flashes a previously selected day or full-week summary) and resets the activity detail sheet.
   const prevIsActiveForWeekRef = useRef<boolean>(isActive);
   useEffect(() => {
     const wasActive = prevIsActiveForWeekRef.current;
     prevIsActiveForWeekRef.current = isActive;
-    if (!wasActive && isActive) {
+    if (wasActive && !isActive) {
+      setSelectedTrackDateKey(deviceToday.dateStr);
+    } else if (!wasActive && isActive) {
       weekNavSeqRef.current += 1;
-      setSelectedTrackDateKey(null);
+      setSelectedTrackDateKey(deviceToday.dateStr);
       setWeekActivitySheet({
         open: false,
         weekStartKey: currentWeekBounds.weekStartKey,
@@ -1487,7 +1592,7 @@ export function MyPlanView({
         expandAllTypes: false,
       });
     }
-  }, [isActive, currentWeekBounds.weekStartKey]);
+  }, [isActive, currentWeekBounds.weekStartKey, deviceToday.dateStr]);
 
   // Follow live current week across local midnight rollover when sheet is on the previous current week
   const prevCurrentWeekKeyRef = useRef<string>(currentWeekBounds.weekStartKey);
@@ -1495,14 +1600,14 @@ export function MyPlanView({
     const prevKey = prevCurrentWeekKeyRef.current;
     prevCurrentWeekKeyRef.current = currentWeekBounds.weekStartKey;
     if (prevKey !== currentWeekBounds.weekStartKey) {
-      setSelectedTrackDateKey(null);
+      setSelectedTrackDateKey(deviceToday.dateStr);
       setWeekActivitySheet((curr) =>
         curr.weekStartKey === prevKey
           ? { ...curr, weekStartKey: currentWeekBounds.weekStartKey }
           : curr
       );
     }
-  }, [currentWeekBounds.weekStartKey]);
+  }, [currentWeekBounds.weekStartKey, deviceToday.dateStr]);
 
   // First-level "This week" snapshot ALWAYS reflects the current calendar week
   const currentWeekSnapshot = useMemo(
@@ -1608,10 +1713,17 @@ export function MyPlanView({
 
   const handleRetryRhythmQuery = useCallback(() => {
     if (onUpdatePlanStore) {
-      const reloaded = previewProfileId
-        ? loadPreviewProfileStore(previewProfileId)
-        : loadPlanFoundationStore();
-      onUpdatePlanStore(() => reloaded);
+      if (previewProfileId) {
+        void import('../utils/prototypeDemoSeed')
+          .then((mod) => {
+            const reloaded = mod.loadPreviewProfileStore(previewProfileId);
+            onUpdatePlanStore(() => reloaded);
+          })
+          .catch(() => {});
+      } else {
+        const reloaded = loadPlanFoundationStore();
+        onUpdatePlanStore(() => reloaded);
+      }
     }
     setRhythmRetryNonce((n) => n + 1);
   }, [onUpdatePlanStore, previewProfileId]);
@@ -1685,6 +1797,23 @@ export function MyPlanView({
     [effectivePlanStore, referenceTodayDate, activeRhythmHabit]
   );
 
+  // Synchronized week snapshot for last completed week coverage/load-failure status
+  const lastWeekReviewSnapshot = useMemo(
+    () =>
+      getPlanWeekSnapshot(
+        effectivePlanStore,
+        weeklyReviewModel.weekStartKey,
+        referenceTodayDate
+      ),
+    [effectivePlanStore, weeklyReviewModel.weekStartKey, referenceTodayDate]
+  );
+  const isLastWeekMovementDaysUnknown =
+    lastWeekReviewSnapshot.hasLoadFailure ||
+    (!weeklyReviewModel.isCoverageKnown && weeklyReviewModel.movementDaysCount === 0);
+  const isLastWeekDoneTasksUnknown =
+    lastWeekReviewSnapshot.hasLoadFailure ||
+    (!weeklyReviewModel.isCoverageKnown && weeklyReviewModel.doneTaskCount === 0);
+
   // Primary Weekly review inline error / retry state (unanswered questionnaire only)
   const [weeklyReviewSaveError, setWeeklyReviewSaveError] = useState<string | null>(null);
   const [weeklyReviewFailedAnswer, setWeeklyReviewFailedAnswer] =
@@ -1712,17 +1841,21 @@ export function MyPlanView({
   // In preview profile mode, persists strictly to the isolated preview namespace.
   const tryCommitPlanStoreUpdate = useCallback(
     (updater: (prev: PlanFoundationStore) => PlanFoundationStore): boolean => {
+      if (onUpdatePlanStore) {
+        const result = onUpdatePlanStore(updater);
+        return result !== false;
+      }
       const next = updater(effectivePlanStore);
       if (next === effectivePlanStore) return true;
-      const didSave =
-        previewProfileId || next.isTestFixture
-          ? savePreviewProfileStore(previewProfileId ?? PLAN_REVIEW_PREVIEW_PROFILE_ID, next)
-          : savePlanFoundationStore(next);
-      if (!didSave) return false;
-      if (onUpdatePlanStore) {
-        onUpdatePlanStore(() => next);
+      if (previewProfileId || next.isTestFixture) {
+        void import('../utils/prototypeDemoSeed')
+          .then((mod) => {
+            mod.savePreviewProfileStore(previewProfileId ?? PLAN_REVIEW_PREVIEW_PROFILE_ID, next);
+          })
+          .catch(() => {});
+        return true;
       }
-      return true;
+      return savePlanFoundationStore(next);
     },
     [effectivePlanStore, onUpdatePlanStore, previewProfileId]
   );
@@ -2287,7 +2420,8 @@ export function MyPlanView({
   // Atomic Goal detail / Unified Setup & Adjust / Review together / Completion lifecycle handlers
   const handleGoalAdjust = useCallback(
     (
-      input: Omit<AdjustGoalCommitmentInput, 'dateKey' | 'timestamp' | 'activeHabit'>
+      input: Omit<AdjustGoalCommitmentInput, 'dateKey' | 'timestamp' | 'activeHabit'>,
+      options?: { stayOnDetail?: boolean }
     ): JourneyActionResult => {
       const hadConfirmedGoal = hasConfirmedCommitment;
       let nextCommitmentSummary: string | null = null;
@@ -2328,7 +2462,9 @@ export function MyPlanView({
           persistFocusToStorage(syncedDirection);
         }
       }
-      closeSecondaryModuleToPlan();
+      if (!options?.stayOnDetail) {
+        closeSecondaryModuleToPlan();
+      }
       showPlanToast(
         !hadConfirmedGoal
           ? 'Plan saved'
@@ -2344,6 +2480,7 @@ export function MyPlanView({
       deviceToday.dateStr,
       direction,
       hasConfirmedCommitment,
+      previewProfileId,
       tryCommitPlanStoreUpdate,
     ]
   );
@@ -2442,6 +2579,11 @@ export function MyPlanView({
   );
 
   const triggerPrimaryFitSelect = (answer: WeeklyReviewFitAnswer) => {
+    if (weeklyReviewModel.fitAnswer === answer) {
+      setWeeklyReviewSaveError(null);
+      setWeeklyReviewFailedAnswer(null);
+      return;
+    }
     const res = handleWeeklyFitSelect(answer);
     if (!res.ok) {
       setWeeklyReviewSaveError(res.error ?? 'Couldn’t save your feedback. Please try again.');
@@ -2702,7 +2844,79 @@ export function MyPlanView({
     setDayDraftNote('');
   };
 
+  const openLogWorkoutInNova = (dateStr: string) => {
+    const hasExisting =
+      activityRecords.some((r) => r.dateKey === dateStr) ||
+      restRecords.some((r) => r.dateKey === dateStr);
+    launchPlanNovaChat({
+      id: `log-workout-${dateStr}-${Date.now()}`,
+      kind: 'log_workout',
+      actionTitle: hasExisting ? 'Edit day' : 'Log a workout',
+      sourceModule: 'history',
+      sourceLabel: 'History',
+      introMessage: hasExisting
+        ? 'Review or update this day’s entries below, or type a workout to add.'
+        : 'Pick a workout below or type what you did — nothing saves until you confirm.',
+      inputPlaceholder: 'e.g. 15 min walk after dinner…',
+      initialDateKey: dateStr,
+      activityRecords,
+      restRecords,
+      onAddActivity: (input): PlanNovaCommitResult => {
+        const res = onAddManualActivity?.(input);
+        if (res === false) {
+          return { ok: false, error: "Couldn't save workout. Try again." };
+        }
+        showPlanToast('Workout logged');
+        return { ok: true };
+      },
+      onUpdateActivity: (recordId, patch): PlanNovaCommitResult => {
+        const res = onUpdateActivity?.(recordId, patch);
+        if (res === false) {
+          return { ok: false, error: "Couldn't update workout. Try again." };
+        }
+        showPlanToast('Workout updated');
+        return { ok: true };
+      },
+      onDeleteActivity: (recordId): PlanNovaCommitResult => {
+        const res = onDeleteActivity?.(recordId);
+        if (res === false) {
+          return { ok: false, error: "Couldn't remove workout. Try again." };
+        }
+        showPlanToast('Workout removed');
+        return { ok: true };
+      },
+      onUpsertRestDay: (dk, note): PlanNovaCommitResult => {
+        const res = onUpsertRestDay?.(dk, note);
+        if (res === false) {
+          return { ok: false, error: "Couldn't save rest day. Try again." };
+        }
+        showPlanToast('Rest day saved');
+        return { ok: true };
+      },
+      onDeleteRestRecord: (restId): PlanNovaCommitResult => {
+        const res = onDeleteRestRecord?.(restId);
+        if (res === false) {
+          return { ok: false, error: "Couldn't remove rest day. Try again." };
+        }
+        showPlanToast('Rest day removed');
+        return { ok: true };
+      },
+      onClearDay: (dk): PlanNovaCommitResult => {
+        const res = onClearDayRecords?.(dk);
+        if (res === false) {
+          return { ok: false, error: "Couldn't clear day. Try again." };
+        }
+        showPlanToast('Day cleared');
+        return { ok: true };
+      },
+    });
+  };
+
   const handleOpenDayDetail = (dateStr: string) => {
+    if (onOpenPlanNovaChat) {
+      openLogWorkoutInNova(dateStr);
+      return;
+    }
     setActiveDayModalDate(dateStr);
     resetDayActivityDraft();
   };
@@ -2942,15 +3156,367 @@ export function MyPlanView({
 
   const updatePreferencesState = (
     updater: (prev: PreferenceItem[]) => PreferenceItem[]
+  ): boolean => {
+    const next = updater(memories);
+    const saved = savePreferences(next);
+    if (!saved) return false;
+    setMemories(next);
+    return true;
+  };
+
+  const openPreferenceInNova = (
+    mode: 'add' | 'edit' | 'confirm',
+    item?: PreferenceItem | null
   ) => {
-    setMemories((prev) => {
-      const next = updater(prev);
-      savePreferences(next);
-      return next;
+    setSelectedMemory(null);
+    launchPlanNovaChat({
+      id: `pref-${mode}-${item?.id ?? 'new'}-${Date.now()}`,
+      kind: 'edit_preference',
+      actionTitle:
+        mode === 'confirm'
+          ? 'Confirm preference'
+          : mode === 'edit'
+          ? 'Edit preference'
+          : 'Add preference',
+      sourceModule: 'preferences',
+      sourceLabel: 'Preferences',
+      introMessage:
+        mode === 'confirm' && item
+          ? `Does this fit you: “${formatAsCheckQuestion(item.title)}”? Edit if needed, then confirm.`
+          : mode === 'edit' && item
+          ? `Update “${item.title}” below or type how you’d like it phrased.`
+          : 'Tell me what helps movement fit your routine, or pick an option below.',
+      inputPlaceholder: 'Type a preference…',
+      mode,
+      existingItem: item ?? undefined,
+      onSave: ({ title, shortTag, summary, category }): PlanNovaCommitResult => {
+        if (item) {
+          const ok = updatePreferencesState((prev) =>
+            prev.map((m) =>
+              m.id === item.id
+                ? {
+                    ...m,
+                    title,
+                    shortTag: shortTag || m.shortTag,
+                    summary: summary ?? m.summary,
+                    category: category === 'check' ? 'feels_right' : category,
+                    isConfirmed: true,
+                    source: 'user_explicit',
+                    learnedFrom: mode === 'confirm' ? 'Confirmed by you.' : m.learnedFrom,
+                    updatedAt: 'Updated just now',
+                  }
+                : m
+            )
+          );
+          if (!ok) return { ok: false, error: "Couldn't save preference. Try again." };
+          showMemoryFeedback(mode === 'confirm' ? 'Preference confirmed' : 'Preference updated');
+          return {
+            ok: true,
+            confirmedSummary:
+              mode === 'confirm' ? `Confirmed “${title}”.` : `Updated “${title}”.`,
+          };
+        }
+        const newItem: PreferenceItem = {
+          id: `pref-user-${Date.now()}`,
+          category: 'feels_right',
+          title,
+          shortTag: shortTag || undefined,
+          summary: summary || '',
+          learnedFrom: 'Added by you.',
+          howItHelps: '',
+          updatedAt: 'Saved just now',
+          isConfirmed: true,
+          source: 'user_explicit',
+        };
+        const ok = updatePreferencesState((prev) => [newItem, ...prev]);
+        if (!ok) return { ok: false, error: "Couldn't save preference. Try again." };
+        showMemoryFeedback('Preference saved');
+        return { ok: true, confirmedSummary: `Saved “${title}”.` };
+      },
+      onIgnorePending:
+        mode === 'confirm' && item
+          ? (): PlanNovaCommitResult => {
+              const ok = updatePreferencesState((prev) => prev.filter((m) => m.id !== item.id));
+              if (!ok) return { ok: false, error: "Couldn't update preferences. Try again." };
+              showMemoryFeedback('Suggestion ignored');
+              return { ok: true, confirmedSummary: 'Ignored suggestion.' };
+            }
+          : undefined,
+      onDelete:
+        mode === 'edit' && item
+          ? (): PlanNovaCommitResult => {
+              const ok = updatePreferencesState((prev) => prev.filter((m) => m.id !== item.id));
+              if (!ok) return { ok: false, error: "Couldn't remove preference. Try again." };
+              showMemoryFeedback('Preference removed');
+              return { ok: true, confirmedSummary: 'Preference removed.' };
+            }
+          : undefined,
+    });
+  };
+
+  const openAdjustGoalInNova = (initialMode: 'strategy' | 'direction') => {
+    const primaryHabit = activeRhythmHabit ?? effectiveCommitment?.strategies?.[0] ?? null;
+    const hasGoal = Boolean(hasConfirmedCommitment && effectiveCommitment);
+    launchPlanNovaChat({
+      id: `adjust-goal-${Date.now()}`,
+      kind: 'adjust_goal',
+      actionTitle: !hasGoal ? 'Set a focus' : 'Adjust goal',
+      sourceModule: 'goal',
+      sourceLabel: 'About this goal',
+      introMessage: !hasGoal
+        ? 'Pick a focus and a small starting strategy below, or type your own.'
+        : 'Adjust your strategy or goal below. Nothing changes until you confirm.',
+      inputPlaceholder:
+        initialMode === 'direction' ? 'Type a new goal…' : 'Type an updated strategy…',
+      hasExistingCommitment: hasGoal,
+      initialMode,
+      initialValues: {
+        goalText: effectiveCommitment?.summary ?? '',
+        strategyText:
+          effectiveCommitment?.strategySummary ??
+          deriveCommitmentStrategyLine(effectiveCommitment) ??
+          '',
+        habitName: primaryHabit?.label ?? '',
+        habitRegularAction: primaryHabit?.regularAction ?? '',
+        habitMinimumAction: primaryHabit?.minimumAction ?? '',
+        habitFrequency: primaryHabit?.frequencyDescription ?? '',
+      },
+      onCommit: (input): PlanNovaCommitResult => {
+        const res = handleGoalAdjust(input, { stayOnDetail: true });
+        if (!res.ok) return { ok: false, error: res.error };
+        return {
+          ok: true,
+          confirmedSummary: !hasGoal ? `Saved focus: ${input.summary}` : 'Goal updated.',
+        };
+      },
+    });
+  };
+
+  const openReviewGoalInNova = () => {
+    if (!effectiveCommitment) return;
+    launchPlanNovaChat({
+      id: `review-goal-${Date.now()}`,
+      kind: 'review_goal',
+      actionTitle: 'Review goal',
+      sourceModule: 'goal',
+      sourceLabel: 'About this goal',
+      introMessage: `How does “${effectiveCommitment.summary}” feel right now? Choose an option or add a note.`,
+      inputPlaceholder: 'Add a note (optional)…',
+      goalTitle: effectiveCommitment.summary,
+      initialFeeling: effectiveCommitment.reviewReflection?.feeling ?? 'steady',
+      initialNote: effectiveCommitment.reviewReflection?.outsidePracticeNote ?? '',
+      onCommit: ({ decision, feeling, outsideAppNote }): PlanNovaCommitResult => {
+        const res =
+          decision === 'mark_complete'
+            ? handleGoalConfirmCompletion({ feeling, outsidePracticeNote: outsideAppNote })
+            : handleGoalKeepExploring({ feeling, outsidePracticeNote: outsideAppNote });
+        if (!res.ok) return { ok: false, error: res.error };
+        return {
+          ok: true,
+          confirmedSummary:
+            decision === 'mark_complete' ? 'Goal marked complete.' : 'Check-in saved.',
+        };
+      },
+    });
+  };
+
+  const openGoalNextStepInNova = (choice: CompletedGoalNextStepChoice) => {
+    if (!effectiveCommitment) return;
+    const primaryHabit = activeRhythmHabit ?? effectiveCommitment.strategies?.[0] ?? null;
+    launchPlanNovaChat({
+      id: `goal-next-step-${choice}-${Date.now()}`,
+      kind: 'goal_next_step',
+      actionTitle: 'Choose next step',
+      sourceModule: 'goal',
+      sourceLabel: 'About this goal',
+      introMessage: 'Review your next step below and confirm when ready.',
+      inputPlaceholder:
+        choice === 'new_focus' ? 'Type a new focus…' : 'Type an updated strategy…',
+      initialChoice: choice,
+      currentGoalText: effectiveCommitment.summary,
+      currentStrategyText:
+        effectiveCommitment.strategySummary ??
+        deriveCommitmentStrategyLine(effectiveCommitment) ??
+        '',
+      currentHabitName: primaryHabit?.label ?? '',
+      currentHabitAction: primaryHabit?.regularAction ?? '',
+      onCommit: (input): PlanNovaCommitResult => {
+        const res = handleGoalApplyNextStep({
+          choice: input.choice,
+          nextStrategySummary: input.strategyText,
+          nextRegularAction: input.habitRegularAction || input.strategyText,
+          nextMinimumAction: input.habitMinimumAction,
+          newFocusSummary: input.choice === 'new_focus' ? input.goalText : undefined,
+          newFocusOriginalIntent: input.choice === 'new_focus' ? input.goalText : undefined,
+        });
+        if (!res.ok) return { ok: false, error: res.error };
+        return { ok: true, confirmedSummary: 'Next step saved.' };
+      },
+    });
+  };
+
+  const openEditHabitInNova = (existing?: ConfirmedActionStrategy | null) => {
+    const isNew = !existing;
+    launchPlanNovaChat({
+      id: `edit-habit-${existing?.habitId ?? 'new'}-${Date.now()}`,
+      kind: 'edit_habit',
+      actionTitle: isNew ? 'Confirm a habit' : 'Edit habit',
+      sourceModule: 'journey',
+      sourceLabel: 'Your journey',
+      introMessage: isNew
+        ? 'Pick a small habit to track in Your journey, then confirm.'
+        : `Update “${existing.label}” below. Nothing changes until you confirm.`,
+      inputPlaceholder: 'Type your regular action…',
+      isConfirmingNew: isNew,
+      initialValues: {
+        habitName: existing?.label ?? '',
+        regularAction: existing?.regularAction ?? '',
+        minimumAction: existing?.minimumAction ?? '',
+      },
+      onCommit: ({ habitName, regularAction, minimumAction }): PlanNovaCommitResult => {
+        let savedHabitId: string | null = null;
+        const ok = tryCommitPlanStoreUpdate((prev) => {
+          const res = confirmHabitStrategy(prev, {
+            habitId: existing?.habitId,
+            label: habitName,
+            regularAction,
+            minimumAction,
+            cueTiming: existing?.cueTiming,
+            alternativeAction: existing?.alternativeAction,
+            frequencyDescription: existing?.frequencyDescription,
+            confirmTrackingStartDateKey: deviceToday.dateStr,
+          });
+          savedHabitId = res.strategy.habitId;
+          return res.store;
+        });
+        if (!ok) {
+          return { ok: false, error: "Couldn't save habit. Try again." };
+        }
+        if (savedHabitId) setSelectedRhythmHabitId(savedHabitId);
+        showPlanToast(isNew ? 'Habit confirmed' : 'Habit updated');
+        return { ok: true, confirmedSummary: `Saved habit: ${habitName}.` };
+      },
+    });
+  };
+
+  const openStartingFeelInNova = (source: 'journey' | 'weekly_review') => {
+    launchPlanNovaChat({
+      id: `starting-feel-${source}-${Date.now()}`,
+      kind: 'starting_feel',
+      actionTitle: source === 'weekly_review' ? 'How starting felt' : 'How starting feels',
+      sourceModule: source,
+      sourceLabel: source === 'weekly_review' ? 'Weekly review' : 'Your journey',
+      introMessage:
+        source === 'weekly_review'
+          ? 'How did starting feel last week? Pick an option and confirm.'
+          : 'How does starting feel right now? Pick an option and confirm.',
+      inputPlaceholder: 'Or describe how starting feels…',
+      initialValue: source === 'weekly_review' ? weeklyReviewModel.startingFeelAnswer : null,
+      contextLabel: source,
+      onCommit: (level): PlanNovaCommitResult => {
+        const res =
+          source === 'weekly_review'
+            ? handleWeeklyStartingFeelSelect(level)
+            : handleJourneySaveFeelingCheckIn(level);
+        if (!res.ok) return { ok: false, error: res.error };
+        return { ok: true, confirmedSummary: 'Check-in saved.' };
+      },
+    });
+  };
+
+  const openSuggestionInNova = (
+    step: JourneyNextStepExperiment,
+    source: 'journey' | 'weekly_review'
+  ) => {
+    const editableAfter =
+      step.kind === 'make_smaller' ||
+      step.kind === 'shift_cue' ||
+      step.kind === 'add_alternative';
+    launchPlanNovaChat({
+      id: `suggestion-${step.suggestionId}-${Date.now()}`,
+      kind: 'review_suggestion',
+      actionTitle: step.kind === 'keep_rhythm' ? 'Keep this rhythm' : 'Review adjustment',
+      sourceModule: source,
+      sourceLabel: source === 'weekly_review' ? 'Weekly review' : 'Your journey',
+      introMessage: step.basis || 'Review the change below before confirming.',
+      inputPlaceholder: editableAfter ? 'Type an alternative setting…' : 'Type a note…',
+      suggestionTitle: step.title,
+      beforeLabel: step.beforeLabel,
+      afterLabel: step.afterLabel,
+      editableAfter,
+      initialAfterValue: step.suggestedFieldValue ?? step.afterLabel,
+      primaryConfirmLabel:
+        step.kind === 'keep_rhythm' ? 'Confirm keeping rhythm' : 'Confirm update',
+      onConfirm: (editedValue): PlanNovaCommitResult => {
+        const res =
+          source === 'weekly_review'
+            ? handleWeeklyConfirmSuggestion(step, editedValue)
+            : handleJourneyConfirmNextStep(step, editedValue);
+        if (!res.ok) return { ok: false, error: res.error };
+        return { ok: true, confirmedSummary: `Applied: ${step.title}.` };
+      },
+      onDismiss: (): PlanNovaCommitResult => {
+        const res =
+          source === 'weekly_review'
+            ? handleWeeklyDismissSuggestion(step)
+            : handleJourneyDismissNextStep(step);
+        if (!res.ok) return { ok: false, error: res.error };
+        return { ok: true, confirmedSummary: 'Kept your current setup.' };
+      },
+    });
+  };
+
+  const openWeeklyFitInNova = () => {
+    launchPlanNovaChat({
+      id: `weekly-fit-${weeklyReviewModel.weekStartKey}-${Date.now()}`,
+      kind: 'weekly_fit',
+      actionTitle: 'Update weekly answer',
+      sourceModule: 'weekly_review',
+      sourceLabel: 'Weekly review',
+      introMessage: `How did movement fit into ${weeklyReviewModel.rangeLabel}? Select an option and confirm.`,
+      inputPlaceholder: 'Or tell Nova how the week felt…',
+      weekRangeLabel: weeklyReviewModel.rangeLabel,
+      initialFit: weeklyReviewModel.fitAnswer,
+      initialFollowUp: weeklyReviewModel.followUpAnswer,
+      onCommit: ({ fit, followUp }): PlanNovaCommitResult => {
+        const fitRes = handleWeeklyFitSelect(fit);
+        if (!fitRes.ok) return { ok: false, error: fitRes.error };
+        if (fit === 'hard_to_fit_in' && followUp) {
+          const fuRes = handleWeeklyFollowUpSelect(followUp);
+          if (!fuRes.ok) return { ok: false, error: fuRes.error };
+        }
+        return { ok: true, confirmedSummary: 'Weekly answer saved.' };
+      },
+    });
+  };
+
+  const openWeeklyNoteInNova = () => {
+    launchPlanNovaChat({
+      id: `weekly-note-${weeklyReviewModel.weekStartKey}-${Date.now()}`,
+      kind: 'weekly_note',
+      actionTitle: weeklyReviewModel.selfReport.status === 'note' ? 'Edit weekly note' : 'Add weekly note',
+      sourceModule: 'weekly_review',
+      sourceLabel: 'Weekly review',
+      introMessage: `Add a short note for ${weeklyReviewModel.rangeLabel}, or skip.`,
+      inputPlaceholder: 'Type a short note…',
+      weekRangeLabel: weeklyReviewModel.rangeLabel,
+      initialNote: weeklyReviewModel.selfReport.note ?? '',
+      onCommit: ({ note, skipped }): PlanNovaCommitResult => {
+        const res = handleWeeklySelfReportSave(skipped ? '__skipped__' : note);
+        if (!res.ok) return { ok: false, error: res.error };
+        return {
+          ok: true,
+          confirmedSummary: skipped ? 'Skipped note.' : 'Weekly note saved.',
+        };
+      },
     });
   };
 
   const handleOpenAddPreference = () => {
+    if (onOpenPlanNovaChat) {
+      openPreferenceInNova('add', null);
+      return;
+    }
     setPrefFormEditingId(null);
     setPrefDraftTitle('');
     setPrefDraftTag('');
@@ -2960,6 +3526,10 @@ export function MyPlanView({
 
   const handleOpenEditPreference = (item: PreferenceItem, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (onOpenPlanNovaChat) {
+      openPreferenceInNova('edit', item);
+      return;
+    }
     setSelectedMemory(null);
     setPrefFormEditingId(item.id);
     setPrefDraftTitle(item.title.replace(/\?+$/, '').trim());
@@ -3017,6 +3587,11 @@ export function MyPlanView({
 
   const handleConfirmPendingMemory = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    const target = memories.find((m) => m.id === id);
+    if (onOpenPlanNovaChat && target) {
+      openPreferenceInNova('confirm', target);
+      return;
+    }
     updatePreferencesState((prev) =>
       prev.map((m) =>
         m.id === id
@@ -3076,6 +3651,10 @@ export function MyPlanView({
 
   const handleStartTalkToNovaMemory = (item?: MemoryItem | null, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    if (onOpenPlanNovaChat) {
+      openPreferenceInNova(item ? 'edit' : 'add', item ?? null);
+      return;
+    }
     setSelectedMemory(null);
     setEditingMemory(item || null);
     setMemoryChatInput('');
@@ -3273,7 +3852,7 @@ export function MyPlanView({
   return (
     <div
       ref={planScrollRef}
-      className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(8rem+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none"
+      className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(88px+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none"
     >
       <style>{GENKI_PLAN_UI_STYLES}</style>
       {/* Toast Notifications */}
@@ -3443,134 +4022,133 @@ export function MyPlanView({
               </p>
             </div>
 
-            {/* 2c. Clickable 7-day Monday-Sunday track (toggles in-place day filter below; no popup) */}
-            <div
-              id="this-week-seven-day-track"
-              role="group"
-              aria-label="This week daily activity"
-              className="genki-plan-week-track mt-[16px]"
-            >
-              {currentWeekSnapshot.days.map((day) => {
-                const isFutureDisabled =
-                  day.isFuture &&
-                  day.doneTaskCount === 0 &&
-                  day.standaloneExerciseCount === 0 &&
-                  !day.explicitRest;
-                const isSelected = selectedTrackDateKey === day.dateKey;
-                return (
-                  <button
-                    key={day.dateKey}
-                    type="button"
-                    disabled={isFutureDisabled}
-                    aria-disabled={isFutureDisabled ? 'true' : undefined}
-                    aria-pressed={isSelected}
-                    aria-label={day.ariaLabel}
-                    data-date-key={day.dateKey}
-                    data-day-status={day.visualState}
-                    data-completed-count={day.doneTaskCount}
-                    data-is-today={day.isToday ? 'true' : undefined}
-                    data-selected={isSelected ? 'true' : undefined}
-                    onClick={() => {
-                      if (isFutureDisabled) return;
-                      setSelectedTrackDateKey((prev) => (prev === day.dateKey ? null : day.dateKey));
-                    }}
-                    className="genki-plan-week-day-btn"
-                  >
-                    <span aria-hidden="true" className="genki-plan-week-day-letter">
-                      {day.weekdayLetter}
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className={`genki-plan-week-day-num ${
-                        day.isToday ? 'genki-plan-week-day-num-today' : ''
-                      }`}
-                    >
-                      {day.dayNumber}
-                    </span>
-                    <span aria-hidden="true" className="genki-plan-week-day-indicator">
-                      {day.visualState === 'done' ? (
-                        <span className="genki-plan-week-dot genki-plan-week-dot-completed" />
-                      ) : day.visualState === 'rest' ? (
-                        <span className="genki-plan-week-dash-rest" />
-                      ) : day.visualState === 'past' ? (
-                        <span className="genki-plan-week-dot genki-plan-week-dot-past" />
-                      ) : day.visualState === 'unknown' ? (
-                        <span className="genki-plan-week-unknown-mark">?</span>
-                      ) : (
-                        <span className="genki-plan-week-dot genki-plan-week-dot-future" />
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* 2d. Compact horizontal workout category row (full week by default; swaps in-place for selected day) */}
+            {/* 2c & 2d. Clickable 7-day Monday-Sunday track (defaults to local today) + single-day workout icons */}
             {(() => {
-              const displayedWorkoutTypes = selectedTrackDateKey
-                ? getDayWorkoutTypeSummary(currentWeekSnapshot, selectedTrackDateKey)
-                : currentWeekSnapshot.workoutSummary.allTypes;
+              const activeTrackDateKey = currentWeekSnapshot.days.some(
+                (day) => day.dateKey === selectedTrackDateKey
+              )
+                ? selectedTrackDateKey
+                : deviceToday.dateStr;
+              const displayedWorkoutTypes = getDayWorkoutTypeSummary(
+                currentWeekSnapshot,
+                activeTrackDateKey
+              );
 
-              if (displayedWorkoutTypes.length > 0) {
-                return (
+              return (
+                <>
                   <div
-                    id="this-week-workout-icons"
-                    role="list"
-                    aria-live="polite"
-                    aria-label={
-                      selectedTrackDateKey
-                        ? `Workout summary for ${selectedTrackDateKey}`
-                        : 'This week workout summary'
-                    }
-                    data-scope={selectedTrackDateKey ? 'day' : 'week'}
-                    data-selected-date={selectedTrackDateKey ?? ''}
-                    className="genki-plan-workout-icon-row"
+                    id="this-week-seven-day-track"
+                    role="group"
+                    aria-label="This week daily activity"
+                    className="genki-plan-week-track mt-[16px]"
                   >
-                    {displayedWorkoutTypes.map((row) => {
-                      const displayLabel = getWorkoutDisplayLabel(row.key, row.label);
-                      const sessionWord = row.count === 1 ? 'session' : 'sessions';
+                    {currentWeekSnapshot.days.map((day) => {
+                      const isFutureDisabled =
+                        day.isFuture &&
+                        day.doneTaskCount === 0 &&
+                        day.standaloneExerciseCount === 0 &&
+                        !day.explicitRest;
+                      const isSelected = activeTrackDateKey === day.dateKey;
                       return (
-                        <div
-                          key={row.key}
-                          role="listitem"
-                          data-workout-type-item={row.key}
-                          data-workout-label={displayLabel}
-                          data-workout-count={row.count}
-                          aria-label={`${displayLabel}, ${row.count} ${sessionWord}`}
-                          className="genki-plan-workout-icon-item"
+                        <button
+                          key={day.dateKey}
+                          type="button"
+                          disabled={isFutureDisabled}
+                          aria-disabled={isFutureDisabled ? 'true' : undefined}
+                          aria-pressed={isSelected}
+                          aria-label={day.ariaLabel}
+                          data-date-key={day.dateKey}
+                          data-day-status={day.visualState}
+                          data-completed-count={day.doneTaskCount}
+                          data-is-today={day.isToday ? 'true' : undefined}
+                          data-selected={isSelected ? 'true' : undefined}
+                          onClick={() => {
+                            if (isFutureDisabled) return;
+                            setSelectedTrackDateKey(day.dateKey);
+                          }}
+                          className="genki-plan-week-day-btn"
                         >
-                          <WorkoutActivityIcon typeKey={row.key} size={20} className="shrink-0" />
-                          <span aria-hidden="true" className="genki-plan-workout-icon-count">
-                            {row.count}
+                          <span aria-hidden="true" className="genki-plan-week-day-letter">
+                            {day.weekdayLetter}
                           </span>
-                        </div>
+                          <span
+                            aria-hidden="true"
+                            className={`genki-plan-week-day-num ${
+                              day.isToday ? 'genki-plan-week-day-num-today' : ''
+                            }`}
+                          >
+                            {day.dayNumber}
+                          </span>
+                          <span aria-hidden="true" className="genki-plan-week-day-indicator">
+                            {day.visualState === 'done' ? (
+                              <span className="genki-plan-week-dot genki-plan-week-dot-completed" />
+                            ) : day.visualState === 'rest' ? (
+                              <span className="genki-plan-week-dash-rest" />
+                            ) : day.visualState === 'past' ? (
+                              <span className="genki-plan-week-dot genki-plan-week-dot-past" />
+                            ) : day.visualState === 'unknown' ? (
+                              <span className="genki-plan-week-unknown-mark">?</span>
+                            ) : (
+                              <span className="genki-plan-week-dot genki-plan-week-dot-future" />
+                            )}
+                          </span>
+                        </button>
                       );
                     })}
                   </div>
-                );
-              }
 
-              if (!currentWeekSnapshot.isWeekCoverageUnknown) {
-                return (
-                  <p
-                    id="this-week-no-workouts"
-                    className="mt-[16px] text-[14px] font-normal leading-[20px] text-[#8B8498]"
-                  >
-                    {selectedTrackDateKey
-                      ? 'No workouts recorded on this day.'
-                      : 'No workouts recorded yet.'}
-                  </p>
-                );
-              }
-
-              return null;
+                  {displayedWorkoutTypes.length > 0 ? (
+                    <div
+                      id="this-week-workout-icons"
+                      role="list"
+                      aria-live="polite"
+                      aria-label={`Workout summary for ${activeTrackDateKey}`}
+                      data-scope="day"
+                      data-selected-date={activeTrackDateKey}
+                      className="genki-plan-workout-icon-row"
+                    >
+                      {displayedWorkoutTypes.map((row) => {
+                        const displayLabel = getWorkoutDisplayLabel(row.key, row.label);
+                        const sessionWord = row.count === 1 ? 'session' : 'sessions';
+                        return (
+                          <div
+                            key={row.key}
+                            role="listitem"
+                            data-workout-type-item={row.key}
+                            data-workout-label={displayLabel}
+                            data-workout-count={row.count}
+                            aria-label={`${displayLabel}, ${row.count} ${sessionWord}`}
+                            className="genki-plan-workout-icon-item"
+                          >
+                            <WorkoutActivityIcon typeKey={row.key} size={20} className="shrink-0" />
+                            <span aria-hidden="true" className="genki-plan-workout-icon-count">
+                              {row.count}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : !currentWeekSnapshot.isWeekCoverageUnknown ? (
+                    <p
+                      id="this-week-no-workouts"
+                      data-scope="day"
+                      data-selected-date={activeTrackDateKey}
+                      className="mt-[16px] text-[14px] font-normal leading-[20px] text-[#8B8498]"
+                    >
+                      {activeTrackDateKey === deviceToday.dateStr
+                        ? 'No workouts yet today.'
+                        : 'No workouts recorded on this day.'}
+                    </p>
+                  ) : null}
+                </>
+              );
             })()}
           </div>
         </section>
 
         <div aria-hidden="true" className="genki-plan-section-divider" />
 
-        {/* 3. Weekly review (strictly completed week; compact summary once answered) */}
+        {/* 3. Last week (strictly completed week; persistent inline layout across unanswered & answered states) */}
         <section
           id="plan-module-weekly-review"
           data-review-week={weeklyReviewModel.weekStartKey}
@@ -3584,23 +4162,29 @@ export function MyPlanView({
           aria-labelledby="plan-heading-weekly-review"
           className="flex flex-col"
         >
-          <div className="genki-plan-section-header-with-date">
+          <div className="genki-plan-section-header-row">
             <h2 id="plan-heading-weekly-review" className="genki-plan-section-title">
-              Weekly review
+              Last week
             </h2>
-            {weeklyReviewModel.hasReviewableWeek && (
-              <span id="weekly-review-date-range" className="genki-plan-section-date">
-                {weeklyReviewModel.rangeLabel}
-              </span>
-            )}
             <button
               type="button"
               id="weekly-review-view-btn"
-              aria-label="View review"
+              aria-label={
+                weeklyReviewModel.hasReviewableWeek
+                  ? `View review for ${weeklyReviewModel.rangeLabel}`
+                  : 'View review'
+              }
               onClick={() => openSecondaryModule('weekly_review', 'plan')}
-              className="genki-plan-section-chevron-btn"
+              className={
+                weeklyReviewModel.hasReviewableWeek
+                  ? 'genki-plan-section-date-chevron-btn'
+                  : 'genki-plan-section-chevron-btn'
+              }
             >
-              <ChevronRight className="w-4 h-4 stroke-[2.2]" aria-hidden="true" />
+              {weeklyReviewModel.hasReviewableWeek && (
+                <span id="weekly-review-date-range">{weeklyReviewModel.rangeLabel}</span>
+              )}
+              <ChevronRight className="w-4 h-4 stroke-[2.2] shrink-0" aria-hidden="true" />
             </button>
           </div>
 
@@ -3611,62 +4195,60 @@ export function MyPlanView({
             >
               We’ll reflect after your first week.
             </p>
-          ) : weeklyReviewModel.fitAnswer && weeklyReviewModel.fitAnswerLabel ? (
-            (() => {
-              const latestConfirmedDecision =
-                weeklyReviewModel.confirmedDecisions
-                  .filter((d) => d.decision === 'accepted' || d.decision === 'custom')
-                  .slice(-1)[0] ?? null;
-
-              const headlineText = latestConfirmedDecision
-                ? latestConfirmedDecision.summary
-                : weeklyReviewModel.fitAnswerLabel;
-
-              const novaReplyLine = latestConfirmedDecision
-                ? /keep this rhythm/i.test(latestConfirmedDecision.summary)
-                  ? 'Glad this pace feels right — keeping your plan as is.'
-                  : 'Got it — your plan reflects what you confirmed.'
-                : weeklyReviewModel.fitAnswer === 'hard_to_fit_in'
-                ? !weeklyReviewModel.followUpAnswer
-                  ? 'Thanks for sharing — if you’d like to say what got in the way, we can look in review.'
-                  : weeklyReviewModel.pendingSuggestion &&
-                    weeklyReviewModel.pendingSuggestion.decisionStatus === 'pending'
-                  ? 'Thanks for sharing — there’s an optional adjustment ready to look over in review.'
-                  : 'Thanks for sharing — your reflection is noted, and you can revisit anytime.'
-                : weeklyReviewModel.fitAnswer === 'about_right'
-                ? 'Good to hear this week felt steady — you can revisit anytime in review.'
-                : 'Noted — your current plan stays as is unless you choose to adjust it in review.';
-
-              return (
-                <div
-                  id="weekly-review-answered-summary"
-                  role="status"
-                  aria-live="polite"
-                  className="mt-[12px] flex flex-col"
-                >
-                  <p
-                    id="weekly-review-saved-answer"
-                    className="text-[15px] font-semibold leading-[22px] text-[#302D3D]"
-                  >
-                    {headlineText}
-                  </p>
-                  <p
-                    id="weekly-review-nova-reply"
-                    className="mt-[4px] text-[14px] font-normal leading-[20px] text-[#625A76]"
-                  >
-                    {novaReplyLine}
-                  </p>
-                </div>
-              );
-            })()
           ) : (
             <>
-              {/* 1. One evidence-backed fact (15px) */}
-              <p id="weekly-review-fact" className="genki-plan-review-fact mt-[12px]">
-                {weeklyReviewModel.factLine}
-              </p>
+              {/* 1. Side-by-side factual metrics from weeklyReviewModel (no individual cards) */}
+              <div id="weekly-review-metrics" className="genki-plan-last-week-metrics">
+                <div className="genki-plan-last-week-metric-item">
+                  <span
+                    id="weekly-review-movement-days-count"
+                    data-coverage-unknown={isLastWeekMovementDaysUnknown ? 'true' : 'false'}
+                    aria-label={
+                      isLastWeekMovementDaysUnknown
+                        ? lastWeekReviewSnapshot.hasLoadFailure
+                          ? 'Unable to load records'
+                          : 'Records unavailable'
+                        : undefined
+                    }
+                    className={`genki-plan-last-week-metric-value ${
+                      isLastWeekMovementDaysUnknown
+                        ? 'genki-plan-last-week-metric-value-unknown'
+                        : ''
+                    }`}
+                  >
+                    {isLastWeekMovementDaysUnknown ? '—' : weeklyReviewModel.movementDaysCount}
+                  </span>
+                  <span className="genki-plan-last-week-metric-label">
+                    Days with movement
+                  </span>
+                </div>
 
-              {/* 2. Main question (16px) & 3 options (14px, min-h 56px, radius 12px, gap 6px) */}
+                <div className="genki-plan-last-week-metric-item">
+                  <span
+                    id="weekly-review-done-tasks-count"
+                    data-coverage-unknown={isLastWeekDoneTasksUnknown ? 'true' : 'false'}
+                    aria-label={
+                      isLastWeekDoneTasksUnknown
+                        ? lastWeekReviewSnapshot.hasLoadFailure
+                          ? 'Unable to load records'
+                          : 'Records unavailable'
+                        : undefined
+                    }
+                    className={`genki-plan-last-week-metric-value ${
+                      isLastWeekDoneTasksUnknown
+                        ? 'genki-plan-last-week-metric-value-unknown'
+                        : ''
+                    }`}
+                  >
+                    {isLastWeekDoneTasksUnknown ? '—' : weeklyReviewModel.doneTaskCount}
+                  </span>
+                  <span className="genki-plan-last-week-metric-label">
+                    Tasks completed
+                  </span>
+                </div>
+              </div>
+
+              {/* 2. Main question (16px), 3 stacked emoji + short-label options, and 1-line subtle hint */}
               <div id="weekly-review-feedback-block" className="mt-[16px] flex flex-col">
                 <p id="weekly-review-question" className="genki-plan-feedback-question">
                   How did movement fit into your week?
@@ -3677,21 +4259,44 @@ export function MyPlanView({
                   aria-labelledby="weekly-review-question"
                   className="genki-plan-feedback-grid mt-[10px]"
                 >
-                  {WEEKLY_FIT_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      id={`weekly-review-option-${opt.value}`}
-                      aria-pressed={false}
-                      onClick={() => triggerPrimaryFitSelect(opt.value)}
-                      className="genki-plan-control genki-plan-control-feedback"
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                  {WEEKLY_FIT_OPTIONS.map((opt) => {
+                    const display = PRIMARY_WEEKLY_FIT_DISPLAY[opt.value];
+                    const isSelected = weeklyReviewModel.fitAnswer === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        id={`weekly-review-option-${opt.value}`}
+                        aria-pressed={isSelected}
+                        onClick={() => triggerPrimaryFitSelect(opt.value)}
+                        className="genki-plan-control genki-plan-control-feedback genki-plan-control-feedback-stacked"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="genki-plan-control-feedback-emoji"
+                        >
+                          {display.emoji}
+                        </span>
+                        <span className="genki-plan-control-feedback-label">
+                          {display.label}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
 
-                {/* Save error + Retry (retains unanswered state) */}
+                {weeklyReviewModel.fitAnswer && (
+                  <p
+                    id="weekly-review-fit-hint"
+                    role="status"
+                    aria-live="polite"
+                    className="genki-plan-feedback-hint"
+                  >
+                    {PRIMARY_WEEKLY_FIT_DISPLAY[weeklyReviewModel.fitAnswer].hint}
+                  </p>
+                )}
+
+                {/* Save error + Retry (preserves last saved selection) */}
                 {weeklyReviewSaveError && (
                   <div
                     id="weekly-review-save-error"
@@ -3802,7 +4407,11 @@ export function MyPlanView({
         const sheetPortalContent = (
           <AnimatePresence>
             {selectedModule && (
-              <div className="absolute inset-0 z-50 flex flex-col justify-end pointer-events-auto overflow-hidden">
+              <div
+                className={`absolute inset-0 z-50 flex flex-col justify-end overflow-hidden ${
+                  isNovaChatOpen ? 'hidden pointer-events-none' : 'pointer-events-auto'
+                }`}
+              >
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -3813,18 +4422,11 @@ export function MyPlanView({
                 />
 
                 <motion.div
+                  ref={secondarySheetScrollRef}
                   initial={{ y: '100%' }}
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
                   transition={{ type: 'spring', damping: 28, stiffness: 280 }}
-                  style={
-                    (selectedModule === 'journey' ||
-                      selectedModule === 'weekly_review' ||
-                      selectedModule === 'goal') &&
-                    focusKeyboardInset > 0
-                      ? { paddingBottom: `${focusKeyboardInset + 24}px` }
-                      : undefined
-                  }
                   className="relative w-full max-h-[90%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-5 sm:p-6 pb-[calc(24px+env(safe-area-inset-bottom,0px))] shadow-2xl border-t border-white/90 overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
                   id="my-plan-secondary-sheet"
                 >
@@ -3858,10 +4460,21 @@ export function MyPlanView({
                         <button
                           type="button"
                           onClick={() => setIsMemoryInfoModalOpen(true)}
-                          className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#5E5BAE] transition-colors cursor-pointer"
-                          aria-label="How preferences work"
+                          className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[13px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
+                          aria-label="Why preferences"
                         >
-                          <HelpCircle className="w-4 h-4 stroke-[2.2]" />
+                          Why
+                        </button>
+                      )}
+
+                      {selectedModule === 'history' && (
+                        <button
+                          type="button"
+                          id="history-add-activity-btn"
+                          onClick={() => openLogWorkoutInNova(deviceToday.dateStr)}
+                          className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 -mr-2 text-[15px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
+                        >
+                          Add activity
                         </button>
                       )}
                     </div>
@@ -3870,37 +4483,16 @@ export function MyPlanView({
                       <h3 className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
                         {selectedModule === 'journey' && 'Your journey'}
                         {selectedModule === 'weekly_review' && 'Weekly review'}
-                        {selectedModule === 'goal' &&
-                          (goalSheetActiveMode === 'adjust'
-                            ? !hasConfirmedCommitment
-                              ? 'Set a focus'
-                              : !headerStrategyText || !activeRhythmHabit
-                              ? 'Complete your plan'
-                              : 'Adjust goal'
-                            : goalSheetActiveMode === 'review'
-                            ? 'Review goal'
-                            : goalSheetActiveMode === 'confirm_completion'
-                            ? 'Mark this goal complete?'
-                            : effectiveCommitment?.status === 'completed'
-                            ? 'Review together'
-                            : 'About this goal')}
+                        {selectedModule === 'goal' && 'About this goal'}
                         {selectedModule === 'history' && 'History'}
                         {selectedModule === 'preferences' && 'Preferences'}
                         {selectedModule === 'health' && 'Health data'}
                       </h3>
-                      {selectedModule !== 'journey' && selectedModule !== 'goal' && (
-                        <p className="text-[13px] leading-[18px] text-[#6E6E78] mt-0.5 tabular-nums">
-                          {selectedModule === 'weekly_review' && weeklyReviewModel.rangeLabel}
-                          {selectedModule === 'history' && 'Activity calendar, 6-month trend & detailed stats'}
-                          {selectedModule === 'preferences' && 'Saved preferences and pending questions'}
-                          {selectedModule === 'health' && 'Wearable & Apple Health connection status'}
-                        </p>
-                      )}
                     </div>
                   </div>
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 0: YOUR JOURNEY (Full Stage 5 Detail)    */}
+                  {/* SECONDARY PAGE 0: YOUR JOURNEY                          */}
                   {/* ======================================================= */}
                   {selectedModule === 'journey' && (
                     activeRhythmHabit ? (
@@ -3912,24 +4504,24 @@ export function MyPlanView({
                         sharedWeeklyProposal={null}
                         sharedWeeklyExperiment={weeklyReviewModel.pendingSuggestion}
                         resolvedAdjustmentKeys={resolvedAdjustmentKeys}
-                        onEditHabit={(h) => handleOpenHabitConfirm(h)}
+                        onEditHabit={(h) => openEditHabitInNova(h)}
                         onSwitchHabit={handleCycleRhythmHabit}
                         onRetryQuery={handleRetryRhythmQuery}
                         onOpenHistoryFromJourney={() => openSecondaryModule('history', 'journey')}
-                        onSaveFeelingCheckIn={handleJourneySaveFeelingCheckIn}
+                        onOpenStartingFeelInNova={() => openStartingFeelInNova('journey')}
                         onHideStatusConclusion={handleJourneyHideStatusConclusion}
                         onShowStatusConclusion={handleJourneyShowStatusConclusion}
-                        onConfirmNextStep={handleJourneyConfirmNextStep}
+                        onOpenNextStepInNova={(step) => openSuggestionInNova(step, 'journey')}
                         onDismissNextStep={handleJourneyDismissNextStep}
                       />
                     ) : (
                       <div id="view-journey-secondary-page" className="flex flex-col gap-3">
                         <p className="text-[15px] leading-[22px] text-[#625A76]">
-                          Confirm a habit first to follow your rhythm and journey here.
+                          No habit tracked yet.
                         </p>
                         <button
                           type="button"
-                          onClick={() => handleOpenHabitConfirm(null)}
+                          onClick={() => openEditHabitInNova(null)}
                           className="genki-plan-control genki-plan-control-primary self-start min-h-[48px] px-5 rounded-[12px] bg-[#5E5BAE] text-white text-[15px] font-semibold cursor-pointer"
                         >
                           Confirm a habit
@@ -3939,44 +4531,38 @@ export function MyPlanView({
                   )}
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 0B: WEEKLY REVIEW DETAIL (Stage 6)       */}
+                  {/* SECONDARY PAGE 0B: WEEKLY REVIEW DETAIL                 */}
                   {/* ======================================================= */}
                   {selectedModule === 'weekly_review' && (
                     <WeeklyReviewDetailView
                       model={weeklyReviewModel}
                       habit={activeRhythmHabit}
-                      onSelectFitAnswer={handleWeeklyFitSelect}
-                      onSelectFollowUp={handleWeeklyFollowUpSelect}
-                      onConfirmSuggestion={handleWeeklyConfirmSuggestion}
-                      onDismissSuggestion={handleWeeklyDismissSuggestion}
-                      onSelectStartingFeel={handleWeeklyStartingFeelSelect}
-                      onSaveSelfReport={handleWeeklySelfReportSave}
+                      onOpenFitInNova={openWeeklyFitInNova}
+                      onOpenSuggestionInNova={(step) =>
+                        openSuggestionInNova(step, 'weekly_review')
+                      }
+                      onOpenStartingFeelInNova={() => openStartingFeelInNova('weekly_review')}
+                      onOpenSelfReportInNova={openWeeklyNoteInNova}
                       onOpenHistory={() => openSecondaryModule('history', 'weekly_review')}
                     />
                   )}
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 0C: ABOUT THIS GOAL / UNIFIED CONFIRM    */}
+                  {/* SECONDARY PAGE 0C: ABOUT THIS GOAL                      */}
                   {/* ======================================================= */}
                   {selectedModule === 'goal' && (
                     <GoalDetailView
                       store={effectivePlanStore}
                       commitment={hasConfirmedCommitment ? effectiveCommitment : null}
                       activeHabit={activeRhythmHabit}
-                      referenceDate={referenceTodayDate}
-                      initialMode={goalSheetInitialMode}
-                      openedDirectlyForAdjust={goalOpenedDirectlyForAdjust}
-                      onModeChange={setGoalSheetActiveMode}
-                      onCancelToPlan={closeSecondaryModuleToPlan}
-                      onAdjustGoal={handleGoalAdjust}
-                      onKeepExploring={handleGoalKeepExploring}
-                      onConfirmCompletion={handleGoalConfirmCompletion}
-                      onApplyNextStep={handleGoalApplyNextStep}
+                      onOpenAdjustInNova={openAdjustGoalInNova}
+                      onOpenReviewInNova={openReviewGoalInNova}
+                      onOpenNextStepInNova={openGoalNextStepInNova}
                     />
                   )}
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 1: HISTORY (Activity Calendar + 6-Month Trend + Detailed Stats) */}
+                  {/* SECONDARY PAGE 1: HISTORY                               */}
                   {/* ======================================================= */}
                   {selectedModule === 'history' && (
                     <div className="flex flex-col gap-4 text-[13px] leading-[18px] text-[#3C3C43]">
@@ -4025,7 +4611,7 @@ export function MyPlanView({
                           ))}
                         </div>
 
-                        {/* Monthly Calendar Grid (7 equal columns, >= 44x44px touch targets) */}
+                        {/* Monthly Calendar Grid */}
                         <div className="relative select-none overflow-hidden touch-pan-y">
                           <motion.div
                             key={`${viewYear}-${viewMonth}`}
@@ -4091,21 +4677,19 @@ export function MyPlanView({
                           </motion.div>
                         </div>
 
-                        {/* Status Legend & Unified History Source Note */}
-                        <div className="pt-2.5 border-t border-black/[0.05] flex flex-col gap-1.5 text-[13px] leading-[18px] text-[#6E6E78]">
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#5E5BAE]" />
-                              <span className="text-[#1C1C1E] font-medium">Active</span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E59980]" />
-                              <span className="text-[#1C1C1E] font-medium">Rest</span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E5E5EA]" />
-                              <span>No record</span>
-                            </div>
+                        {/* Status Legend */}
+                        <div className="pt-2.5 border-t border-black/[0.05] flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-[18px] text-[#6E6E78]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-[4px] bg-[#5E5BAE]" />
+                            <span className="text-[#1C1C1E] font-medium">Active</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E59980]" />
+                            <span className="text-[#1C1C1E] font-medium">Rest</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E5E5EA]" />
+                            <span>No record</span>
                           </div>
                         </div>
                       </div>
@@ -4118,24 +4702,21 @@ export function MyPlanView({
                         <div className="flex items-baseline justify-between gap-2 flex-wrap">
                           <div className="flex items-center gap-1.5">
                             <TrendingUp className="w-4 h-4 text-[#5E5BAE]" />
-                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[21px]">
-                              Monthly active days
+                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
+                              Active days
                             </span>
                           </div>
-                          <span className="text-[13px] text-[#6E6E78] shrink-0">
-                            {monthlyTrendSeries[0]?.month}–{monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month} {viewYear} · Unit: days (d)
+                          <span className="text-[13px] text-[#6E6E78] shrink-0 tabular-nums">
+                            {monthlyTrendSeries[0]?.month}–{monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month} {viewYear}
                           </span>
                         </div>
-                        <p className="text-[13px] leading-[18px] text-[#6E6E78]">
-                          Days with at least one recorded activity per month across the past 6 months.
-                        </p>
 
                         <MonthlyTrendCurve series={monthlyTrendSeries} compact={false} />
                       </div>
 
                       {/* Detailed Stats Range Toggle */}
                       <div className="flex items-center justify-between bg-[#F2F2F7]/80 p-1 rounded-full border border-black/[0.04]">
-                        <span className="text-[13px] leading-[18px] font-semibold text-[#1C1C1E] pl-3">
+                        <span className="text-[13px] leading-[18px] font-semibold text-[#1C1C1E] pl-3 tabular-nums">
                           {currentRecentData.rangeLabel}
                         </span>
                         <div className="flex items-center gap-1">
@@ -4164,56 +4745,34 @@ export function MyPlanView({
                         </div>
                       </div>
 
-                      <div className="bg-[#F4EEFE]/75 p-4 rounded-[20px] border border-[#5E5BAE]/15 flex flex-col gap-1.5">
-                        <div className="flex items-center gap-1.5 text-[13px] leading-[18px] font-bold text-[#5E5BAE]">
-                          <Sparkles className="w-3.5 h-3.5 text-[#5E5BAE]" />
-                          <span>Summary</span>
-                        </div>
-                        <p className="text-[13px] leading-[19px] text-[#1C1C1E]">
-                          “{currentRecentData.novaObservation}”
-                        </p>
-                      </div>
-
-                      {/* 4 Distinct Metrics: Active Days vs Activities vs Active Time vs Rest Days */}
+                      {/* 4 Metrics */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
                           <span className="text-[13px] font-medium text-[#6E6E78]">Active days</span>
-                          <div className="mt-1">
-                            <span className="text-[18px] font-bold text-[#1C1C1E] leading-none">
-                              {currentRecentData.activeDaysCount}
-                            </span>
-                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">days</span>
-                          </div>
+                          <span className="mt-1 text-[20px] font-bold text-[#1C1C1E] leading-none tabular-nums">
+                            {currentRecentData.activeDaysCount}
+                          </span>
                         </div>
 
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
                           <span className="text-[13px] font-medium text-[#6E6E78]">Activities</span>
-                          <div className="mt-1">
-                            <span className="text-[18px] font-bold text-[#5E5BAE] leading-none">
-                              {currentRecentData.completedCount}
-                            </span>
-                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">sessions</span>
-                          </div>
+                          <span className="mt-1 text-[20px] font-bold text-[#5E5BAE] leading-none tabular-nums">
+                            {currentRecentData.completedCount}
+                          </span>
                         </div>
 
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[13px] font-medium text-[#6E6E78]">Duration</span>
-                          <div className="mt-1">
-                            <span className="text-[18px] font-bold text-[#1C1C1E] leading-none">
-                              {currentRecentData.activeMinutes}
-                            </span>
-                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">minutes</span>
-                          </div>
+                          <span className="text-[13px] font-medium text-[#6E6E78]">Minutes</span>
+                          <span className="mt-1 text-[20px] font-bold text-[#1C1C1E] leading-none tabular-nums">
+                            {currentRecentData.activeMinutes}
+                          </span>
                         </div>
 
                         <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
                           <span className="text-[13px] font-medium text-[#6E6E78]">Rest days</span>
-                          <div className="mt-1">
-                            <span className="text-[18px] font-bold text-[#E59980] leading-none">
-                              {currentRecentData.restDaysCount}
-                            </span>
-                            <span className="text-[13px] text-[#6E6E78] block mt-0.5">rests</span>
-                          </div>
+                          <span className="mt-1 text-[20px] font-bold text-[#E59980] leading-none tabular-nums">
+                            {currentRecentData.restDaysCount}
+                          </span>
                         </div>
                       </div>
 
@@ -4224,43 +4783,32 @@ export function MyPlanView({
                         <div className="flex items-baseline justify-between gap-2 flex-wrap">
                           <div className="flex items-center gap-1.5">
                             <BarChart2 className="w-4 h-4 text-[#5E5BAE]" />
-                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[21px]">
-                              Active minutes ({rhythmFilter === '7d' ? 'by day' : 'by week'})
+                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
+                              Active minutes
                             </span>
                           </div>
-                          <span className="text-[13px] font-medium text-[#5E5BAE]">
-                            {currentRecentData.activeMinutes} min total
+                          <span className="text-[13px] font-medium text-[#5E5BAE] tabular-nums">
+                            {currentRecentData.activeMinutes} min
                           </span>
                         </div>
-                        <p className="text-[13px] leading-[18px] text-[#6E6E78]">
-                          Total recorded activity duration in minutes (m). Rest days are shown separately without adding minutes.
-                        </p>
 
                         <ActiveMinutesBarChart
                           items={currentRecentData.dailyBreakdown}
                           timeframe={rhythmFilter}
                         />
-
-                        <div className="pt-2 border-t border-black/[0.04] flex flex-wrap items-center justify-between gap-2 text-[13px] text-[#6E6E78]">
-                          <span>Purple: Active minutes (m)</span>
-                          <span className="text-[#C7765C]">Peach: Rest days</span>
-                        </div>
                       </div>
 
-                      {/* Recorded Days List for Viewed Month */}
+                      {/* Recorded Days List */}
                       <div className="flex flex-col gap-2.5">
                         <div className="flex items-center justify-between">
-                          <span className="font-bold text-[#1C1C1E] text-[13px]">
-                            Recorded Days ({currentMonthRecords.length})
-                          </span>
-                          <span className="text-[13px] text-[#6E6E78]">
-                            Tap edit to modify or clear
+                          <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
+                            Recorded days ({currentMonthRecords.length})
                           </span>
                         </div>
 
                         {currentMonthRecords.length === 0 ? (
-                          <div className="p-5 text-center rounded-[20px] bg-white border border-black/[0.04] text-[#6E6E78] shadow-2xs">
-                            No activity or rest recorded yet for this month. Tap any day on the calendar grid above to log an action.
+                          <div className="p-4 text-center rounded-[20px] bg-white border border-black/[0.04] text-[15px] text-[#6E6E78]">
+                            No records this month.
                           </div>
                         ) : (
                           <div className="space-y-2">
@@ -4289,7 +4837,7 @@ export function MyPlanView({
                                       />
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-1.5 flex-wrap">
-                                          <span className="font-semibold text-[#1C1C1E] text-[14px] leading-[20px]">
+                                          <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
                                             {dateLabel}
                                           </span>
                                           {isToday && (
@@ -4301,16 +4849,14 @@ export function MyPlanView({
                                         <div className="text-[13px] text-[#6E6E78] mt-0.5 truncate">
                                           {rec.type === 'active' ? (
                                             <span>
-                                              {rec.title} • {sessCount}{' '}
-                                              {sessCount === 1 ? 'activity' : 'activities'} •{' '}
-                                              {rec.durationMinutes}m
+                                              {rec.title} · {sessCount} · {rec.durationMinutes}m
                                             </span>
                                           ) : (
-                                            <span>{rec.title || 'Mindful rest day'}</span>
+                                            <span>{rec.title || 'Rest day'}</span>
                                           )}
                                         </div>
                                         {rec.note && (
-                                          <div className="text-[13px] text-[#6E6E78] mt-0.5 italic truncate">
+                                          <div className="text-[13px] text-[#6E6E78] mt-0.5 truncate">
                                             “{rec.note}”
                                           </div>
                                         )}
@@ -4331,14 +4877,15 @@ export function MyPlanView({
                         )}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setIsMethodologyOpen(true)}
-                        className="genki-plan-control genki-plan-control-base w-full min-h-[44px] py-2.5 px-3 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] text-[13px] font-medium text-[#6E6E78] hover:text-[#1C1C1E] flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-[0.99]"
-                      >
-                        <HelpCircle className="w-3.5 h-3.5 stroke-[2]" />
-                        <span>Data source & calculation methodology</span>
-                      </button>
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setIsMethodologyOpen(true)}
+                          className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[13px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
+                        >
+                          Why
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -4347,17 +4894,17 @@ export function MyPlanView({
                   {/* ======================================================= */}
                   {selectedModule === 'preferences' && (
                     <div id="preferences-secondary-page" className="flex flex-col gap-5 text-[#1C1C1E]">
-                      {/* Section 1: User-provided & confirmed preferences */}
+                      {/* Section 1: Confirmed preferences */}
                       <div id="preferences-confirmed-section" className="flex flex-col gap-2.5">
                         <div className="flex items-center justify-between gap-2">
-                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
-                            Your preferences
+                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
+                            Saved
                           </h4>
                           <button
                             type="button"
                             id="preferences-add-btn"
                             onClick={handleOpenAddPreference}
-                            className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
+                            className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[15px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
                           >
                             Add
                           </button>
@@ -4366,7 +4913,7 @@ export function MyPlanView({
                         {confirmedMemories.length === 0 ? (
                           <div
                             id="preferences-confirmed-empty"
-                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[13px] leading-[18px] text-[#6E6E78]"
+                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[15px] leading-[22px] text-[#6E6E78]"
                           >
                             No saved preferences yet.
                           </div>
@@ -4385,7 +4932,7 @@ export function MyPlanView({
                                     onClick={() => setSelectedMemory(item)}
                                     className="genki-plan-control genki-plan-control-base w-full text-left flex flex-col gap-1 cursor-pointer"
                                   >
-                                    <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                                    <span className="text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
                                       {item.title}
                                     </span>
                                     {item.summary && (
@@ -4396,7 +4943,7 @@ export function MyPlanView({
                                   </button>
 
                                   <div className="mt-1 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-2">
-                                    <span className="text-[13px] font-medium leading-[16px] text-[#6E6E78] truncate">
+                                    <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78] truncate">
                                       {tagLabel}
                                     </span>
 
@@ -4429,14 +4976,14 @@ export function MyPlanView({
                         )}
                       </div>
 
-                      {/* Section 2: Nova's pending inferences (presented as questions) */}
+                      {/* Section 2: Pending confirmation */}
                       <div id="preferences-pending-section" className="flex flex-col gap-2.5">
                         <div className="flex items-center justify-between gap-2">
-                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
                             Needs confirmation
                           </h4>
                           {checkMemories.length > 0 && (
-                            <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
+                            <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78] tabular-nums">
                               {checkMemories.length}
                             </span>
                           )}
@@ -4445,7 +4992,7 @@ export function MyPlanView({
                         {checkMemories.length === 0 ? (
                           <div
                             id="preferences-pending-empty"
-                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[13px] leading-[18px] text-[#6E6E78]"
+                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[15px] leading-[22px] text-[#6E6E78]"
                           >
                             No pending questions.
                           </div>
@@ -4462,7 +5009,7 @@ export function MyPlanView({
                                   onClick={() => setSelectedMemory(item)}
                                   className="genki-plan-control genki-plan-control-base w-full text-left flex flex-col gap-1 cursor-pointer"
                                 >
-                                  <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                                  <span className="text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
                                     {formatAsCheckQuestion(item.title)}
                                   </span>
                                   {item.learnedFrom && (
@@ -4500,7 +5047,7 @@ export function MyPlanView({
                         type="button"
                         id="preferences-talk-nova-btn"
                         onClick={() => handleStartTalkToNovaMemory(null)}
-                        className="genki-plan-control genki-plan-control-base w-full min-h-[44px] px-4 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[14px] font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                        className="genki-plan-control genki-plan-control-base w-full min-h-[44px] px-4 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[15px] font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
                       >
                         <MessageSquare className="w-4 h-4 text-[#5E5BAE] stroke-[2]" />
                         <span>Update in chat</span>
@@ -4509,8 +5056,7 @@ export function MyPlanView({
                   )}
 
                   {/* ======================================================= */}
-                  {/* ======================================================= */}
-                  {/* SECONDARY PAGE 4: HEALTH DATA (Honest Unconnected State)*/}
+                  {/* SECONDARY PAGE 4: HEALTH DATA                           */}
                   {/* ======================================================= */}
                   {selectedModule === 'health' && (
                     <div
@@ -4525,26 +5071,18 @@ export function MyPlanView({
                           <div className="w-9 h-9 rounded-[12px] bg-[#5E5BAE]/[0.08] text-[#5E5BAE] flex items-center justify-center shrink-0">
                             <Heart className="w-4 h-4 stroke-[2]" />
                           </div>
-                          <div className="min-w-0">
-                            <h4 className="genki-plan-subheading text-[17px] font-semibold leading-[23px] text-[#1C1C1E]">
-                              Apple Health is not connected
-                            </h4>
-                            <span className="text-[13px] leading-[18px] text-[#6E6E78]">
-                              Not connected
-                            </span>
-                          </div>
+                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
+                            Apple Health not connected
+                          </h4>
                         </div>
 
-                        <p className="text-[15px] font-normal leading-[22px] text-[#1C1C1E] mt-1">
-                          No biometric or wearable metrics are connected. Metrics stay empty until a source is connected.
-                        </p>
                         <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                          You can plan your week, log activity on Today, and complete weekly reviews without connecting a wearable.
+                          Metrics stay empty until connected.
                         </p>
                       </div>
 
                       <div className="flex flex-col gap-2.5">
-                        <span className="text-[15px] font-semibold leading-[21px] text-[#1C1C1E]">
+                        <span className="text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
                           Metrics
                         </span>
 
@@ -4562,11 +5100,11 @@ export function MyPlanView({
                                     <IconComponent className="w-4 h-4 stroke-[2]" />
                                   </div>
                                   <div className="flex flex-col min-w-0">
-                                    <span className="text-[15px] font-medium leading-[21px] text-[#1C1C1E]">
+                                    <span className="text-[15px] font-medium leading-[22px] text-[#1C1C1E]">
                                       {metric.name}
                                     </span>
                                     <span className="text-[13px] leading-[18px] text-[#6E6E78]">
-                                      Unit: {metric.unit}
+                                      {metric.unit}
                                     </span>
                                   </div>
                                 </div>
@@ -5557,7 +6095,11 @@ export function MyPlanView({
         const activityListPortal = (
           <AnimatePresence>
             {weekActivitySheet.open && (
-              <div className="absolute inset-0 z-60 flex flex-col justify-end pointer-events-auto overflow-hidden">
+              <div
+                className={`absolute inset-0 z-60 flex flex-col justify-end overflow-hidden ${
+                  isNovaChatOpen ? 'hidden pointer-events-none' : 'pointer-events-auto'
+                }`}
+              >
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -5585,7 +6127,7 @@ export function MyPlanView({
                     <div className="min-w-0">
                       <h3
                         id="this-week-activity-sheet-title"
-                        className="genki-plan-sheet-heading text-[18px] font-semibold leading-[24px] tracking-[-0.015em] text-[#302D3D] truncate"
+                        className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] tracking-[-0.02em] text-[#1C1C1E] truncate"
                       >
                         {sheetTitle}
                       </h3>
@@ -5641,7 +6183,7 @@ export function MyPlanView({
                     {sheetWeekSnapshot.showEarlierUnavailableNote && (
                       <p
                         id="this-week-sheet-coverage-note"
-                        className="mt-[2px] pb-1 text-center text-[12px] font-normal leading-[17px] text-[#8B8498]"
+                        className="mt-[2px] pb-1 text-center text-[13px] font-normal leading-[18px] text-[#8B8498]"
                       >
                         Earlier records unavailable
                       </p>
@@ -5657,7 +6199,7 @@ export function MyPlanView({
                           id="this-week-sheet-selected-day-label"
                           className="text-[13px] font-medium leading-[18px] text-[#514879]"
                         >
-                          Showing {selectedDayLabel}
+                          {selectedDayLabel}
                         </span>
                         <button
                           type="button"
@@ -5686,7 +6228,7 @@ export function MyPlanView({
                       id="this-week-sheet-stats"
                       className="flex items-baseline justify-between gap-2"
                     >
-                      <span className="text-[14px] font-medium leading-[20px] text-[#514879] tabular-nums">
+                      <span className="text-[15px] font-medium leading-[22px] text-[#514879] tabular-nums">
                         {sheetWeekSnapshot.isWeekCoverageUnknown && !selectedDateKey
                           ? sheetWeekSnapshot.hasLoadFailure
                             ? 'Unable to load records'
@@ -5695,11 +6237,6 @@ export function MyPlanView({
                               scopedDoneTaskCount === 1 ? 'task' : 'tasks'
                             } completed`}
                       </span>
-                      {!selectedDateKey && (
-                        <span className="text-[12px] font-normal leading-[17px] text-[#8B8498]">
-                          {sheetWeekSnapshot.title}
-                        </span>
-                      )}
                     </div>
 
                     {/* Full workout type summary (full names + icon + count & trustworthy duration) */}

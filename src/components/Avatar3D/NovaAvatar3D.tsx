@@ -30,7 +30,7 @@ export interface NovaAvatar3DProps {
 
 export function NovaAvatar3D({
   isActiveTab = true,
-  fallbackImage = '/kila-home.png',
+  fallbackImage: _fallbackImage,
   className = '',
   onBoop,
   mode = '3d',

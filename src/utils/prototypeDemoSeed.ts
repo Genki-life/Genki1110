@@ -8,32 +8,44 @@ import {
 import {
   PlanFoundationStore,
   StorageLike,
+  addExerciseSession,
   completeTaskCard,
   createEmptyPlanFoundationStore,
   recordLifecycleEvent,
   upsertPhaseCommitment,
 } from './planDataFoundation';
 
-export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v5-this-week-9-workouts';
-export const PROTOTYPE_DEMO_SEED_VERSION_KEY = 'genki.plan.demoSeedVersion.v1';
+import {
+  PROTOTYPE_DEMO_SEED_VERSION,
+  PROTOTYPE_DEMO_SEED_VERSION_KEY,
+  PREVIEW_FIXTURE_STORAGE_PREFIX,
+  PLAN_PREVIEW_QUERY_PARAM,
+  PLAN_PREVIEW_RESET_PARAM,
+  PLAN_REVIEW_PREVIEW_PROFILE_ID,
+  PREVIEW_SHORT_WALKS_HABIT_ID,
+  FOCUS_STORAGE_KEY,
+  LEGACY_DIRECTION_STORAGE_KEYS,
+  getPreviewProfileStorageKey,
+  getActivePreviewProfileIdFromUrl,
+  isPreviewResetRequestedFromUrl,
+  getInitialTabFromUrl,
+} from './previewRuntime';
 
-/**
- * Isolated storage prefix strictly for explicit dev/test preview fixtures.
- * Official user storage keys MUST NEVER be written by fixture builders.
- */
-export const PREVIEW_FIXTURE_STORAGE_PREFIX = 'genki.plan.preview_fixture.v1.';
-export const PLAN_PREVIEW_QUERY_PARAM = 'preview';
-export const PLAN_PREVIEW_RESET_PARAM = 'reset';
-export const PLAN_REVIEW_PREVIEW_PROFILE_ID = 'plan-review';
-export const PREVIEW_SHORT_WALKS_HABIT_ID = 'habit::short-walks';
-
-export const FOCUS_STORAGE_KEY = 'genki.plan.focus.v1';
-export const LEGACY_DIRECTION_STORAGE_KEYS = [
-  'genki.plan.direction.v1',
-  'genki.plan.direction',
-  'genki_direction',
-  'your_direction',
-] as const;
+export {
+  PROTOTYPE_DEMO_SEED_VERSION,
+  PROTOTYPE_DEMO_SEED_VERSION_KEY,
+  PREVIEW_FIXTURE_STORAGE_PREFIX,
+  PLAN_PREVIEW_QUERY_PARAM,
+  PLAN_PREVIEW_RESET_PARAM,
+  PLAN_REVIEW_PREVIEW_PROFILE_ID,
+  PREVIEW_SHORT_WALKS_HABIT_ID,
+  FOCUS_STORAGE_KEY,
+  LEGACY_DIRECTION_STORAGE_KEYS,
+  getPreviewProfileStorageKey,
+  getActivePreviewProfileIdFromUrl,
+  isPreviewResetRequestedFromUrl,
+  getInitialTabFromUrl,
+};
 
 export interface IsolatedPlanPreviewFixture {
   readonly isTestFixture: true;
@@ -69,75 +81,6 @@ function getBrowserStorage(): StorageLike | null {
     // ignore storage access errors
   }
   return null;
-}
-
-export function getPreviewProfileStorageKey(profileId: string): string {
-  const clean = profileId.trim().toLowerCase() || PLAN_REVIEW_PREVIEW_PROFILE_ID;
-  return `${PREVIEW_FIXTURE_STORAGE_PREFIX}${clean}`;
-}
-
-function isAiStudioDevPreviewHost(hostname: string): boolean {
-  const host = hostname.trim().toLowerCase();
-  if (!host) return false;
-  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return true;
-  if (/^ais-dev-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app$/i.test(host)) return true;
-  return false;
-}
-
-function isViteDevMode(): boolean {
-  try {
-    return Boolean(import.meta.env && import.meta.env.DEV);
-  } catch {
-    return false;
-  }
-}
-
-export function getActivePreviewProfileIdFromUrl(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const raw = params.get(PLAN_PREVIEW_QUERY_PARAM)?.trim().toLowerCase();
-    if (raw) {
-      if (raw === 'off' || raw === 'false' || raw === '0' || raw === 'none' || raw === 'user') {
-        return null;
-      }
-      if (raw === PLAN_REVIEW_PREVIEW_PROFILE_ID || raw === 'plan' || raw === '1' || raw === 'true') {
-        return PLAN_REVIEW_PREVIEW_PROFILE_ID;
-      }
-      return null;
-    }
-    // AI Studio default development preview entry loads the isolated preview profile automatically;
-    // official production deployments continue reading real user storage.
-    if (isViteDevMode() || isAiStudioDevPreviewHost(window.location.hostname)) {
-      return PLAN_REVIEW_PREVIEW_PROFILE_ID;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function isPreviewResetRequestedFromUrl(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const raw = params.get(PLAN_PREVIEW_RESET_PARAM)?.trim().toLowerCase();
-    return raw === '1' || raw === 'true';
-  } catch {
-    return false;
-  }
-}
-
-export function getInitialTabFromUrl(): 'Today' | 'Plan' | 'Discover' {
-  if (typeof window === 'undefined') return 'Today';
-  try {
-    const raw = new URLSearchParams(window.location.search).get('tab')?.trim().toLowerCase();
-    if (raw === 'plan') return 'Plan';
-    if (raw === 'discover') return 'Discover';
-  } catch {
-    // ignore
-  }
-  return 'Today';
 }
 
 function addLocalTimeIso(dateKey: string, hour: number, minute: number): string {
@@ -615,6 +558,42 @@ export function createIsolatedPlanPreviewFixture(
       },
     ],
   });
+
+  // Two standalone Running sessions (Tue + Wed) with distinct stable IDs:
+  // Included in week & day workout summaries without increasing Done task count (stays 3 tasks completed).
+  const tueDateKey = dayKey(currentWeekStartOffset + 1);
+  store = addExerciseSession(store, {
+    id: `preview-session::${tueDateKey}::standalone-run-tue`,
+    dateKey: tueDateKey,
+    occurredAt: addLocalTimeIso(tueDateKey, 18, 10),
+    hasExactTimestamp: true,
+    exerciseType: 'cardio',
+    workoutActivityType: 'HKWorkoutActivityTypeRunning',
+    locationContext: 'outdoor',
+    actualDurationMinutes: 15,
+    durationTrust: 'user_reported_actual',
+    plannedDurationMinutes: 15,
+    source: 'manual',
+    linkedHabitId: null,
+    title: 'Evening easy run',
+  }).store;
+
+  const wedDateKey = dayKey(currentWeekStartOffset + 2);
+  store = addExerciseSession(store, {
+    id: `preview-session::${wedDateKey}::standalone-run-wed`,
+    dateKey: wedDateKey,
+    occurredAt: addLocalTimeIso(wedDateKey, 18, 25),
+    hasExactTimestamp: true,
+    exerciseType: 'cardio',
+    workoutActivityType: 'HKWorkoutActivityTypeRunning',
+    locationContext: 'outdoor',
+    actualDurationMinutes: 20,
+    durationTrust: 'user_reported_actual',
+    plannedDurationMinutes: 20,
+    source: 'manual',
+    linkedHabitId: null,
+    title: 'Afternoon recovery run',
+  }).store;
 
   // Ensure weeklyReviews stays empty so Weekly review defaults to unanswered for Last week
   void currentWeek;
