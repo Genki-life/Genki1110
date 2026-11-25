@@ -11,6 +11,7 @@ import {
   deriveCommitmentStrategyLine,
   formatGoalReviewFeelingLabel,
   getGoalReviewEvidence,
+  getUnlinkedDoneTasksForHabit,
 } from '../utils/planDataFoundation';
 
 export type GoalDetailSubMode = 'overview' | 'adjust' | 'review' | 'confirm_completion';
@@ -27,11 +28,14 @@ export interface GoalNextStepSubmitInput {
 
 interface GoalDetailViewProps {
   store: PlanFoundationStore;
-  commitment: PhaseCommitmentRecord;
+  commitment: PhaseCommitmentRecord | null;
   activeHabit: ConfirmedActionStrategy | null;
   referenceDate: Date;
   initialMode?: GoalDetailSubMode;
+  /** When true, Cancel in adjust mode returns directly to Plan instead of Overview */
+  openedDirectlyForAdjust?: boolean;
   onModeChange?: (mode: GoalDetailSubMode) => void;
+  onCancelToPlan?: () => void;
   onAdjustGoal: (
     input: Omit<AdjustGoalCommitmentInput, 'dateKey' | 'timestamp' | 'activeHabit'>
   ) => JourneyActionResult;
@@ -65,60 +69,95 @@ export function GoalDetailView({
   activeHabit,
   referenceDate,
   initialMode = 'overview',
+  openedDirectlyForAdjust = false,
   onModeChange,
+  onCancelToPlan,
   onAdjustGoal,
   onKeepExploring,
   onConfirmCompletion,
   onApplyNextStep,
 }: GoalDetailViewProps) {
-  const [mode, setMode] = useState<GoalDetailSubMode>(initialMode);
-
-  // Sync sub-mode when parent re-opens sheet in a specific mode
-  useEffect(() => {
-    setMode(initialMode);
-  }, [initialMode]);
-
-  useEffect(() => {
-    onModeChange?.(mode);
-  }, [mode, onModeChange]);
+  const effectiveInitialMode: GoalDetailSubMode = !commitment ? 'adjust' : initialMode;
+  const [mode, setMode] = useState<GoalDetailSubMode>(effectiveInitialMode);
 
   const strategyLine = useMemo(
     () => deriveCommitmentStrategyLine(commitment),
     [commitment]
   );
 
-  const primaryStrategyHabit = activeHabit ?? commitment.strategies[0] ?? null;
+  const primaryStrategyHabit = activeHabit ?? commitment?.strategies?.[0] ?? null;
 
   const evidence = useMemo(
     () => getGoalReviewEvidence(store, commitment, primaryStrategyHabit, referenceDate),
     [store, commitment, primaryStrategyHabit, referenceDate]
   );
 
-  // --- Adjust Goal state ---
+  const unlinkedDoneTasks = useMemo(
+    () => getUnlinkedDoneTasksForHabit(store, primaryStrategyHabit?.habitId ?? null),
+    [store, primaryStrategyHabit?.habitId]
+  );
+
+  // --- Unified Setup / Adjust Goal state ---
   const [adjustMode, setAdjustMode] = useState<'adjust_strategy' | 'new_direction'>(
     'adjust_strategy'
   );
-  const [adjustSummary, setAdjustSummary] = useState<string>('');
-  const [adjustOriginalIntent, setAdjustOriginalIntent] = useState<string>('');
-  const [adjustStrategySummary, setAdjustStrategySummary] = useState<string>('');
-  const [adjustRegularAction, setAdjustRegularAction] = useState<string>('');
-  const [adjustMinimumAction, setAdjustMinimumAction] = useState<string>('');
-  const [adjustFrequency, setAdjustFrequency] = useState<string>('');
-  const [adjustObservationWindow, setAdjustObservationWindow] = useState<string>('');
+  const [adjustSummary, setAdjustSummary] = useState<string>(commitment?.summary ?? '');
+  const [adjustOriginalIntent, setAdjustOriginalIntent] = useState<string>(
+    commitment?.originalIntent ?? ''
+  );
+  const [adjustStrategySummary, setAdjustStrategySummary] = useState<string>(
+    commitment?.strategySummary ?? ''
+  );
+  const [adjustHabitLabel, setAdjustHabitLabel] = useState<string>(
+    primaryStrategyHabit?.label ?? ''
+  );
+  const [adjustRegularAction, setAdjustRegularAction] = useState<string>(
+    primaryStrategyHabit?.regularAction ?? ''
+  );
+  const [adjustMinimumAction, setAdjustMinimumAction] = useState<string>(
+    primaryStrategyHabit?.minimumAction ?? ''
+  );
+  const [adjustFrequency, setAdjustFrequency] = useState<string>(
+    primaryStrategyHabit?.frequencyDescription ?? ''
+  );
+  const [adjustObservationWindow, setAdjustObservationWindow] = useState<string>(
+    commitment?.observationWindow ?? ''
+  );
+  const [linkPastDoneChecked, setLinkPastDoneChecked] = useState<boolean>(false);
   const [adjustError, setAdjustError] = useState<string | null>(null);
   const [adjustFailedRetryable, setAdjustFailedRetryable] = useState<boolean>(false);
 
-  const openAdjustFlow = () => {
+  const populateAdjustFromCurrent = () => {
     setAdjustMode('adjust_strategy');
-    setAdjustSummary(commitment.summary);
-    setAdjustOriginalIntent(commitment.originalIntent ?? '');
-    setAdjustStrategySummary(commitment.strategySummary ?? strategyLine ?? '');
+    setAdjustSummary(commitment?.summary ?? '');
+    setAdjustOriginalIntent(commitment?.originalIntent ?? '');
+    setAdjustStrategySummary(commitment?.strategySummary ?? '');
+    setAdjustHabitLabel(primaryStrategyHabit?.label ?? '');
     setAdjustRegularAction(primaryStrategyHabit?.regularAction ?? '');
     setAdjustMinimumAction(primaryStrategyHabit?.minimumAction ?? '');
     setAdjustFrequency(primaryStrategyHabit?.frequencyDescription ?? '');
-    setAdjustObservationWindow(commitment.observationWindow ?? '');
+    setAdjustObservationWindow(commitment?.observationWindow ?? '');
+    setLinkPastDoneChecked(false);
     setAdjustError(null);
     setAdjustFailedRetryable(false);
+  };
+
+  // Sync sub-mode & prefill when parent opens sheet in a specific mode
+  useEffect(() => {
+    const nextMode: GoalDetailSubMode = !commitment ? 'adjust' : initialMode;
+    setMode(nextMode);
+    if (nextMode === 'adjust') {
+      populateAdjustFromCurrent();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMode, commitment?.id, primaryStrategyHabit?.habitId]);
+
+  useEffect(() => {
+    onModeChange?.(mode);
+  }, [mode, onModeChange]);
+
+  const openAdjustFlow = () => {
+    populateAdjustFromCurrent();
     setMode('adjust');
   };
 
@@ -126,50 +165,63 @@ export function GoalDetailView({
     setAdjustMode(nextAdjustMode);
     setAdjustError(null);
     setAdjustFailedRetryable(false);
+    setLinkPastDoneChecked(false);
     if (nextAdjustMode === 'new_direction') {
       setAdjustSummary('');
       setAdjustOriginalIntent('');
       setAdjustStrategySummary('');
+      setAdjustHabitLabel('');
       setAdjustRegularAction('');
       setAdjustMinimumAction('');
       setAdjustFrequency('');
       setAdjustObservationWindow('');
     } else {
-      setAdjustSummary(commitment.summary);
-      setAdjustOriginalIntent(commitment.originalIntent ?? '');
-      setAdjustStrategySummary(commitment.strategySummary ?? strategyLine ?? '');
-      setAdjustRegularAction(primaryStrategyHabit?.regularAction ?? '');
-      setAdjustMinimumAction(primaryStrategyHabit?.minimumAction ?? '');
-      setAdjustFrequency(primaryStrategyHabit?.frequencyDescription ?? '');
-      setAdjustObservationWindow(commitment.observationWindow ?? '');
+      populateAdjustFromCurrent();
     }
   };
 
   const submitAdjustGoal = () => {
     const trimmedSummary = adjustSummary.trim();
+    const trimmedStrategy = adjustStrategySummary.trim();
+    const trimmedHabitLabel = adjustHabitLabel.trim();
+    const trimmedRegular = adjustRegularAction.trim();
+
     if (!trimmedSummary) {
-      setAdjustError('Enter a short focus summary before saving.');
+      setAdjustError('Enter your goal or intent before confirming.');
+      setAdjustFailedRetryable(false);
+      return;
+    }
+
+    if (!trimmedStrategy) {
+      setAdjustError('Add a short starting strategy so Plan knows how you want to begin.');
+      setAdjustFailedRetryable(false);
+      return;
+    }
+
+    if (!trimmedHabitLabel && !trimmedRegular) {
+      setAdjustError('Enter the small action for Your rhythm to track alongside this goal.');
       setAdjustFailedRetryable(false);
       return;
     }
 
     const res = onAdjustGoal({
-      mode: adjustMode,
+      mode: commitment ? adjustMode : 'adjust_strategy',
       summary: trimmedSummary,
       originalIntent:
         adjustOriginalIntent.trim() ||
-        (adjustMode === 'new_direction' ? trimmedSummary : commitment.originalIntent),
-      strategySummary:
-        adjustStrategySummary.trim() ||
-        (adjustRegularAction.trim()
-          ? adjustFrequency.trim()
-            ? `${adjustRegularAction.trim()} · ${adjustFrequency.trim()}`
-            : adjustRegularAction.trim()
-          : null),
-      regularAction: adjustRegularAction.trim() || undefined,
+        (adjustMode === 'new_direction' || !commitment
+          ? trimmedSummary
+          : commitment.originalIntent ?? trimmedSummary),
+      strategySummary: trimmedStrategy,
+      habitLabel: trimmedHabitLabel || trimmedRegular,
+      regularAction: trimmedRegular || trimmedHabitLabel,
       minimumAction: adjustMinimumAction.trim() || undefined,
       frequencyDescription: adjustFrequency.trim() || undefined,
       observationWindow: adjustObservationWindow.trim() || null,
+      linkExistingDoneTaskIds:
+        linkPastDoneChecked && unlinkedDoneTasks.length > 0
+          ? unlinkedDoneTasks.map((tc) => tc.id)
+          : undefined,
     });
 
     if (!res.ok) {
@@ -182,15 +234,14 @@ export function GoalDetailView({
 
     setAdjustError(null);
     setAdjustFailedRetryable(false);
-    setMode('overview');
   };
 
   // --- Review Goal & Confirm Completion state ---
   const [reviewFeeling, setReviewFeeling] = useState<GoalReviewFeeling | undefined>(
-    commitment.reviewReflection?.feeling
+    commitment?.reviewReflection?.feeling
   );
   const [outsidePracticeNote, setOutsidePracticeNote] = useState<string>(
-    commitment.reviewReflection?.outsidePracticeNote ?? ''
+    commitment?.reviewReflection?.outsidePracticeNote ?? ''
   );
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewFailedAction, setReviewFailedAction] = useState<
@@ -198,8 +249,8 @@ export function GoalDetailView({
   >(null);
 
   const openReviewFlow = () => {
-    setReviewFeeling(commitment.reviewReflection?.feeling);
-    setOutsidePracticeNote(commitment.reviewReflection?.outsidePracticeNote ?? '');
+    setReviewFeeling(commitment?.reviewReflection?.feeling);
+    setOutsidePracticeNote(commitment?.reviewReflection?.outsidePracticeNote ?? '');
     setReviewError(null);
     setReviewFailedAction(null);
     setMode('review');
@@ -263,7 +314,7 @@ export function GoalDetailView({
     setNextStepError(null);
     setNextStepFailedRetryable(false);
 
-    if (choice === 'build_a_little') {
+    if (choice === 'build_a_little' && commitment) {
       const baseAction =
         primaryStrategyHabit?.regularAction ||
         commitment.strategySummary ||
@@ -367,10 +418,11 @@ export function GoalDetailView({
     setNextStepFailedRetryable(false);
   };
 
-  const isCompleted = commitment.status === 'completed';
-  const completedDateLabel = formatShortIsoDate(commitment.completedAt);
+  const isCompleted = commitment?.status === 'completed';
+  const completedDateLabel = formatShortIsoDate(commitment?.completedAt);
   const observationWindow =
-    typeof commitment.observationWindow === 'string' && commitment.observationWindow.trim().length > 0
+    typeof commitment?.observationWindow === 'string' &&
+    commitment.observationWindow.trim().length > 0
       ? commitment.observationWindow.trim()
       : null;
 
@@ -380,13 +432,19 @@ export function GoalDetailView({
     null;
 
   const frequencyText = primaryStrategyHabit?.frequencyDescription?.trim() || null;
+  const hasExplicitStrategy = Boolean(
+    commitment?.strategySummary && commitment.strategySummary.trim().length > 0
+  );
+  const needsStrategyOrHabitCompletion = Boolean(
+    commitment && (!hasExplicitStrategy || !primaryStrategyHabit)
+  );
 
   const pastCommitments = store.pastCommitments ?? [];
 
   // ============================================================================
   // SUB-VIEW 1: OVERVIEW (About this goal / Completed + Next steps)
   // ============================================================================
-  if (mode === 'overview') {
+  if (mode === 'overview' && commitment) {
     return (
       <div
         id="view-goal-detail-page"
@@ -416,6 +474,31 @@ export function GoalDetailView({
             <p className="text-[13px] font-normal leading-[18px] text-[#625A76]">
               Choose what feels right next whenever you’re ready — leaving this page keeps your completed goal saved.
             </p>
+          </div>
+        )}
+
+        {/* Inline prompt when existing goal is missing a starting strategy or linked habit */}
+        {!isCompleted && needsStrategyOrHabitCompletion && (
+          <div
+            id="goal-incomplete-plan-notice"
+            className="rounded-[18px] bg-[#F4F1FA] border border-[#7770B6]/20 p-4 flex flex-col gap-2.5"
+          >
+            <div className="flex flex-col gap-1">
+              <span className="text-[14px] font-semibold leading-[20px] text-[#302D3D]">
+                Finish setting up your starting plan
+              </span>
+              <p className="text-[13px] font-normal leading-[18px] text-[#625A76]">
+                Add a starting strategy and the small action for Your rhythm so your goal and rhythm stay connected.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="goal-complete-strategy-btn"
+              onClick={openAdjustFlow}
+              className="genki-plan-control genki-plan-control-primary w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
+            >
+              Add strategy &amp; habit
+            </button>
           </div>
         )}
 
@@ -454,7 +537,7 @@ export function GoalDetailView({
 
           <div className="pt-3 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-1">
             <span className="text-[13px] font-medium leading-[18px] text-[#706A7C]">
-              Focus summary
+              Goal / Intent
             </span>
             <p
               id="goal-detail-summary"
@@ -467,13 +550,32 @@ export function GoalDetailView({
           {strategyLine && (
             <div className="pt-3 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-1">
               <span className="text-[13px] font-medium leading-[18px] text-[#706A7C]">
-                Confirmed movement strategy
+                Starting strategy
               </span>
               <p
                 id="goal-detail-strategy"
                 className="text-[15px] font-normal leading-[22px] text-[#302D3D] break-words"
               >
                 {strategyLine}
+              </p>
+            </div>
+          )}
+
+          {primaryStrategyHabit && (
+            <div className="pt-3 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-1">
+              <span className="text-[13px] font-medium leading-[18px] text-[#706A7C]">
+                Tracked in Your rhythm
+              </span>
+              <p
+                id="goal-detail-tracked-habit"
+                className="text-[15px] font-normal leading-[22px] text-[#302D3D] break-words"
+              >
+                {primaryStrategyHabit.label}
+                {primaryStrategyHabit.regularAction &&
+                primaryStrategyHabit.regularAction.toLowerCase() !==
+                  primaryStrategyHabit.label.toLowerCase()
+                  ? ` · ${primaryStrategyHabit.regularAction}`
+                  : ''}
               </p>
             </div>
           )}
@@ -556,7 +658,7 @@ export function GoalDetailView({
               type="button"
               id="goal-open-review-btn"
               onClick={openReviewFlow}
-              className="genki-plan-control w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
+              className="genki-plan-control genki-plan-control-primary w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
             >
               Review goal
             </button>
@@ -682,7 +784,8 @@ export function GoalDetailView({
                     </span>
                     <div className="rounded-[12px] bg-[#F8F6FC] p-3 flex flex-col gap-1.5 text-[13px] leading-[18px]">
                       <div className="text-[#706A7C]">
-                        Current: <span className="text-[#302D3D]">{strategyLine || commitment.summary}</span>
+                        Current:{' '}
+                        <span className="text-[#302D3D]">{strategyLine || commitment.summary}</span>
                       </div>
                       <div className="text-[#5E5BAE]">
                         Proposed:{' '}
@@ -782,7 +885,7 @@ export function GoalDetailView({
                     </label>
                     <label className="flex flex-col gap-1">
                       <span className="text-[13px] font-medium text-[#706A7C]">
-                        Movement strategy
+                        Starting strategy
                       </span>
                       <input
                         id="goal-next-new-regular-input"
@@ -852,7 +955,7 @@ export function GoalDetailView({
                     type="button"
                     id="goal-next-confirm-btn"
                     onClick={submitSelectedNextStep}
-                    className="genki-plan-control flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold cursor-pointer"
+                    className="genki-plan-control genki-plan-control-primary flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold cursor-pointer"
                   >
                     {selectedNextStep === 'keep_rhythm'
                       ? 'Keep this rhythm'
@@ -918,66 +1021,104 @@ export function GoalDetailView({
   }
 
   // ============================================================================
-  // SUB-VIEW 2: ADJUST GOAL (Before -> After + Let's try this)
+  // SUB-VIEW 2: UNIFIED GOAL + STARTING STRATEGY + YOUR RHYTHM HABIT CONFIRMATION
+  // (Used for Set a focus, Completing an existing goal, Adjust goal, & Confirm a habit)
   // ============================================================================
-  if (mode === 'adjust') {
-    const proposedStrategyPreview =
-      adjustStrategySummary.trim() ||
-      (adjustRegularAction.trim()
-        ? adjustFrequency.trim()
-          ? `${adjustRegularAction.trim()} · ${adjustFrequency.trim()}`
-          : adjustRegularAction.trim()
-        : '—');
+  if (mode === 'adjust' || !commitment) {
+    const isCreatingNew = !commitment;
+    const isCompletingExisting = Boolean(commitment && needsStrategyOrHabitCompletion);
+    const reusingExistingHabit = Boolean(
+      commitment && adjustMode === 'adjust_strategy' && primaryStrategyHabit
+    );
+
+    const proposedHabitDisplay = (() => {
+      const lbl = adjustHabitLabel.trim();
+      const act = adjustRegularAction.trim();
+      if (lbl && act && lbl.toLowerCase() !== act.toLowerCase()) {
+        return `${lbl} · ${act}`;
+      }
+      return lbl || act || '—';
+    })();
+
+    const currentHabitDisplay = primaryStrategyHabit
+      ? primaryStrategyHabit.regularAction &&
+        primaryStrategyHabit.regularAction.toLowerCase() !==
+          primaryStrategyHabit.label.toLowerCase()
+        ? `${primaryStrategyHabit.label} · ${primaryStrategyHabit.regularAction}`
+        : primaryStrategyHabit.label
+      : 'Not linked yet';
 
     return (
       <div
         id="view-goal-adjust-page"
+        data-adjust-context={
+          isCreatingNew
+            ? 'new_goal'
+            : isCompletingExisting
+            ? 'complete_existing_goal'
+            : adjustMode
+        }
         className="flex flex-col gap-4 text-[15px] leading-[22px] text-[#302D3D]"
       >
-        {/* Mode Switcher: Same habit strategy adjustment vs New direction */}
-        <div
-          role="group"
-          aria-label="Type of change"
-          className="grid grid-cols-2 gap-1.5 p-1 rounded-[14px] bg-[#F1EFF6]"
-        >
-          <button
-            type="button"
-            id="goal-adjust-mode-strategy"
-            aria-pressed={adjustMode === 'adjust_strategy'}
-            onClick={() => handleSelectAdjustMode('adjust_strategy')}
-            className={`genki-plan-control min-h-[44px] px-3 rounded-[10px] text-[13px] font-semibold transition-colors cursor-pointer ${
-              adjustMode === 'adjust_strategy'
-                ? 'bg-white text-[#302D3D] shadow-xs'
-                : 'bg-transparent text-[#625A76]'
-            }`}
+        {/* Mode Switcher ONLY when an existing commitment already exists */}
+        {commitment && (
+          <div
+            role="group"
+            aria-label="Type of change"
+            className="grid grid-cols-2 gap-1.5 p-1 rounded-[14px] bg-[#F1EFF6]"
           >
-            Adjust strategy
-          </button>
-          <button
-            type="button"
-            id="goal-adjust-mode-direction"
-            aria-pressed={adjustMode === 'new_direction'}
-            onClick={() => handleSelectAdjustMode('new_direction')}
-            className={`genki-plan-control min-h-[44px] px-3 rounded-[10px] text-[13px] font-semibold transition-colors cursor-pointer ${
-              adjustMode === 'new_direction'
-                ? 'bg-white text-[#302D3D] shadow-xs'
-                : 'bg-transparent text-[#625A76]'
-            }`}
-          >
-            Change direction
-          </button>
-        </div>
+            <button
+              type="button"
+              id="goal-adjust-mode-strategy"
+              aria-pressed={adjustMode === 'adjust_strategy'}
+              onClick={() => handleSelectAdjustMode('adjust_strategy')}
+              className={`genki-plan-control min-h-[44px] px-3 rounded-[10px] text-[13px] font-semibold transition-colors cursor-pointer ${
+                adjustMode === 'adjust_strategy'
+                  ? 'bg-white text-[#302D3D] shadow-xs'
+                  : 'bg-transparent text-[#625A76]'
+              }`}
+            >
+              {isCompletingExisting ? 'Keep this goal' : 'Adjust strategy'}
+            </button>
+            <button
+              type="button"
+              id="goal-adjust-mode-direction"
+              aria-pressed={adjustMode === 'new_direction'}
+              onClick={() => handleSelectAdjustMode('new_direction')}
+              className={`genki-plan-control min-h-[44px] px-3 rounded-[10px] text-[13px] font-semibold transition-colors cursor-pointer ${
+                adjustMode === 'new_direction'
+                  ? 'bg-white text-[#302D3D] shadow-xs'
+                  : 'bg-transparent text-[#625A76]'
+              }`}
+            >
+              Change direction
+            </button>
+          </div>
+        )}
 
         <p className="text-[13px] leading-[18px] text-[#706A7C]">
-          {adjustMode === 'adjust_strategy'
-            ? `Keeps this goal and habit lineage (next version v${commitment.version + 1}).`
-            : 'Starts a new commitment while preserving your previous goal, history records, and accepted tasks.'}
+          {isCreatingNew
+            ? 'Confirm your goal, how you want to start, and the small action Your rhythm will track — saved together in one step.'
+            : adjustMode === 'new_direction'
+            ? 'Starts a new commitment while preserving your previous goal, history records, and accepted tasks.'
+            : reusingExistingHabit
+            ? `Keeps this goal and reuses your current habit (next version v${commitment.version + 1}) without creating duplicates.`
+            : 'Keeps your existing goal and links your starting strategy and Your rhythm habit together in one confirmation.'}
         </p>
 
-        {/* Editable Fields */}
-        <div className="flex flex-col gap-3">
+        {/* 1. Goal / Intent */}
+        <section
+          aria-label="Goal and intent"
+          className="rounded-[18px] bg-[#F8F6FC] border border-[rgba(74,66,98,0.08)] p-3.5 flex flex-col gap-3"
+        >
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] font-semibold leading-[16px] text-[#5E5BAE]">
+              1 · Goal (what you want to get back to)
+            </span>
+          </div>
+
           <label className="flex flex-col gap-1">
-            <span className="text-[13px] font-medium text-[#706A7C]">Focus summary</span>
+            <span className="text-[13px] font-medium text-[#706A7C]">Goal / Intent</span>
             <input
               id="goal-adjust-summary-input"
               type="text"
@@ -986,53 +1127,115 @@ export function GoalDetailView({
                 setAdjustSummary(e.target.value);
                 setAdjustError(null);
               }}
-              placeholder="e.g. Build steady morning energy"
-              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
+              placeholder="e.g. Get back into running"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
             />
           </label>
 
           <label className="flex flex-col gap-1">
             <span className="text-[13px] font-medium text-[#706A7C]">
-              Original intent (optional)
+              Original intent note (optional)
             </span>
             <input
               id="goal-adjust-intent-input"
               type="text"
               value={adjustOriginalIntent}
               onChange={(e) => setAdjustOriginalIntent(e.target.value)}
-              placeholder="What brought you to this focus"
-              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
+              placeholder="In your own words"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
             />
           </label>
+        </section>
+
+        {/* 2. Starting Strategy (Displayed separately in Plan header) */}
+        <section
+          aria-label="Starting strategy"
+          className="rounded-[18px] bg-[#F8F6FC] border border-[rgba(74,66,98,0.08)] p-3.5 flex flex-col gap-3"
+        >
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] font-semibold leading-[16px] text-[#5E5BAE]">
+              2 · Starting strategy (how you’ll begin)
+            </span>
+            <span className="text-[12px] leading-[16px] text-[#706A7C]">
+              Shown beneath your goal in the Plan header.
+            </span>
+          </div>
 
           <label className="flex flex-col gap-1">
-            <span className="text-[13px] font-medium text-[#706A7C]">
-              Confirmed movement strategy
-            </span>
+            <span className="text-[13px] font-medium text-[#706A7C]">Starting strategy</span>
             <input
               id="goal-adjust-strategy-input"
               type="text"
               value={adjustStrategySummary}
               onChange={(e) => {
                 setAdjustStrategySummary(e.target.value);
-                if (!adjustRegularAction) setAdjustRegularAction(e.target.value);
+                setAdjustError(null);
               }}
-              placeholder="e.g. 10-min walk after lunch"
-              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
+              placeholder="e.g. Start with three short walks a week."
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
+            />
+          </label>
+        </section>
+
+        {/* 3. Small Action Tracked by Your rhythm */}
+        <section
+          aria-label="Small action for Your rhythm"
+          className="rounded-[18px] bg-[#F8F6FC] border border-[rgba(74,66,98,0.08)] p-3.5 flex flex-col gap-3"
+        >
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[12px] font-semibold leading-[16px] text-[#5E5BAE]">
+              3 · Small action tracked in Your rhythm
+            </span>
+            <span className="text-[12px] leading-[16px] text-[#706A7C]">
+              {reusingExistingHabit
+                ? 'Updates your existing tracked habit without creating a second one.'
+                : 'Your rhythm follows this single small action automatically once confirmed.'}
+            </span>
+          </div>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[13px] font-medium text-[#706A7C]">Habit name</span>
+            <input
+              id="goal-adjust-habit-label-input"
+              type="text"
+              value={adjustHabitLabel}
+              onChange={(e) => {
+                setAdjustHabitLabel(e.target.value);
+                setAdjustError(null);
+              }}
+              placeholder="e.g. Short walk"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
             />
           </label>
 
           <label className="flex flex-col gap-1">
             <span className="text-[13px] font-medium text-[#706A7C]">
-              Starting amount (optional)
+              Regular small action
+            </span>
+            <input
+              id="goal-adjust-regular-input"
+              type="text"
+              value={adjustRegularAction}
+              onChange={(e) => {
+                setAdjustRegularAction(e.target.value);
+                setAdjustError(null);
+              }}
+              placeholder="e.g. 15-min walk"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[13px] font-medium text-[#706A7C]">
+              Minimum action (optional)
             </span>
             <input
               id="goal-adjust-minimum-input"
               type="text"
               value={adjustMinimumAction}
               onChange={(e) => setAdjustMinimumAction(e.target.value)}
-              placeholder="e.g. 3-min walk around the block"
-              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
+              placeholder="e.g. 5-min walk outside"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
             />
           </label>
 
@@ -1045,8 +1248,8 @@ export function GoalDetailView({
               type="text"
               value={adjustFrequency}
               onChange={(e) => setAdjustFrequency(e.target.value)}
-              placeholder="e.g. A few days a week"
-              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
+              placeholder="e.g. Three times a week"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
             />
           </label>
 
@@ -1060,39 +1263,89 @@ export function GoalDetailView({
               value={adjustObservationWindow}
               onChange={(e) => setAdjustObservationWindow(e.target.value)}
               placeholder="e.g. Check in after 2 weeks"
-              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-[#F7F5FB] border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE] focus:bg-white"
+              className="w-full min-h-[44px] px-3 py-2 rounded-[12px] bg-white border border-[rgba(74,66,98,0.16)] text-[15px] text-[#302D3D] focus:outline-none focus:border-[#5E5BAE]"
             />
           </label>
-        </div>
+        </section>
 
-        {/* Explicit Current -> Proposed Comparison */}
+        {/* Explicit opt-in for linking existing unlinked Done tasks (NEVER auto-linked!) */}
+        {unlinkedDoneTasks.length > 0 && (
+          <label
+            htmlFor="goal-adjust-link-past-done-checkbox"
+            className="rounded-[16px] bg-[#F8F6FC] border border-[rgba(74,66,98,0.08)] p-3.5 flex items-start gap-3 cursor-pointer"
+          >
+            <input
+              id="goal-adjust-link-past-done-checkbox"
+              type="checkbox"
+              checked={linkPastDoneChecked}
+              onChange={(e) => setLinkPastDoneChecked(e.target.checked)}
+              className="mt-0.5 w-5 h-5 accent-[#5E5BAE] shrink-0 cursor-pointer"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-[14px] font-medium leading-[20px] text-[#302D3D]">
+                Also count {unlinkedDoneTasks.length} past Done{' '}
+                {unlinkedDoneTasks.length === 1 ? 'task' : 'tasks'} toward this habit
+              </span>
+              <span className="text-[12px] font-normal leading-[16px] text-[#706A7C]">
+                Leave unchecked to keep past Done tasks separate unless they were already linked.
+              </span>
+            </span>
+          </label>
+        )}
+
+        {/* Explicit Unified Preview (Current -> Proposed) */}
         <div
           id="goal-adjust-diff"
-          className="rounded-[16px] bg-[#F8F6FC] border border-[rgba(74,66,98,0.10)] p-3.5 flex flex-col gap-2"
+          className="rounded-[16px] bg-[#F3F0FA] border border-[#7770B6]/18 p-3.5 flex flex-col gap-2"
         >
           <span className="text-[12px] font-semibold leading-[16px] text-[#5E5BAE]">
-            Current → Proposed
+            {commitment ? 'Current → Proposed' : 'Plan summary to confirm'}
           </span>
+
           <div className="flex flex-col gap-1 text-[13px] leading-[18px]">
+            {commitment && (
+              <div>
+                <span className="text-[#706A7C]">Current goal: </span>
+                <span className="text-[#302D3D]">{commitment.summary}</span>
+              </div>
+            )}
             <div>
-              <span className="text-[#706A7C]">Current focus: </span>
-              <span className="text-[#302D3D]">{commitment.summary}</span>
-            </div>
-            <div>
-              <span className="text-[#5E5BAE]">Proposed focus: </span>
+              <span className="text-[#5E5BAE]">
+                {commitment ? 'Proposed goal: ' : 'Goal / Intent: '}
+              </span>
               <span className="font-semibold text-[#302D3D]">
                 {adjustSummary.trim() || '—'}
               </span>
             </div>
           </div>
+
           <div className="pt-2 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-1 text-[13px] leading-[18px]">
+            {commitment && (
+              <div>
+                <span className="text-[#706A7C]">Current strategy: </span>
+                <span className="text-[#302D3D]">{strategyLine || 'None set yet'}</span>
+              </div>
+            )}
             <div>
-              <span className="text-[#706A7C]">Current strategy: </span>
-              <span className="text-[#302D3D]">{strategyLine || 'None set'}</span>
+              <span className="text-[#5E5BAE]">
+                {commitment ? 'Proposed strategy: ' : 'Starting strategy: '}
+              </span>
+              <span className="font-semibold text-[#302D3D]">
+                {adjustStrategySummary.trim() || '—'}
+              </span>
             </div>
+          </div>
+
+          <div className="pt-2 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-1 text-[13px] leading-[18px]">
+            {commitment && (
+              <div>
+                <span className="text-[#706A7C]">Current Your rhythm habit: </span>
+                <span className="text-[#302D3D]">{currentHabitDisplay}</span>
+              </div>
+            )}
             <div>
-              <span className="text-[#5E5BAE]">Proposed strategy: </span>
-              <span className="font-semibold text-[#302D3D]">{proposedStrategyPreview}</span>
+              <span className="text-[#5E5BAE]">Your rhythm will track: </span>
+              <span className="font-semibold text-[#302D3D]">{proposedHabitDisplay}</span>
             </div>
           </div>
         </div>
@@ -1124,7 +1377,7 @@ export function GoalDetailView({
             type="button"
             id="goal-adjust-confirm-btn"
             onClick={submitAdjustGoal}
-            className="genki-plan-control flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold cursor-pointer"
+            className="genki-plan-control genki-plan-control-primary flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold cursor-pointer"
           >
             Let’s try this
           </button>
@@ -1134,7 +1387,11 @@ export function GoalDetailView({
             onClick={() => {
               setAdjustError(null);
               setAdjustFailedRetryable(false);
-              setMode('overview');
+              if (openedDirectlyForAdjust || !commitment) {
+                onCancelToPlan?.();
+              } else {
+                setMode('overview');
+              }
             }}
             className="genki-plan-control min-h-[44px] px-4 rounded-[12px] bg-[#F1EFF6] text-[#524C63] text-[15px] font-medium cursor-pointer"
           >
@@ -1214,7 +1471,10 @@ export function GoalDetailView({
 
         {/* Optional Feeling Update (Strictly informational — never auto-completes) */}
         <section aria-label="How this goal feels now" className="flex flex-col gap-2">
-          <p id="goal-review-feeling-label" className="text-[15px] font-semibold leading-[22px] text-[#302D3D]">
+          <p
+            id="goal-review-feeling-label"
+            className="text-[15px] font-semibold leading-[22px] text-[#302D3D]"
+          >
             How does this goal feel right now?
           </p>
           <div
@@ -1292,7 +1552,7 @@ export function GoalDetailView({
             type="button"
             id="goal-review-keep-exploring-btn"
             onClick={submitKeepExploring}
-            className="genki-plan-control w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
+            className="genki-plan-control genki-plan-control-primary w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
           >
             Keep exploring
           </button>
@@ -1305,7 +1565,7 @@ export function GoalDetailView({
               setReviewFailedAction(null);
               setMode('confirm_completion');
             }}
-            className="genki-plan-control w-full min-h-[48px] px-4 rounded-[12px] bg-[#EEEDF6] hover:bg-[#E4E2F1] text-[#514C8C] text-[15px] font-semibold flex items-center justify-center cursor-pointer"
+            className="genki-plan-control genki-plan-control-secondary w-full min-h-[48px] px-4 rounded-[12px] bg-[#EEEDF6] hover:bg-[#E4E2F1] text-[#514C8C] text-[15px] font-semibold flex items-center justify-center cursor-pointer"
           >
             Mark this goal complete?
           </button>
@@ -1392,7 +1652,7 @@ export function GoalDetailView({
           type="button"
           id="goal-confirm-completion-btn"
           onClick={submitConfirmCompletion}
-          className="genki-plan-control w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
+          className="genki-plan-control genki-plan-control-primary w-full min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#504D9D] text-white text-[15px] font-semibold flex items-center justify-center cursor-pointer"
         >
           Confirm completion
         </button>

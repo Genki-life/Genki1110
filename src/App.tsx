@@ -59,6 +59,13 @@ import {
   saveSavedDiscoverIds,
   toggleSavedDiscoverId,
 } from './utils/discoverStore';
+import {
+  getActivePreviewProfileIdFromUrl,
+  getInitialTabFromUrl,
+  isPreviewResetRequestedFromUrl,
+  loadPreviewProfileStore,
+  savePreviewProfileStore,
+} from './utils/prototypeDemoSeed';
 
 let planViewPromise: Promise<{ default: typeof import('./components/MyPlanView').MyPlanView }> | null = null;
 function loadPlanView() {
@@ -1000,9 +1007,22 @@ const GENKI_MOBILE_UI_STYLES = `
 `;
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>('Today');
-  const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(false);
-  const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(false);
+  const activePreviewProfileId = useMemo(() => getActivePreviewProfileIdFromUrl(), []);
+  const initialTab = useMemo(() => getInitialTabFromUrl(), []);
+  const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>(initialTab);
+  const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(initialTab === 'Plan');
+  const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(initialTab === 'Discover');
+
+  useEffect(() => {
+    if (!activePreviewProfileId || !isPreviewResetRequestedFromUrl()) return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('reset');
+      window.history.replaceState(window.history.state, '', url.toString());
+    } catch {
+      // ignore URL rewrite errors
+    }
+  }, [activePreviewProfileId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1025,11 +1045,18 @@ export default function App() {
     };
   }, []);
   
-  // Single shared persistent PlanFoundationStore backing Today, Plan, History, This week, and Weekly review
+  // Single shared persistent PlanFoundationStore backing Today, Plan, History, This week, and Weekly review.
+  // When an explicit preview profile URL (?preview=plan-review) is active, it loads and persists strictly
+  // inside its isolated preview storage namespace so official user records remain completely untouched.
   const initialPlanStoreRef = useRef<PlanFoundationStore | null>(null);
   if (initialPlanStoreRef.current === null) {
     const bootNow = new Date();
-    initialPlanStoreRef.current = loadPlanFoundationStore({ now: bootNow });
+    initialPlanStoreRef.current = activePreviewProfileId
+      ? loadPreviewProfileStore(activePreviewProfileId, {
+          now: bootNow,
+          reset: isPreviewResetRequestedFromUrl(),
+        })
+      : loadPlanFoundationStore({ now: bootNow });
   }
   const initialTodayDateKeyRef = useRef<string>(toLocalDateKey(new Date()));
 
@@ -1044,6 +1071,10 @@ export default function App() {
       setPlanStore((prev) => {
         const next = updater(prev);
         if (next === prev) return prev;
+        if (activePreviewProfileId) {
+          savePreviewProfileStore(activePreviewProfileId, next);
+          return next;
+        }
         savePlanFoundationStore(next);
         // Mirror clean non-demo legacy keys for compatibility across reload/external readers
         saveUnifiedActivities(projectLegacyActivityRecords(next));
@@ -1051,7 +1082,7 @@ export default function App() {
         return next;
       });
     },
-    []
+    [activePreviewProfileId]
   );
 
   const activityRecords = useMemo(
@@ -5240,6 +5271,7 @@ export default function App() {
               <LazyMyPlanView
                 phoneFrameRef={phoneFrameRef}
                 isActive={activeTab === 'Plan'}
+                previewProfileId={activePreviewProfileId}
                 planStore={planStore}
                 onUpdatePlanStore={updatePlanStore}
                 activityRecords={activityRecords}

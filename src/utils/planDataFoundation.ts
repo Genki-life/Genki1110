@@ -5889,40 +5889,140 @@ export function getGoalReviewEvidence(
   };
 }
 
+/**
+ * Returns Done Today task cards that are NOT yet linked to the given habitId.
+ * Strictly informational so UI can ask for explicit user confirmation before linking
+ * historical Done records — NEVER auto-links unlinked Done tasks silently.
+ */
+export function getUnlinkedDoneTasksForHabit(
+  store: PlanFoundationStore,
+  habitId?: string | null
+): TaskCompletionRecord[] {
+  const cleanId = habitId?.trim() || null;
+  const seenLogical = new Set<string>();
+  const result: TaskCompletionRecord[] = [];
+  const sorted = [...store.taskCompletions]
+    .filter((tc) => tc.status === 'done' && tc.source === 'today')
+    .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+
+  for (const tc of sorted) {
+    if (seenLogical.has(tc.logicalTaskId)) continue;
+    seenLogical.add(tc.logicalTaskId);
+    if (cleanId && tc.linkedHabitIds.includes(cleanId)) continue;
+    if (!cleanId && tc.linkedHabitIds.length > 0) continue;
+    result.push(tc);
+  }
+  return result;
+}
+
+function linkConfirmedDoneTasksToHabit(
+  store: PlanFoundationStore,
+  habitId: string,
+  taskIds: string[],
+  actionVersion: string
+): PlanFoundationStore {
+  const idSet = new Set(taskIds.map((id) => id.trim()).filter(Boolean));
+  if (idSet.size === 0) return store;
+
+  let nextPractices = [...store.habitPractices];
+  const existingPracticeIds = new Set(nextPractices.map((hp) => hp.id));
+
+  const nextTaskCompletions = store.taskCompletions.map((tc) => {
+    if (tc.status !== 'done' || !idSet.has(tc.id)) return tc;
+    const nextLinked = tc.linkedHabitIds.includes(habitId)
+      ? tc.linkedHabitIds
+      : [...tc.linkedHabitIds, habitId];
+
+    const hpId = makeHabitPracticeId('task_completion', tc.id, habitId);
+    if (!existingPracticeIds.has(hpId)) {
+      const firstTrustworthyMin =
+        tc.exerciseSegments.find(
+          (seg) =>
+            seg.durationTrust &&
+            seg.durationTrust !== 'unknown' &&
+            typeof seg.actualDurationMinutes === 'number' &&
+            seg.actualDurationMinutes > 0
+        )?.actualDurationMinutes ?? null;
+      nextPractices.push({
+        id: hpId,
+        habitId,
+        dateKey: tc.dateKey,
+        occurredAt: tc.completedAt,
+        sourceType: 'task_completion',
+        sourceRecordId: tc.id,
+        sourceLogicalTaskId: tc.logicalTaskId,
+        actionTier: tc.actionTier ?? 'regular',
+        actionVersion: actionVersion || 'v1',
+        actualDurationMinutes: firstTrustworthyMin,
+      });
+      existingPracticeIds.add(hpId);
+    }
+
+    return {
+      ...tc,
+      linkedHabitIds: nextLinked,
+    };
+  });
+
+  return {
+    ...store,
+    taskCompletions: nextTaskCompletions,
+    habitPractices: nextPractices,
+  };
+}
+
 export interface AdjustGoalCommitmentInput {
   mode: 'adjust_strategy' | 'new_direction';
+  /** User intent summary (what they want to return to / focus on) */
   summary: string;
   originalIntent?: string | null;
+  /** Mid-term starting strategy (how they plan to begin — stored & displayed separately from intent) */
   strategySummary?: string | null;
+  /** Short habit label shown in Your rhythm (e.g. "Short walk") */
+  habitLabel?: string;
+  /** Concrete small action tracked by Your rhythm (e.g. "10-min walk") */
   regularAction?: string;
   minimumAction?: string;
   frequencyDescription?: string;
   observationWindow?: string | null;
   activeHabit?: ConfirmedActionStrategy | null;
+  /** Explicit user-confirmed past Done TaskCompletionRecord IDs to link to this habit */
+  linkExistingDoneTaskIds?: string[];
   dateKey: string;
   timestamp?: string;
 }
 
 /**
- * Applies a confirmed Adjust goal change:
- * - 'adjust_strategy': preserves habit & commitment version lineage and updates strategy cleanly.
- * - 'new_direction': archives previous commitment into store.pastCommitments and creates a new commitment.
- * Strictly preserves all old commitments, history records, and accepted tasks.
+ * Applies a confirmed unified goal + starting strategy + Your rhythm habit confirmation:
+ * - 'adjust_strategy': preserves existing goal & reuses existing habitId when present (or links
+ *   one habitId when an existing goal had none yet), saving intent, strategy, and habit atomically.
+ * - 'new_direction': archives previous commitment into store.pastCommitments and creates a new
+ *   commitment + linked habitId while preserving all old commitments, history records, and tasks.
  */
 export function adjustGoalCommitment(
   store: PlanFoundationStore,
   input: AdjustGoalCommitmentInput
-): { store: PlanFoundationStore; commitment: PhaseCommitmentRecord } {
+): { store: PlanFoundationStore; commitment: PhaseCommitmentRecord; habitId: string | null } {
   const nowIso = input.timestamp ?? new Date().toISOString();
   const prev = store.commitment;
   const trimmedSummary = input.summary.trim() || prev?.summary || 'Move gently';
-  const trimmedStrategy = input.strategySummary?.trim() || null;
+  const trimmedStrategy =
+    'strategySummary' in input
+      ? input.strategySummary && input.strategySummary.trim()
+        ? input.strategySummary.trim()
+        : null
+      : prev?.strategySummary ?? null;
   const trimmedWindow =
     'observationWindow' in input
       ? input.observationWindow && input.observationWindow.trim()
         ? input.observationWindow.trim()
         : null
       : prev?.observationWindow ?? null;
+
+  const trimmedHabitLabel = input.habitLabel?.trim() || '';
+  const trimmedRegular = input.regularAction?.trim() || '';
+  const trimmedMinimum = input.minimumAction?.trim() || '';
+  const trimmedFrequency = input.frequencyDescription?.trim() || '';
 
   if (input.mode === 'new_direction') {
     const pastCommitments = [
@@ -5931,16 +6031,15 @@ export function adjustGoalCommitment(
     ];
 
     const newStrategies: ConfirmedActionStrategy[] = [];
-    if (input.regularAction && input.regularAction.trim()) {
+    const effectiveRegular = trimmedRegular || trimmedHabitLabel;
+    if (effectiveRegular) {
       const nextHabitId = `habit::${Date.now().toString(36)}`;
       newStrategies.push({
         habitId: nextHabitId,
-        label: trimmedSummary,
-        regularAction: input.regularAction.trim(),
-        ...(input.minimumAction && input.minimumAction.trim()
-          ? { minimumAction: input.minimumAction.trim() }
-          : {}),
-        frequencyDescription: input.frequencyDescription?.trim() || 'At your own pace',
+        label: trimmedHabitLabel || effectiveRegular,
+        regularAction: effectiveRegular,
+        ...(trimmedMinimum ? { minimumAction: trimmedMinimum } : {}),
+        frequencyDescription: trimmedFrequency || 'At your own pace',
         frequencyIsDescriptiveOnly: true,
         version: 'v1',
         confirmedAt: nowIso,
@@ -5978,18 +6077,28 @@ export function adjustGoalCommitment(
       source: 'user',
     };
 
-    const withNew: PlanFoundationStore = {
+    let withNew: PlanFoundationStore = {
       ...store,
       commitment: nextCommitment,
       pastCommitments,
     };
+
+    const newHabitId = newStrategies[0]?.habitId ?? null;
+    if (newHabitId && input.linkExistingDoneTaskIds && input.linkExistingDoneTaskIds.length > 0) {
+      withNew = linkConfirmedDoneTasksToHabit(
+        withNew,
+        newHabitId,
+        input.linkExistingDoneTaskIds,
+        'v1'
+      );
+    }
 
     const withEvent = recordLifecycleEvent(withNew, {
       type: 'new_commitment',
       dateKey: input.dateKey,
       occurredAt: nowIso,
       source: 'plan',
-      habitId: newStrategies[0]?.habitId,
+      habitId: newHabitId ?? undefined,
       title: 'Started a new focus',
       note: prev
         ? `Shifted from "${prev.summary}" to "${nextCommitment.summary}". Previous goal and history preserved.`
@@ -5997,59 +6106,80 @@ export function adjustGoalCommitment(
       commitmentVersion: 1,
     }).store;
 
-    return { store: withEvent, commitment: nextCommitment };
+    return { store: withEvent, commitment: nextCommitment, habitId: newHabitId };
   }
 
-  // Same habit / strategy adjustment: preserve version history!
+  // Same goal / unified setup or strategy adjustment:
+  // Reuse existing habitId when present; create ONE linked habitId when missing!
   let nextStore = store;
-  const activeHabit = input.activeHabit ?? prev?.strategies?.[0] ?? null;
+  const existingHabit = input.activeHabit ?? prev?.strategies?.[0] ?? null;
+  let resolvedHabitId: string | null = existingHabit?.habitId ?? null;
+  let resolvedHabitVersion: string = existingHabit?.version ?? 'v1';
 
-  if (
-    activeHabit &&
-    ((input.regularAction && input.regularAction.trim() !== activeHabit.regularAction) ||
-      (input.minimumAction !== undefined &&
-        (input.minimumAction.trim() || undefined) !== activeHabit.minimumAction) ||
-      (input.frequencyDescription &&
-        input.frequencyDescription.trim() !== activeHabit.frequencyDescription))
-  ) {
-    const habitRes = confirmHabitStrategy(nextStore, {
-      habitId: activeHabit.habitId,
-      label: activeHabit.label,
-      regularAction: input.regularAction?.trim() || activeHabit.regularAction,
-      minimumAction:
-        input.minimumAction !== undefined
-          ? input.minimumAction.trim() || undefined
-          : activeHabit.minimumAction,
-      cueTiming: activeHabit.cueTiming,
-      alternativeAction: activeHabit.alternativeAction,
-      frequencyDescription:
-        input.frequencyDescription?.trim() || activeHabit.frequencyDescription,
-      adjustmentKind: 'made_smaller',
-      adjustmentNote: `Adjusted goal strategy: ${
-        input.regularAction?.trim() || activeHabit.regularAction
-      }`,
-      confirmTrackingStartDateKey: input.dateKey,
-      timestamp: nowIso,
-    });
-    nextStore = habitRes.store;
+  const wantsHabitSave = Boolean(
+    trimmedHabitLabel ||
+      trimmedRegular ||
+      (existingHabit &&
+        ((input.minimumAction !== undefined &&
+          (trimmedMinimum || undefined) !== existingHabit.minimumAction) ||
+          (trimmedFrequency && trimmedFrequency !== existingHabit.frequencyDescription)))
+  );
+
+  if (wantsHabitSave) {
+    const targetLabel =
+      trimmedHabitLabel || existingHabit?.label || trimmedRegular || trimmedSummary;
+    const targetRegular =
+      trimmedRegular || existingHabit?.regularAction || targetLabel;
+    const targetMinimum =
+      input.minimumAction !== undefined
+        ? trimmedMinimum || undefined
+        : existingHabit?.minimumAction;
+    const targetFrequency =
+      trimmedFrequency || existingHabit?.frequencyDescription || 'At your own pace';
+
+    const shouldUpdateHabit =
+      !existingHabit ||
+      targetLabel !== existingHabit.label ||
+      targetRegular !== existingHabit.regularAction ||
+      targetMinimum !== existingHabit.minimumAction ||
+      targetFrequency !== existingHabit.frequencyDescription;
+
+    if (shouldUpdateHabit) {
+      const habitRes = confirmHabitStrategy(nextStore, {
+        habitId: existingHabit?.habitId,
+        label: targetLabel,
+        regularAction: targetRegular,
+        minimumAction: targetMinimum,
+        cueTiming: existingHabit?.cueTiming,
+        alternativeAction: existingHabit?.alternativeAction,
+        frequencyDescription: targetFrequency,
+        adjustmentKind: existingHabit ? 'made_smaller' : 'custom',
+        adjustmentNote: existingHabit
+          ? `Adjusted goal strategy: ${targetRegular}`
+          : `Linked habit to goal: ${targetRegular}`,
+        confirmTrackingStartDateKey: input.dateKey,
+        timestamp: nowIso,
+      });
+      nextStore = habitRes.store;
+      resolvedHabitId = habitRes.strategy.habitId;
+      resolvedHabitVersion = habitRes.strategy.version;
+    }
   }
 
   const latestPrev = nextStore.commitment;
+  const isInitialCreation = !prev;
   const upserted = upsertPhaseCommitment(nextStore, {
     phaseId: latestPrev?.phaseId ?? 'start_small',
     phaseName: latestPrev?.phaseName ?? 'Start small',
     originalIntent:
       input.originalIntent !== undefined
         ? input.originalIntent?.trim() || null
-        : latestPrev?.originalIntent ?? null,
+        : latestPrev?.originalIntent ?? trimmedSummary,
     summary: trimmedSummary,
-    strategySummary:
-      trimmedStrategy ??
-      latestPrev?.strategySummary ??
-      null,
+    strategySummary: trimmedStrategy,
     strategies: latestPrev?.strategies ?? [],
     status: latestPrev?.status === 'completed' ? 'active' : latestPrev?.status ?? 'active',
-    lastEventKind: 'adjusted',
+    lastEventKind: isInitialCreation ? 'started' : 'adjusted',
     reviewRequested: false,
     confirmTrackingStartDateKey: input.dateKey,
     timestamp: nowIso,
@@ -6065,18 +6195,35 @@ export function adjustGoalCommitment(
     commitment: finalCommitment,
   };
 
+  if (
+    resolvedHabitId &&
+    input.linkExistingDoneTaskIds &&
+    input.linkExistingDoneTaskIds.length > 0
+  ) {
+    finalStore = linkConfirmedDoneTasksToHabit(
+      finalStore,
+      resolvedHabitId,
+      input.linkExistingDoneTaskIds,
+      resolvedHabitVersion
+    );
+  }
+
   finalStore = recordLifecycleEvent(finalStore, {
-    type: 'strategy_adjustment',
+    type: isInitialCreation ? 'new_commitment' : 'strategy_adjustment',
     dateKey: input.dateKey,
     occurredAt: nowIso,
     source: 'plan',
-    habitId: activeHabit?.habitId,
-    title: 'Adjusted goal strategy',
+    habitId: resolvedHabitId ?? undefined,
+    title: isInitialCreation
+      ? 'Set focus & starting strategy'
+      : !existingHabit && resolvedHabitId
+      ? 'Added starting strategy & habit'
+      : 'Adjusted goal strategy',
     note: trimmedStrategy || trimmedSummary,
     commitmentVersion: finalCommitment.version,
   }).store;
 
-  return { store: finalStore, commitment: finalCommitment };
+  return { store: finalStore, commitment: finalCommitment, habitId: resolvedHabitId };
 }
 
 /**

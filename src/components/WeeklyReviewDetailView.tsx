@@ -356,7 +356,7 @@ export function WeeklyReviewDetailView({
                   id="weekly-review-self-report-save-btn"
                   disabled={!selfReportDraft.trim()}
                   onClick={() => triggerSaveSelfReport(selfReportDraft.trim())}
-                  className={`genki-plan-control flex-1 min-h-[48px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors ${
+                  className={`genki-plan-control genki-plan-control-primary flex-1 min-h-[48px] px-4 rounded-[12px] text-[15px] font-semibold transition-colors ${
                     selfReportDraft.trim()
                       ? 'bg-[#5E5BAE] hover:bg-[#524FA0] text-white cursor-pointer'
                       : 'bg-[#5E5BAE]/35 text-white/80 cursor-not-allowed'
@@ -571,7 +571,7 @@ export function WeeklyReviewDetailView({
                     setSuggestionError(null);
                     setIsConfirming(true);
                   }}
-                  className="genki-plan-control min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer"
+                  className="genki-plan-control genki-plan-control-primary min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer"
                 >
                   {pendingSuggestion.primaryCtaLabel}
                 </button>
@@ -661,7 +661,7 @@ export function WeeklyReviewDetailView({
                     type="button"
                     id="weekly-review-detail-confirm-btn"
                     onClick={triggerConfirmSuggestion}
-                    className="genki-plan-control flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer"
+                    className="genki-plan-control genki-plan-control-primary flex-1 min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer"
                   >
                     {pendingSuggestion.kind === 'keep_rhythm'
                       ? 'Confirm keeping rhythm'
