@@ -3361,6 +3361,13 @@ export interface PlanWeekDaySnapshot {
   ariaLabel: string;
 }
 
+export interface PlanWeekActivitySegment {
+  title: string;
+  workoutTypeKey: string;
+  workoutTypeLabel: string;
+  trustworthyDurationMinutes: number | null;
+}
+
 export interface PlanWeekActivityItem {
   id: string;
   kind: 'task' | 'exercise' | 'rest';
@@ -3372,6 +3379,8 @@ export interface PlanWeekActivityItem {
   workoutTypeKeys: string[];
   /** Human-readable workout type labels (empty for rest) */
   workoutTypeLabels: string[];
+  /** Individual exercise records inside this item (empty for rest) */
+  segments?: PlanWeekActivitySegment[];
   /** Trustworthy actual duration in minutes ONLY; null when unmeasured/unknown */
   trustworthyDurationMinutes: number | null;
   sourceLabel: string;
@@ -3561,6 +3570,7 @@ export function getPlanWeekSnapshot(
     const typeKeys: string[] = [];
     const typeLabels: string[] = [];
     const seenKeys = new Set<string>();
+    const itemSegments: PlanWeekActivitySegment[] = [];
     let allSegsTrustworthy = segs.length > 0;
     let totalActual = 0;
 
@@ -3585,6 +3595,14 @@ export function getPlanWeekSnapshot(
       } else {
         allSegsTrustworthy = false;
       }
+      if (resolved) {
+        itemSegments.push({
+          title: seg.title || resolved.label,
+          workoutTypeKey: resolved.key,
+          workoutTypeLabel: resolved.label,
+          trustworthyDurationMinutes: isTrustworthy ? seg.actualDurationMinutes! : null,
+        });
+      }
     }
 
     activityItems.push({
@@ -3596,6 +3614,7 @@ export function getPlanWeekSnapshot(
       title: tc.title,
       workoutTypeKeys: typeKeys,
       workoutTypeLabels: typeLabels,
+      segments: itemSegments,
       trustworthyDurationMinutes: allSegsTrustworthy && totalActual > 0 ? totalActual : null,
       sourceLabel: 'Task completed',
       ...(tc.note ? { note: tc.note } : {}),
@@ -3622,6 +3641,16 @@ export function getPlanWeekSnapshot(
       title: s.title,
       workoutTypeKeys: resolved ? [resolved.key] : [],
       workoutTypeLabels: resolved ? [resolved.label] : [],
+      segments: resolved
+        ? [
+            {
+              title: s.title || resolved.label,
+              workoutTypeKey: resolved.key,
+              workoutTypeLabel: resolved.label,
+              trustworthyDurationMinutes: isTrustworthy ? s.actualDurationMinutes : null,
+            },
+          ]
+        : [],
       trustworthyDurationMinutes: isTrustworthy ? s.actualDurationMinutes : null,
       sourceLabel: s.source === 'external_import' ? 'Imported workout' : 'Logged workout',
       ...(s.note ? { note: s.note } : {}),
@@ -3673,6 +3702,118 @@ export function getPlanWeekSnapshot(
     workoutSummary,
     activityItems,
   };
+}
+
+/**
+ * Aggregates workout types strictly for a single local dateKey within an already-computed
+ * PlanWeekSnapshot, preserving the exact same counting and trustworthy-duration rules.
+ */
+export function getDayWorkoutTypeSummary(
+  snapshot: PlanWeekSnapshot,
+  dateKey: string
+): WeekWorkoutTypeRow[] {
+  const buckets = new Map<string, WeekWorkoutTypeRow>();
+  const ensureBucket = (resolved: ResolvedWorkoutType): WeekWorkoutTypeRow => {
+    let bucket = buckets.get(resolved.key);
+    if (!bucket) {
+      bucket = {
+        key: resolved.key,
+        label: resolved.label,
+        count: 0,
+        trustworthyDurationMinutes: 0,
+        trustworthyDurationCount: 0,
+        unknownDurationCount: 0,
+        hasCompleteDurationData: true,
+        isHealthKitType: resolved.isHealthKitType,
+        isRawPreserved: resolved.isRawPreserved,
+        sourceRecordIds: [],
+      };
+      buckets.set(resolved.key, bucket);
+    }
+    return bucket;
+  };
+
+  for (const task of snapshot.completedTasks) {
+    if (task.dateKey !== dateKey) continue;
+    const segments =
+      task.exerciseSegments.length > 0
+        ? task.exerciseSegments
+        : [{ exerciseType: 'other' as ExerciseType, title: task.title }];
+    const perCardByType = new Map<
+      string,
+      { resolved: ResolvedWorkoutType; trustworthyMinutes: number; allTrustworthy: boolean }
+    >();
+    for (const seg of segments) {
+      const resolved = resolveWorkoutActivityType({
+        exerciseType: seg.exerciseType,
+        workoutActivityType: seg.workoutActivityType,
+        rawTypeLabel: seg.rawTypeLabel,
+      });
+      if (!resolved) continue;
+      const isTrustworthy =
+        seg.durationTrust !== undefined &&
+        seg.durationTrust !== 'unknown' &&
+        typeof seg.actualDurationMinutes === 'number' &&
+        Number.isFinite(seg.actualDurationMinutes) &&
+        seg.actualDurationMinutes > 0;
+      const existing = perCardByType.get(resolved.key);
+      if (!existing) {
+        perCardByType.set(resolved.key, {
+          resolved,
+          trustworthyMinutes: isTrustworthy ? seg.actualDurationMinutes! : 0,
+          allTrustworthy: isTrustworthy,
+        });
+      } else if (isTrustworthy) {
+        existing.trustworthyMinutes += seg.actualDurationMinutes!;
+      } else {
+        existing.allTrustworthy = false;
+      }
+    }
+    for (const entry of perCardByType.values()) {
+      const bucket = ensureBucket(entry.resolved);
+      bucket.count += 1;
+      bucket.sourceRecordIds.push(task.id);
+      if (entry.allTrustworthy && entry.trustworthyMinutes > 0) {
+        bucket.trustworthyDurationMinutes += entry.trustworthyMinutes;
+        bucket.trustworthyDurationCount += 1;
+      } else {
+        bucket.unknownDurationCount += 1;
+        bucket.hasCompleteDurationData = false;
+      }
+    }
+  }
+
+  for (const session of snapshot.standaloneSessions) {
+    if (session.dateKey !== dateKey) continue;
+    const resolved = resolveWorkoutActivityType({
+      exerciseType: session.exerciseType,
+      workoutActivityType: session.workoutActivityType,
+      rawTypeLabel: session.rawTypeLabel,
+    });
+    if (!resolved) continue;
+    const bucket = ensureBucket(resolved);
+    bucket.count += 1;
+    bucket.sourceRecordIds.push(session.id);
+    const isTrustworthy =
+      session.durationTrust !== 'unknown' &&
+      typeof session.actualDurationMinutes === 'number' &&
+      Number.isFinite(session.actualDurationMinutes) &&
+      session.actualDurationMinutes > 0;
+    if (isTrustworthy && session.actualDurationMinutes !== null) {
+      bucket.trustworthyDurationMinutes += session.actualDurationMinutes;
+      bucket.trustworthyDurationCount += 1;
+    } else {
+      bucket.unknownDurationCount += 1;
+      bucket.hasCompleteDurationData = false;
+    }
+  }
+
+  return Array.from(buckets.values()).sort(
+    (a, b) =>
+      b.count - a.count ||
+      a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }) ||
+      a.key.localeCompare(b.key)
+  );
 }
 
 // ============================================================================

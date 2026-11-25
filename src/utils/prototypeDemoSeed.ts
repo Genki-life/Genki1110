@@ -14,7 +14,7 @@ import {
   upsertPhaseCommitment,
 } from './planDataFoundation';
 
-export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v3-plan-review-preview';
+export const PROTOTYPE_DEMO_SEED_VERSION = '2026-11.v4-this-week-preview';
 export const PROTOTYPE_DEMO_SEED_VERSION_KEY = 'genki.plan.demoSeedVersion.v1';
 
 /**
@@ -153,6 +153,7 @@ export function createIsolatedPlanPreviewFixture(
   // Verify calendar week boundaries via shared weeklyPlanStore helpers
   const currentWeek = getLocalWeekBounds(localToday);
   const lastWeek = getLastCompletedWeekBounds(localToday);
+  const currentWeekStartOffset = -dow;
   const twoWeeksAgoStartOffset = -(dow + 14);
   const lastWeekStartOffset = -(dow + 7);
   const trackingStartOffset = -42; // 42 completed natural days >= 36 required for full 30d rolling chart
@@ -242,39 +243,47 @@ export function createIsolatedPlanPreviewFixture(
     }).store;
   };
 
-  // Helper for adding the Walk + Stretch combo card (1 Done task, 2 exercise records)
-  const addWalkStretchComboCard = (offsetDays: number, hour: number) => {
+  // Helper for adding a multi-exercise combo task card (1 Done task, 2 explicit exercise segments)
+  const addComboTaskCard = (
+    offsetDays: number,
+    suffix: string,
+    opts: {
+      planId: string;
+      title: string;
+      hour: number;
+      minute?: number;
+      segments: Array<{
+        exerciseType: 'walk' | 'stretch' | 'mobility' | 'strength' | 'cardio' | 'other';
+        workoutActivityType: string;
+        locationContext: 'indoor' | 'outdoor';
+        title: string;
+        minutes: number;
+        linkedHabitId: string | null;
+      }>;
+    }
+  ) => {
     const dk = dayKey(offsetDays);
+    const linkedIds = Array.from(
+      new Set(opts.segments.map((s) => s.linkedHabitId).filter((id): id is string => Boolean(id)))
+    );
     store = completeTaskCard(store, {
-      logicalTaskId: `preview-task::${dk}::walk-and-stretch-combo`,
+      logicalTaskId: `preview-task::${dk}::${suffix}`,
       dateKey: dk,
-      completedAt: addLocalTimeIso(dk, hour, 20),
+      completedAt: addLocalTimeIso(dk, opts.hour, opts.minute ?? 20),
       hasExactTimestamp: true,
-      planId: 'walk-stretch-combo',
-      title: 'Short walk & post-walk stretch',
-      exerciseSegments: [
-        {
-          exerciseType: 'walk',
-          workoutActivityType: 'HKWorkoutActivityTypeWalking',
-          locationContext: 'outdoor',
-          title: '15-minute short walk',
-          plannedDurationMinutes: 15,
-          actualDurationMinutes: 16,
-          durationTrust: 'user_reported_actual',
-          linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
-        },
-        {
-          exerciseType: 'stretch',
-          workoutActivityType: 'HKWorkoutActivityTypeFlexibility',
-          locationContext: 'indoor',
-          title: 'Post-walk calf & hip stretch',
-          plannedDurationMinutes: 5,
-          actualDurationMinutes: 6,
-          durationTrust: 'user_reported_actual',
-          linkedHabitId: null,
-        },
-      ],
-      linkedHabitIds: [PREVIEW_SHORT_WALKS_HABIT_ID],
+      planId: opts.planId,
+      title: opts.title,
+      exerciseSegments: opts.segments.map((s) => ({
+        exerciseType: s.exerciseType,
+        workoutActivityType: s.workoutActivityType,
+        locationContext: s.locationContext,
+        title: s.title,
+        plannedDurationMinutes: s.minutes,
+        actualDurationMinutes: s.minutes,
+        durationTrust: 'user_reported_actual',
+        linkedHabitId: s.linkedHabitId,
+      })),
+      linkedHabitIds: linkedIds,
       actionTier: 'regular',
       actionVersion: 'v2',
     }).store;
@@ -423,103 +432,50 @@ export function createIsolatedPlanPreviewFixture(
   });
 
   // ============================================================================
-  // 4. LAST 7 COMPLETED DAYS [-7..-1] + LAST WEEK (5 Done tasks) + THIS WEEK (2-3 Done tasks)
-  //    INVARIANT: In [-7..-1], Short walks occurs on EXACTLY 3 distinct dates,
-  //    with day -7 (always inside BOTH [-7..-1] and Last week) having 2 independent Done cards!
+  // 4. LAST WEEK (5 Done tasks: Walking, Yoga, Core Training) + THIS WEEK (Mon–Wed: 3 Done tasks)
+  //    Current week Mon, Tue, Wed each have 1 Done task card with 2 explicit exercise segments:
+  //      - Mon (+0): Walking 10 min, Stretching 5 min
+  //      - Tue (+1): Walking 12 min, Running 8 min
+  //      - Wed (+2): Walking 15 min, Running 10 min
+  //    Yielding: 3 tasks completed, 3 lit dots (Mon–Wed), Walking 3, Running 2, Stretching 1.
   // ============================================================================
-  // Day -7: Two independent Done cards both linked to Short walks (deduplicates to 1 day in Your rhythm!)
+  // Day -7 (always inside Last week): 2 independent Short walks Done cards (deduplicates to 1 day in Your rhythm)
   addWalkCard(-7, 'walk-double-morning', 'regular', 'v2', 8, '15-minute short walk');
   addWalkCard(-7, 'walk-double-evening', 'minimum', 'v2', 19, '2-minute walk');
 
-  // Place the remaining 2 distinct Short walks dates in [-7..-1] + Week -1 & Week 0 cards per weekday
+  // Fill Last week to 5 Done tasks (distinct from This week: Walking, Yoga, Core Training)
+  const lastWeekOffsets = [0, 1, 2, 3, 4, 5, 6].map((i) => lastWeekStartOffset + i);
+  const thirdLastWeekWalkOffset =
+    dow === 0
+      ? -5
+      : dow === 1
+      ? -4
+      : lastWeekStartOffset; // Mon of Last week (< -7 when dow >= 2)
+  addWalkCard(
+    thirdLastWeekWalkOffset,
+    'wk1-walk-second',
+    'regular',
+    'v2',
+    18,
+    '15-minute short walk'
+  );
   if (dow === 0) {
-    // Today is Monday: [-7..-1] is all of Last week
-    addWalkCard(-5, 'wk1-walk-wed', 'regular', 'v2', 18, '15-minute short walk');
+    // Keep 3 distinct Short walks dates in [-7..-1] on Mondays too
     addWalkCard(-2, 'wk1-walk-sat', 'minimum', 'v2', 10, '2-minute walk');
-    // Top up Last week to 5 Done tasks (Walk + Yoga)
-    addUnlinkedCard(-4, 'wk1-yoga', {
-      planId: 'yoga-flow-20m',
-      title: 'Evening yoga flow',
-      exerciseType: 'other',
-      workoutActivityType: 'HKWorkoutActivityTypeYoga',
-      minutes: 20,
-      hour: 19,
-    });
-    // This week (Monday = today, offset 0, not part of ended [-7..-1]): 2 Done tasks (Walk + Stretch combo, Mobility)
-    addWalkStretchComboCard(0, 8);
-    addUnlinkedCard(0, 'wk0-mobility', {
-      planId: 'mobility-hips-8m',
-      title: 'Ankle & hip mobility',
-      exerciseType: 'mobility',
-      minutes: 8,
-      hour: 12,
-    });
-  } else if (dow === 1 || dow === 2 || dow === 3) {
-    // Tue, Wed, Thu: 2 walk dates in Last week (-7 double + 1 mid-week) & 1 walk+stretch combo in This week (-1)
-    const secondLastWeekWalkOffset = dow === 1 ? -3 : dow === 2 ? -4 : -5;
-    addWalkCard(secondLastWeekWalkOffset, 'wk1-walk-second', 'regular', 'v2', 18, '15-minute short walk');
-
-    // Fill Last week to 5 Done tasks using unlinked Yoga + Core training on free days in Last week
-    const lastWeekOffsets = [0, 1, 2, 3, 4, 5, 6].map((i) => lastWeekStartOffset + i);
-    const freeLastWeekOffsets = lastWeekOffsets.filter(
-      (o) => o !== -7 && o !== secondLastWeekWalkOffset
-    );
-    addUnlinkedCard(freeLastWeekOffsets[1] ?? freeLastWeekOffsets[0], 'wk1-yoga', {
-      planId: 'yoga-flow-20m',
-      title: 'Evening yoga flow',
-      exerciseType: 'other',
-      workoutActivityType: 'HKWorkoutActivityTypeYoga',
-      minutes: 20,
-      hour: 19,
-    });
-    addUnlinkedCard(freeLastWeekOffsets[3] ?? freeLastWeekOffsets[2], 'wk1-core', {
-      planId: 'core-stability-12m',
-      title: 'Core stability routine',
-      exerciseType: 'strength',
-      workoutActivityType: 'HKWorkoutActivityTypeCoreTraining',
-      minutes: 12,
-      hour: 18,
-    });
-
-    // This week: 2 Done tasks (Walk + Stretch combo at -1, unlinked Mobility at 0)
-    addWalkStretchComboCard(-1, 8);
-    addUnlinkedCard(0, 'wk0-mobility', {
-      planId: 'mobility-hips-8m',
-      title: 'Ankle & hip mobility',
-      exerciseType: 'mobility',
-      minutes: 8,
-      hour: 11,
-    });
-  } else {
-    // Fri (4), Sat (5), Sun (6): 1 walk date in Last week (-7 double) & 2 walk dates in This week
-    const wk0FirstWalk = dow === 6 ? -5 : -4;
-    const wk0ComboWalk = dow === 6 ? -2 : -1;
-    addWalkCard(wk0FirstWalk, 'wk0-walk-first', 'regular', 'v2', 8, '15-minute short walk');
-    addWalkStretchComboCard(wk0ComboWalk, 17);
-    // Add unlinked Mobility on today -> This week has 3 Done tasks (Walk, Stretch, Mobility)
-    addUnlinkedCard(0, 'wk0-mobility', {
-      planId: 'mobility-hips-8m',
-      title: 'Ankle & hip mobility',
-      exerciseType: 'mobility',
-      minutes: 8,
-      hour: 11,
-    });
-
-    // Last week: -7 has 2 walk cards; add 1 walk on Last week Monday (strictly < -7, outside [-7..-1]!)
-    // + 1 Yoga + 1 Core training = 5 Done tasks (Walk, Yoga, Core training)
-    addWalkCard(lastWeekStartOffset, 'wk1-walk-mon', 'regular', 'v2', 8, '15-minute short walk');
-    const lastWeekOffsets = [0, 1, 2, 3, 4, 5, 6].map((i) => lastWeekStartOffset + i);
-    const freeLastWeekOffsets = lastWeekOffsets.filter(
-      (o) => o !== -7 && o !== lastWeekStartOffset
-    );
-    addUnlinkedCard(freeLastWeekOffsets[1] ?? freeLastWeekOffsets[0], 'wk1-yoga', {
-      planId: 'yoga-flow-20m',
-      title: 'Evening yoga flow',
-      exerciseType: 'other',
-      workoutActivityType: 'HKWorkoutActivityTypeYoga',
-      minutes: 20,
-      hour: 19,
-    });
+  }
+  const usedLastWeekOffsets = new Set<number>(
+    dow === 0 ? [-7, thirdLastWeekWalkOffset, -2] : [-7, thirdLastWeekWalkOffset]
+  );
+  const freeLastWeekOffsets = lastWeekOffsets.filter((o) => !usedLastWeekOffsets.has(o));
+  addUnlinkedCard(freeLastWeekOffsets[1] ?? freeLastWeekOffsets[0], 'wk1-yoga', {
+    planId: 'yoga-flow-20m',
+    title: 'Evening yoga flow',
+    exerciseType: 'other',
+    workoutActivityType: 'HKWorkoutActivityTypeYoga',
+    minutes: 20,
+    hour: 19,
+  });
+  if (dow !== 0) {
     addUnlinkedCard(freeLastWeekOffsets[3] ?? freeLastWeekOffsets[2], 'wk1-core', {
       planId: 'core-stability-12m',
       title: 'Core stability routine',
@@ -529,6 +485,82 @@ export function createIsolatedPlanPreviewFixture(
       hour: 18,
     });
   }
+
+  // Current week Mon, Tue, Wed (e.g. Nov 23, 24, 25): 1 Done task card each, 2 explicit exercise segments
+  addComboTaskCard(currentWeekStartOffset + 0, 'wk0-mon-walk-stretch', {
+    planId: 'walk-stretch-combo',
+    title: 'Walk & stretch',
+    hour: 8,
+    minute: 15,
+    segments: [
+      {
+        exerciseType: 'walk',
+        workoutActivityType: 'HKWorkoutActivityTypeWalking',
+        locationContext: 'outdoor',
+        title: 'Walking',
+        minutes: 10,
+        linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
+      },
+      {
+        exerciseType: 'stretch',
+        workoutActivityType: 'HKWorkoutActivityTypeFlexibility',
+        locationContext: 'indoor',
+        title: 'Stretching',
+        minutes: 5,
+        linkedHabitId: null,
+      },
+    ],
+  });
+
+  addComboTaskCard(currentWeekStartOffset + 1, 'wk0-tue-walk-run', {
+    planId: 'walk-run-combo',
+    title: 'Walk & easy run',
+    hour: 8,
+    minute: 30,
+    segments: [
+      {
+        exerciseType: 'walk',
+        workoutActivityType: 'HKWorkoutActivityTypeWalking',
+        locationContext: 'outdoor',
+        title: 'Walking',
+        minutes: 12,
+        linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
+      },
+      {
+        exerciseType: 'cardio',
+        workoutActivityType: 'HKWorkoutActivityTypeRunning',
+        locationContext: 'outdoor',
+        title: 'Running',
+        minutes: 8,
+        linkedHabitId: null,
+      },
+    ],
+  });
+
+  addComboTaskCard(currentWeekStartOffset + 2, 'wk0-wed-walk-run', {
+    planId: 'walk-run-combo',
+    title: 'Walk & easy run',
+    hour: 8,
+    minute: 45,
+    segments: [
+      {
+        exerciseType: 'walk',
+        workoutActivityType: 'HKWorkoutActivityTypeWalking',
+        locationContext: 'outdoor',
+        title: 'Walking',
+        minutes: 15,
+        linkedHabitId: PREVIEW_SHORT_WALKS_HABIT_ID,
+      },
+      {
+        exerciseType: 'cardio',
+        workoutActivityType: 'HKWorkoutActivityTypeRunning',
+        locationContext: 'outdoor',
+        title: 'Running',
+        minutes: 10,
+        linkedHabitId: null,
+      },
+    ],
+  });
 
   // Ensure weeklyReviews stays empty so Weekly review defaults to unanswered for Last week
   void currentWeek;

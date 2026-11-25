@@ -1010,6 +1010,7 @@ export default function App() {
   const activePreviewProfileId = useMemo(() => getActivePreviewProfileIdFromUrl(), []);
   const initialTab = useMemo(() => getInitialTabFromUrl(), []);
   const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>(initialTab);
+  const [planEntryCount, setPlanEntryCount] = useState<number>(initialTab === 'Plan' ? 1 : 0);
   const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(initialTab === 'Plan');
   const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(initialTab === 'Discover');
 
@@ -5271,6 +5272,7 @@ export default function App() {
               <LazyMyPlanView
                 phoneFrameRef={phoneFrameRef}
                 isActive={activeTab === 'Plan'}
+                planEntryToken={planEntryCount}
                 previewProfileId={activePreviewProfileId}
                 planStore={planStore}
                 onUpdatePlanStore={updatePlanStore}
@@ -5375,7 +5377,12 @@ export default function App() {
                   }}
                   onClick={() => {
                     const nextTab = tab.id as 'Today' | 'Plan' | 'Discover';
-                    if (nextTab === 'Plan') setHasVisitedPlan(true);
+                    if (nextTab === 'Plan') {
+                      setHasVisitedPlan(true);
+                      if (activeTab !== 'Plan') {
+                        setPlanEntryCount((count) => count + 1);
+                      }
+                    }
                     if (nextTab === 'Discover') setHasVisitedDiscover(true);
                     setActiveTab(nextTab);
                   }}

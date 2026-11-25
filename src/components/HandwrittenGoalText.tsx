@@ -1,5 +1,10 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pencil } from 'lucide-react';
+import {
+  isCaveat600Loaded,
+  preloadCaveat600,
+  waitForCaveat600,
+} from '../utils/handwritingFont';
 
 interface MeasuredLine {
   text: string;
@@ -12,7 +17,12 @@ interface MeasuredLine {
 
 interface HandwrittenGoalTextProps {
   text: string;
-  isActive: boolean;
+  /** True whenever the Plan tab is the active bottom-navigation tab */
+  isPlanTabActive: boolean;
+  /** True when the Plan header is visible (Plan tab active and no secondary detail sheet open) */
+  isHeaderVisible: boolean;
+  /** Incremented only when bottom navigation transitions into Plan from another tab (or on initial boot in Plan) */
+  planEntryToken: number;
 }
 
 const BENCHMARK_CHAR_WEIGHT = 18.5; // Benchmark: "run 5km per day again" (~2.4s)
@@ -193,120 +203,187 @@ function buildPenMask(revealEdgePx: number, featherPx: number): string {
   return `linear-gradient(102deg, #000 0px, #000 ${solidEnd.toFixed(1)}px, rgba(0,0,0,0.84) ${midHigh.toFixed(1)}px, rgba(0,0,0,0.30) ${midLow.toFixed(1)}px, transparent ${tip.toFixed(1)}px)`;
 }
 
-export const HandwrittenGoalText: React.FC<HandwrittenGoalTextProps> = ({ text, isActive }) => {
+export const HandwrittenGoalText: React.FC<HandwrittenGoalTextProps> = ({
+  text,
+  isPlanTabActive,
+  isHeaderVisible,
+  planEntryToken,
+}) => {
   const trimmed = text.trim();
   const { leadingText, lastWord } = splitTrailingWord(trimmed);
 
   const containerRef = useRef<HTMLSpanElement | null>(null);
   const sizerRef = useRef<HTMLSpanElement | null>(null);
   const lineRefs = useRef<Array<HTMLSpanElement | null>>([]);
-  const rafIdRef = useRef<number | null>(null);
-  const lastCompletedTextRef = useRef<string | null>(null);
+  const measureRafIdRef = useRef<number | null>(null);
+  const animRafIdRef = useRef<number | null>(null);
+
+  // Monotonic run counter guarantees stale font-load or measurement callbacks never start old animations
+  const runIdRef = useRef<number>(0);
+  const lastPlayedEntryTokenRef = useRef<number>(0);
+  const lastPlayedTextRef = useRef<string | null>(null);
+  const pendingTextReplayRef = useRef<boolean>(false);
 
   const [measuredLines, setMeasuredLines] = useState<MeasuredLine[]>([]);
-  const [animState, setAnimState] = useState<'idle' | 'animating' | 'complete'>(() =>
-    prefersReducedMotion() ? 'complete' : 'idle'
+  const [animState, setAnimState] = useState<'waiting_font' | 'animating' | 'complete'>('waiting_font');
+  const animStateRef = useRef<'waiting_font' | 'animating' | 'complete'>('waiting_font');
+  animStateRef.current = animState;
+  const [fontState, setFontState] = useState<'loading' | 'loaded' | 'fallback'>(() =>
+    isCaveat600Loaded(trimmed) ? 'loaded' : 'loading'
   );
   const [pencilRevealMode, setPencilRevealMode] = useState<'instant' | 'fade'>(() =>
     prefersReducedMotion() ? 'instant' : 'fade'
   );
   const [playNonce, setPlayNonce] = useState<number>(0);
 
-  // Playback lifecycle:
-  // - Reduced motion: show full text + pencil immediately without fade.
-  // - Inactive (background pre-warm / sheet open): wait until visible, or finish cleanly if interrupted.
-  // - First entry to Plan or changed goal text: play continuous writing reveal once, then fade pencil in (180ms).
-  // - Returning to Plan with unchanged goal text: show full text + pencil immediately.
+  const cancelPendingWork = useCallback(() => {
+    runIdRef.current += 1;
+    if (measureRafIdRef.current !== null) {
+      window.cancelAnimationFrame(measureRafIdRef.current);
+      measureRafIdRef.current = null;
+    }
+    if (animRafIdRef.current !== null) {
+      window.cancelAnimationFrame(animRafIdRef.current);
+      animRafIdRef.current = null;
+    }
+  }, []);
+
+  // Ensure local Caveat 600 preload is active even if component mounts independently
+  useEffect(() => {
+    preloadCaveat600();
+    return () => {
+      cancelPendingWork();
+    };
+  }, [cancelPendingWork]);
+
+  // Orchestrate playback triggers:
+  // 1. Leaving Plan tab -> immediately cancel any running animation/measurement & reset to hidden waiting_font.
+  // 2. Genuine bottom-nav entry into Plan (`planEntryToken` increments) -> replay once from stroke 0 (even for same text).
+  // 3. Goal text changes to a different string -> replay once when header is visible (or queue until detail sheet closes).
+  // 4. Normal re-renders, re-tapping active Plan tab, or opening/closing Goal detail with unchanged text -> do NOT replay.
+  // 5. Reduced motion -> wait for Caveat 600, then show complete goal + pencil immediately without animation.
   useEffect(() => {
     if (!trimmed) {
+      cancelPendingWork();
+      setMeasuredLines([]);
       setPencilRevealMode('instant');
       setAnimState('complete');
       return;
     }
 
-    if (prefersReducedMotion()) {
-      lastCompletedTextRef.current = trimmed;
-      setPencilRevealMode('instant');
-      setAnimState('complete');
+    // Leaving the Plan tab cancels any in-flight measurement/animation and prepares a clean start on return
+    if (!isPlanTabActive) {
+      cancelPendingWork();
+      setMeasuredLines([]);
+      setAnimState('waiting_font');
       return;
     }
 
-    if (!isActive) {
-      if (animState === 'animating') {
-        if (rafIdRef.current !== null) {
-          window.cancelAnimationFrame(rafIdRef.current);
-          rafIdRef.current = null;
+    const isNewTabEntry = planEntryToken > 0 && planEntryToken !== lastPlayedEntryTokenRef.current;
+    const isTextChanged = lastPlayedTextRef.current !== null && lastPlayedTextRef.current !== trimmed;
+
+    // Goal text changed while a secondary detail sheet (e.g., Adjust goal) covers the header:
+    // keep the new goal hidden behind the sheet and play once the sheet closes.
+    if (!isHeaderVisible) {
+      if (isTextChanged) {
+        pendingTextReplayRef.current = true;
+        cancelPendingWork();
+        setMeasuredLines([]);
+        setAnimState('waiting_font');
+      } else if (animStateRef.current === 'animating') {
+        // User opened Goal detail mid-animation without changing text: finish cleanly so returning doesn't replay
+        cancelPendingWork();
+        setMeasuredLines([]);
+        setPencilRevealMode('instant');
+        setAnimState('complete');
+      }
+      return;
+    }
+
+    const shouldStartPlayback =
+      isNewTabEntry ||
+      isTextChanged ||
+      pendingTextReplayRef.current ||
+      lastPlayedTextRef.current === null;
+
+    if (!shouldStartPlayback) {
+      return;
+    }
+
+    // Commit trigger state and begin a single fresh font-gated measurement + playback run
+    lastPlayedEntryTokenRef.current = planEntryToken;
+    lastPlayedTextRef.current = trimmed;
+    pendingTextReplayRef.current = false;
+
+    cancelPendingWork();
+    const myRunId = runIdRef.current;
+
+    const alreadyLoaded = isCaveat600Loaded(trimmed);
+    setMeasuredLines([]);
+    setFontState(alreadyLoaded ? 'loaded' : 'loading');
+    setAnimState('waiting_font');
+
+    const startAfterFontCheck = (result: 'loaded' | 'failed') => {
+      if (runIdRef.current !== myRunId) return;
+
+      if (result === 'failed') {
+        // Genuine font load failure: reveal readable static fallback text instead of staying blank
+        setFontState('fallback');
+        setMeasuredLines([]);
+        setPencilRevealMode('instant');
+        setAnimState('complete');
+        return;
+      }
+
+      setFontState('loaded');
+
+      if (prefersReducedMotion()) {
+        setMeasuredLines([]);
+        setPencilRevealMode('instant');
+        setAnimState('complete');
+        return;
+      }
+
+      // Measure wrapped lines using the now-loaded Caveat 600 metrics on the next animation frame
+      measureRafIdRef.current = window.requestAnimationFrame(() => {
+        measureRafIdRef.current = null;
+        if (runIdRef.current !== myRunId) return;
+
+        const containerEl = containerRef.current;
+        const sizerEl = sizerRef.current;
+        if (!containerEl || !sizerEl) {
+          setPencilRevealMode('instant');
+          setAnimState('complete');
+          return;
         }
-        lastCompletedTextRef.current = trimmed;
-        setPencilRevealMode('instant');
-        setAnimState('complete');
-      } else if (lastCompletedTextRef.current !== null && lastCompletedTextRef.current !== trimmed) {
-        setAnimState('idle');
-      }
-      return;
-    }
 
-    if (lastCompletedTextRef.current === trimmed) {
-      setPencilRevealMode('instant');
-      setAnimState('complete');
-      return;
-    }
+        const lines = measureWrappedLines(containerEl, sizerEl);
+        if (lines.length === 0) {
+          setPencilRevealMode('instant');
+          setAnimState('complete');
+          return;
+        }
 
-    setPencilRevealMode('fade');
-    setAnimState('animating');
-    setPlayNonce((n) => n + 1);
-  }, [trimmed, isActive]);
-
-  // Measure actual wrapped lines (with inline pencil space already reserved) before animating
-  useLayoutEffect(() => {
-    if (animState !== 'animating' || !trimmed) return;
-    let cancelled = false;
-
-    const runMeasure = () => {
-      if (cancelled) return;
-      const containerEl = containerRef.current;
-      const sizerEl = sizerRef.current;
-      if (!containerEl || !sizerEl) {
-        lastCompletedTextRef.current = trimmed;
-        setPencilRevealMode('instant');
-        setAnimState('complete');
-        return;
-      }
-
-      const lines = measureWrappedLines(containerEl, sizerEl);
-      if (lines.length === 0) {
-        lastCompletedTextRef.current = trimmed;
-        setPencilRevealMode('instant');
-        setAnimState('complete');
-        return;
-      }
-      lineRefs.current = new Array(lines.length).fill(null);
-      setMeasuredLines(lines);
+        lineRefs.current = new Array(lines.length).fill(null);
+        setPencilRevealMode('fade');
+        setMeasuredLines(lines);
+        setPlayNonce((n) => n + 1);
+        setAnimState('animating');
+      });
     };
 
-    const fontsReady =
-      typeof document !== 'undefined' && document.fonts && document.fonts.ready
-        ? Promise.race([
-            document.fonts.ready,
-            new Promise<void>((resolve) => window.setTimeout(resolve, 140)),
-          ])
-        : Promise.resolve();
-
-    void fontsReady.then(() => {
-      if (!cancelled) {
-        window.requestAnimationFrame(runMeasure);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [animState, trimmed, playNonce]);
+    if (alreadyLoaded) {
+      startAfterFontCheck('loaded');
+    } else {
+      void waitForCaveat600(trimmed).then(startAfterFontCheck);
+    }
+  }, [trimmed, isPlanTabActive, isHeaderVisible, planEntryToken, cancelPendingWork]);
 
   // Constant-velocity continuous pen-stroke reveal across all wrapped lines (~2.4s baseline, up to ~3.2s)
   useEffect(() => {
     if (animState !== 'animating' || measuredLines.length === 0) return;
 
+    const activeRunId = runIdRef.current;
     const totalAnimationMs = computeTotalAnimationMs(trimmed, measuredLines.length);
     const totalLiftMs = Math.max(0, measuredLines.length - 1) * INTER_LINE_LIFT_MS;
     const writingMs = Math.max(600, totalAnimationMs - totalLiftMs);
@@ -325,6 +402,11 @@ export const HandwrittenGoalText: React.FC<HandwrittenGoalTextProps> = ({ text, 
     const startTime = performance.now();
 
     const tick = (now: number) => {
+      if (runIdRef.current !== activeRunId) {
+        animRafIdRef.current = null;
+        return;
+      }
+
       const elapsed = now - startTime;
       let allDone = true;
 
@@ -354,27 +436,26 @@ export const HandwrittenGoalText: React.FC<HandwrittenGoalTextProps> = ({ text, 
       }
 
       if (allDone || elapsed >= totalAnimationMs + 32) {
-        rafIdRef.current = null;
-        lastCompletedTextRef.current = trimmed;
+        animRafIdRef.current = null;
         setAnimState('complete');
         return;
       }
 
-      rafIdRef.current = window.requestAnimationFrame(tick);
+      animRafIdRef.current = window.requestAnimationFrame(tick);
     };
 
-    rafIdRef.current = window.requestAnimationFrame(tick);
+    animRafIdRef.current = window.requestAnimationFrame(tick);
 
     return () => {
-      if (rafIdRef.current !== null) {
-        window.cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
+      if (animRafIdRef.current !== null) {
+        window.cancelAnimationFrame(animRafIdRef.current);
+        animRafIdRef.current = null;
       }
     };
-  }, [animState, measuredLines, trimmed]);
+  }, [animState, measuredLines, trimmed, playNonce]);
 
   const isOverlayActive = animState === 'animating' && measuredLines.length > 0;
-  const hideStaticText = animState === 'idle' || animState === 'animating';
+  const hideStaticText = animState !== 'complete';
   const isPencilVisible = animState === 'complete';
   const targetDurationMs = computeTotalAnimationMs(trimmed, Math.max(1, measuredLines.length));
 
@@ -383,6 +464,8 @@ export const HandwrittenGoalText: React.FC<HandwrittenGoalTextProps> = ({ text, 
       ref={containerRef}
       id="plan-header-intent"
       data-handwriting-state={animState}
+      data-handwriting-font={fontState}
+      data-handwriting-play-count={playNonce}
       data-handwriting-lines={measuredLines.length || undefined}
       data-handwriting-duration-ms={targetDurationMs}
       className="genki-plan-header-intent"
@@ -409,7 +492,7 @@ export const HandwrittenGoalText: React.FC<HandwrittenGoalTextProps> = ({ text, 
         </span>
       </span>
 
-      {/* Line-by-line continuous pen-stroke reveal overlay (matches sizer centering down to sub-pixel, zero cursor) */}
+      {/* Line-by-line continuous pen-stroke reveal overlay (same Caveat 600 font/weight, zero cursor) */}
       {isOverlayActive && (
         <span aria-hidden="true" className="genki-plan-handwriting-overlay">
           {measuredLines.map((line, idx) => {
