@@ -244,32 +244,32 @@ export function PlanRhythmChart({
         ref={wrapRef}
         className="mt-[16px] rounded-[16px] bg-[#F7F5FB]/90 border border-[#7770B6]/10 px-3.5 py-3.5 flex flex-col gap-1.5"
       >
-        <p className="text-[14px] font-medium leading-[20px] text-[#514879]">
+        <p className="text-[16px] font-semibold leading-[22px] text-[#211D2C]">
           Your rhythm starts here.
         </p>
 
         {model.formattedPracticeDates.length > 0 ? (
           <p
             id={interactive ? 'journey-recorded-dates' : 'rhythm-recorded-dates'}
-            className="text-[13px] font-normal leading-[18px] text-[#625A76]"
+            className="text-[14px] font-normal leading-[21px] text-[#625B70]"
           >
             Recorded on {shownDates}.
           </p>
         ) : (
-          <p className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+          <p className="text-[14px] font-normal leading-[21px] text-[#625B70]">
             Your rolling 7-day curve appears once 7 full days of history are covered.
           </p>
         )}
 
         {model.formattedPracticeDates.length > 0 && (
-          <p className="text-[12px] font-normal leading-[17px] text-[#706A7C]">
+          <p className="text-[12px] font-normal leading-[16px] text-[#6F687B]">
             Needs 7 covered days to plot your rolling 7-day line.
           </p>
         )}
 
         <p
           id={interactive ? 'journey-today-in-progress' : 'rhythm-today-in-progress'}
-          className="text-[12px] font-normal leading-[17px] text-[#706A7C] pt-0.5 tabular-nums"
+          className="text-[12px] font-normal leading-[16px] text-[#6F687B] pt-0.5 tabular-nums"
         >
           {model.todayInProgress.hasPracticeToday
             ? `Today · in progress · recorded (${model.todayInProgress.shortDateLabel})`
@@ -289,14 +289,14 @@ export function PlanRhythmChart({
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 mb-1.5">
         <span
           id={interactive ? 'journey-chart-caption' : 'rhythm-chart-caption'}
-          className="text-[12px] font-normal leading-[17px] text-[#706A7C]"
+          className="text-[12px] font-normal leading-[16px] text-[#6F687B]"
         >
           Days with movement · rolling 7 days
         </span>
         {model.latestValidPoint && (
           <span
             id={interactive ? 'journey-chart-through-date' : 'rhythm-chart-through-date'}
-            className="text-[12px] font-normal leading-[17px] text-[#706A7C] tabular-nums shrink-0"
+            className="text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums shrink-0"
           >
             Through {model.latestValidPoint.shortDateLabel}
           </span>
@@ -332,10 +332,10 @@ export function PlanRhythmChart({
               />
               <text
                 x={Y_AXIS_LEFT_PAD - 8}
-                y={y + 3.5}
+                y={y + 4}
                 textAnchor="end"
-                fill="#8B8498"
-                fontSize="11"
+                fill="#6F687B"
+                fontSize="12"
                 fontWeight="400"
                 style={{ fontVariantNumeric: 'tabular-nums' }}
               >
@@ -449,10 +449,10 @@ export function PlanRhythmChart({
           <text
             key={`${lbl.label}-${idx}`}
             x={lbl.x}
-            y={TOTAL_HEIGHT - 6}
+            y={TOTAL_HEIGHT - 5}
             textAnchor={lbl.anchor}
-            fill="#8B8498"
-            fontSize="11"
+            fill="#6F687B"
+            fontSize="12"
             fontWeight="400"
             style={{ fontVariantNumeric: 'tabular-nums' }}
           >
@@ -464,7 +464,7 @@ export function PlanRhythmChart({
       {/* Today shown strictly separately as in progress (never included in ended-day curve) */}
       <p
         id={interactive ? 'journey-today-in-progress' : 'rhythm-today-in-progress'}
-        className="mt-1 text-[12px] font-normal leading-[17px] text-[#706A7C] tabular-nums"
+        className="mt-1 text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums"
       >
         {model.todayInProgress.hasPracticeToday
           ? `Today · in progress · recorded (${model.todayInProgress.shortDateLabel})`

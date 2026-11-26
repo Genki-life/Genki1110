@@ -18,6 +18,11 @@ import {
   WeeklyReviewFitAnswer,
 } from '../utils/planDataFoundation';
 import { MemoryCategory, PreferenceItem } from '../utils/preferencesStore';
+import {
+  GoalNovaConversation,
+  type GoalHubHandlers,
+  type GoalPlanSnapshot,
+} from './GoalNovaConversation';
 
 export type PlanNovaSourceModule =
   | 'goal'
@@ -213,6 +218,18 @@ export type PlanNovaChatRequest =
       }) => PlanNovaCommitResult;
       onIgnorePending?: () => PlanNovaCommitResult;
       onDelete?: () => PlanNovaCommitResult;
+    }
+  | {
+      id: string;
+      kind: 'goal_hub';
+      actionTitle: string;
+      sourceModule: PlanNovaSourceModule;
+      sourceLabel: string;
+      introMessage: string;
+      inputPlaceholder: string;
+      handlesThreadLocally: true;
+      initialSnapshot: GoalPlanSnapshot;
+      handlers: GoalHubHandlers;
     };
 
 interface PlanNovaChatWidgetProps {
@@ -220,6 +237,9 @@ interface PlanNovaChatWidgetProps {
   incomingTextEvent: PlanNovaChatTextEvent | null;
   onAppendNovaNotice: (text: string) => void;
   onClose: () => void;
+  onScrollToBottom?: () => void;
+  onUpdateInputPlaceholder?: (placeholder: string) => void;
+  onFocusChatInput?: () => void;
 }
 
 const GOAL_DIRECTION_CHIPS = [
@@ -318,6 +338,30 @@ function parseWorkoutInputText(raw: string): {
 }
 
 export const PlanNovaChatWidget: React.FC<PlanNovaChatWidgetProps> = ({
+  request,
+  ...rest
+}) => {
+  if (request.kind === 'goal_hub') {
+    return (
+      <GoalNovaConversation
+        key={request.id}
+        initialSnapshot={request.initialSnapshot}
+        handlers={request.handlers}
+        incomingTextEvent={rest.incomingTextEvent}
+        onScrollToBottom={rest.onScrollToBottom}
+        onUpdateInputPlaceholder={rest.onUpdateInputPlaceholder}
+        onFocusChatInput={rest.onFocusChatInput}
+      />
+    );
+  }
+  return <LegacyPlanNovaChatWidget {...rest} request={request} />;
+};
+
+const LegacyPlanNovaChatWidget: React.FC<
+  Omit<PlanNovaChatWidgetProps, 'request'> & {
+    request: Exclude<PlanNovaChatRequest, { kind: 'goal_hub' }>;
+  }
+> = ({
   request,
   incomingTextEvent,
   onAppendNovaNotice,

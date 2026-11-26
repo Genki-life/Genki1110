@@ -10,6 +10,7 @@ import {
   type JourneyNextStepExperiment,
   type PlanFoundationStore,
 } from '../utils/planDataFoundation';
+import { IllustrativeRhythmGraphic } from './IllustrativeRhythmGraphic';
 import { PlanRhythmChart } from './PlanRhythmChart';
 
 export interface SharedWeeklyReviewProposalInput {
@@ -167,20 +168,29 @@ export function YourJourneyView({
       data-journey-habit-id={habit.habitId}
       data-journey-window={windowDays}
       data-journey-status={journeyModel.statusCode}
-      className="flex flex-col text-[#1C1C1E]"
+      className="flex flex-col font-sans text-[#625B70]"
     >
+      {/* 0. Habit Journey Chart (preserved milestones, labels, click behavior) */}
+      <section
+        id="journey-section-milestones"
+        aria-label="Habit journey"
+        className="pb-5 border-b border-[rgba(74,66,98,0.08)] flex flex-col"
+      >
+        <IllustrativeRhythmGraphic idPrefix="journey-rhythm" showSelectedTitle />
+      </section>
+
       {/* 1. Current Habit */}
       <section
         id="journey-section-habit"
         aria-label="Current habit"
-        className="pb-4 border-b border-[rgba(74,66,98,0.08)] flex flex-col gap-1.5"
+        className="py-5 border-b border-[rgba(74,66,98,0.08)] flex flex-col gap-1.5"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-col min-w-0">
-            <span className="text-[13px] font-normal leading-[18px] text-[#706A7C]">Habit</span>
+            <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">Habit</span>
             <h4
               id="journey-habit-label"
-              className="mt-0.5 text-[18px] font-semibold leading-[25px] text-[#302D3D] break-words"
+              className="mt-1 text-[16px] font-semibold leading-[22px] text-[#211D2C] break-words"
             >
               {habit.label}
             </h4>
@@ -192,7 +202,7 @@ export function YourJourneyView({
                 type="button"
                 id="journey-switch-habit-btn"
                 onClick={onSwitchHabit}
-                className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[13px] font-medium leading-[18px] text-[#706A7C] hover:text-[#5E5BAE] cursor-pointer whitespace-nowrap"
+                className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[14px] font-medium leading-[20px] text-[#6F687B] hover:text-[#51489A] cursor-pointer whitespace-nowrap"
               >
                 Switch
               </button>
@@ -201,7 +211,7 @@ export function YourJourneyView({
               type="button"
               id="journey-edit-habit-btn"
               onClick={() => onEditHabit(habit)}
-              className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[15px] font-medium leading-[22px] text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer whitespace-nowrap"
+              className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[14px] font-medium leading-[20px] text-[#51489A] hover:text-[#443B87] cursor-pointer whitespace-nowrap"
             >
               Edit
             </button>
@@ -210,7 +220,7 @@ export function YourJourneyView({
 
         <div id="journey-habit-config" className="flex flex-col gap-1 mt-0.5">
           {habitDetailsList.map((line) => (
-            <p key={line} className="text-[15px] font-normal leading-[22px] text-[#524C63] break-words">
+            <p key={line} className="text-[14px] font-normal leading-[21px] text-[#625B70] break-words">
               {line}
             </p>
           ))}
@@ -221,7 +231,7 @@ export function YourJourneyView({
       <section
         id="journey-section-window"
         aria-label="Display time window"
-        className="pt-4 flex flex-col gap-2"
+        className="pt-5 flex flex-col gap-2"
       >
         <div
           id="journey-window-switcher"
@@ -238,10 +248,10 @@ export function YourJourneyView({
                 id={`journey-window-${days}`}
                 aria-pressed={isSelected}
                 onClick={() => setWindowDays(days)}
-                className={`genki-plan-control min-h-[44px] px-2 rounded-[10px] text-[14px] font-semibold leading-[20px] whitespace-nowrap transition-colors cursor-pointer ${
+                className={`genki-plan-control min-h-[44px] px-2 rounded-[10px] text-[14px] font-medium leading-[20px] whitespace-nowrap transition-colors cursor-pointer ${
                   isSelected
-                    ? 'bg-white text-[#302D3D] shadow-[0_1px_4px_rgba(74,66,98,0.10)]'
-                    : 'bg-transparent text-[#625A76] hover:text-[#302D3D]'
+                    ? 'bg-white text-[#211D2C] font-semibold shadow-[0_1px_4px_rgba(74,66,98,0.10)]'
+                    : 'bg-transparent text-[#625B70] hover:text-[#211D2C]'
                 }`}
               >
                 {days} days
@@ -255,14 +265,14 @@ export function YourJourneyView({
       <section
         id="journey-section-status"
         aria-label="Current rhythm status"
-        className="pt-4 flex flex-col"
+        className="pt-5 flex flex-col"
       >
         {statusExplanation.isHiddenByUser ? (
           <div
             id="journey-status-hidden-note"
             className="flex flex-wrap items-center justify-between gap-2"
           >
-            <span className="text-[15px] font-medium leading-[22px] text-[#706A7C]">
+            <span className="text-[14px] font-normal leading-[21px] text-[#6F687B]">
               Status hidden
             </span>
             <button
@@ -271,7 +281,7 @@ export function YourJourneyView({
               onClick={() => {
                 onShowStatusConclusion();
               }}
-              className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[14px] font-medium leading-[20px] text-[#5E5BAE] cursor-pointer"
+              className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[14px] font-medium leading-[20px] text-[#51489A] cursor-pointer"
             >
               Show
             </button>
@@ -280,7 +290,7 @@ export function YourJourneyView({
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <h4
               id="journey-status-label"
-              className="text-[20px] font-semibold leading-[27px] text-[#302D3D] tracking-[-0.015em]"
+              className="text-[16px] font-semibold leading-[22px] text-[#211D2C]"
             >
               {journeyModel.statusLabel}
             </h4>
@@ -290,7 +300,7 @@ export function YourJourneyView({
               aria-expanded={isWhyOpen}
               aria-controls="journey-why-panel"
               onClick={() => setIsWhyOpen((prev) => !prev)}
-              className="genki-plan-control genki-plan-control-base min-h-[44px] px-1 text-[13px] font-medium leading-[18px] text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer whitespace-nowrap"
+              className="genki-plan-control genki-plan-control-base min-h-[44px] px-1 text-[12px] font-medium leading-[16px] text-[#51489A] hover:text-[#443B87] cursor-pointer whitespace-nowrap"
             >
               Why
             </button>
@@ -299,7 +309,7 @@ export function YourJourneyView({
 
         <p
           id="journey-numeric-summary"
-          className="mt-1 text-[15px] font-medium leading-[22px] text-[#302D3D] tabular-nums"
+          className="mt-1 text-[14px] font-normal leading-[21px] text-[#625B70] tabular-nums"
         >
           {journeyModel.numericSummary}
         </p>
@@ -311,23 +321,23 @@ export function YourJourneyView({
             className="mt-3 rounded-[16px] bg-[#F7F5FB] border border-[#7770B6]/12 p-4 flex flex-col gap-3"
           >
             {journeyModel.factualBasis && (
-              <p className="text-[13px] font-normal leading-[18px] text-[#524C63]">
+              <p className="text-[14px] font-normal leading-[21px] text-[#625B70]">
                 {journeyModel.factualBasis}
               </p>
             )}
 
-            <p id="journey-why-rule" className="text-[13px] font-normal leading-[18px] text-[#524C63]">
+            <p id="journey-why-rule" className="text-[14px] font-normal leading-[21px] text-[#625B70]">
               {statusExplanation.ruleSummary}
             </p>
 
             {statusExplanation.triggerRecords.length > 0 && (
               <div className="flex flex-col gap-1">
-                <span className="text-[13px] font-semibold leading-[18px] text-[#302D3D]">
+                <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">
                   Recent records
                 </span>
                 <ul id="journey-why-triggers" className="flex flex-col gap-1">
                   {statusExplanation.triggerRecords.map((item) => (
-                    <li key={item} className="text-[13px] font-normal leading-[18px] text-[#524C63]">
+                    <li key={item} className="text-[14px] font-normal leading-[21px] text-[#625B70]">
                       · {item}
                     </li>
                   ))}
@@ -337,12 +347,12 @@ export function YourJourneyView({
 
             {statusExplanation.selfReportSummary.length > 0 && (
               <div className="flex flex-col gap-1">
-                <span className="text-[13px] font-semibold leading-[18px] text-[#302D3D]">
+                <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">
                   Check-ins
                 </span>
                 <ul id="journey-why-self-reports" className="flex flex-col gap-1">
                   {statusExplanation.selfReportSummary.map((item) => (
-                    <li key={item} className="text-[13px] font-normal leading-[18px] text-[#524C63]">
+                    <li key={item} className="text-[14px] font-normal leading-[21px] text-[#625B70]">
                       · {item}
                     </li>
                   ))}
@@ -352,12 +362,12 @@ export function YourJourneyView({
 
             {statusExplanation.missingInformation.length > 0 && (
               <div className="flex flex-col gap-1">
-                <span className="text-[13px] font-semibold leading-[18px] text-[#302D3D]">
+                <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">
                   Not covered yet
                 </span>
                 <ul id="journey-why-missing" className="flex flex-col gap-1">
                   {statusExplanation.missingInformation.map((item) => (
-                    <li key={item} className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+                    <li key={item} className="text-[14px] font-normal leading-[21px] text-[#625B70]">
                       · {item}
                     </li>
                   ))}
@@ -372,7 +382,7 @@ export function YourJourneyView({
                 aria-expanded={isDisagreeOpen}
                 aria-controls="journey-disagree-panel"
                 onClick={() => setIsDisagreeOpen((prev) => !prev)}
-                className="genki-plan-control genki-plan-control-base self-start min-h-[44px] px-1 text-[13px] font-medium leading-[18px] text-[#5E5BAE] cursor-pointer"
+                className="genki-plan-control genki-plan-control-base self-start min-h-[44px] px-1 text-[14px] font-medium leading-[20px] text-[#51489A] cursor-pointer"
               >
                 This doesn’t fit
               </button>
@@ -383,7 +393,7 @@ export function YourJourneyView({
                     type="button"
                     id="journey-fix-records-btn"
                     onClick={onOpenHistoryFromJourney}
-                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[20px] text-[#302D3D] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
+                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[21px] text-[#211D2C] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
                   >
                     Review records in History
                   </button>
@@ -392,7 +402,7 @@ export function YourJourneyView({
                     type="button"
                     id="journey-add-feeling-btn"
                     onClick={onOpenStartingFeelInNova}
-                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[20px] text-[#302D3D] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
+                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[21px] text-[#211D2C] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
                   >
                     Add how starting feels
                   </button>
@@ -407,7 +417,7 @@ export function YourJourneyView({
                         setIsDisagreeOpen(false);
                       }
                     }}
-                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[20px] text-[#625A76] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
+                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[21px] text-[#625B70] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
                   >
                     Hide status note
                   </button>
@@ -429,14 +439,14 @@ export function YourJourneyView({
             id="journey-unavailable-state"
             className="mt-4 rounded-[16px] bg-[#F7F5FB]/90 border border-[#7770B6]/10 px-4 py-4 flex flex-col gap-3"
           >
-            <p className="text-[15px] font-normal leading-[22px] text-[#706A7C]">
+            <p className="text-[14px] font-normal leading-[21px] text-[#625B70]">
               Couldn’t load recent practice records.
             </p>
             <button
               type="button"
               id="journey-retry-btn"
               onClick={onRetryQuery}
-              className="genki-plan-control self-start min-h-[48px] px-5 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer"
+              className="genki-plan-control self-start min-h-[44px] px-5 rounded-[12px] bg-[#51489A] hover:bg-[#443B87] text-white text-[14px] font-semibold cursor-pointer"
             >
               Retry
             </button>
@@ -454,7 +464,7 @@ export function YourJourneyView({
               journeyModel.validPointCount < journeyModel.windowDays && (
                 <p
                   id="journey-partial-coverage-note"
-                  className="mt-1.5 text-[13px] font-normal leading-[18px] text-[#706A7C] tabular-nums"
+                  className="mt-1.5 text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums"
                 >
                   {journeyModel.validPointCount} of {journeyModel.windowDays} days have 7-day data.
                 </p>
@@ -480,7 +490,7 @@ export function YourJourneyView({
               aria-label="Previous day"
               className={`genki-plan-control w-[44px] h-[44px] -ml-1.5 rounded-[12px] flex items-center justify-center shrink-0 transition-colors ${
                 canStepPrevPoint
-                  ? 'text-[#5E5BAE] hover:bg-[#5E5BAE]/10 cursor-pointer'
+                  ? 'text-[#51489A] hover:bg-[#51489A]/10 cursor-pointer'
                   : 'text-[#B8B2C6] cursor-not-allowed'
               }`}
             >
@@ -488,10 +498,10 @@ export function YourJourneyView({
             </button>
 
             <div id="journey-point-header" className="flex flex-col items-center text-center min-w-0">
-              <span className="text-[15px] font-semibold leading-[22px] text-[#302D3D] tabular-nums">
+              <span className="text-[16px] font-semibold leading-[22px] text-[#211D2C] tabular-nums">
                 {pointDetail.asOfShortLabel}
               </span>
-              <span className="text-[13px] font-normal leading-[18px] text-[#706A7C] tabular-nums">
+              <span className="text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums">
                 {pointDetail.windowRangeLabel}
               </span>
             </div>
@@ -504,7 +514,7 @@ export function YourJourneyView({
               aria-label="Next day"
               className={`genki-plan-control w-[44px] h-[44px] -mr-1.5 rounded-[12px] flex items-center justify-center shrink-0 transition-colors ${
                 canStepNextPoint
-                  ? 'text-[#5E5BAE] hover:bg-[#5E5BAE]/10 cursor-pointer'
+                  ? 'text-[#51489A] hover:bg-[#51489A]/10 cursor-pointer'
                   : 'text-[#B8B2C6] cursor-not-allowed'
               }`}
             >
@@ -515,7 +525,7 @@ export function YourJourneyView({
           <div className="flex flex-col gap-1">
             <p
               id="journey-point-value"
-              className="text-[15px] font-medium leading-[22px] text-[#302D3D] tabular-nums"
+              className="text-[14px] font-normal leading-[21px] text-[#625B70] tabular-nums"
             >
               {pointDetail.distinctPracticeDayCount !== null
                 ? `${pointDetail.distinctPracticeDayCount} of 7 days with movement`
@@ -524,7 +534,7 @@ export function YourJourneyView({
             {pointDetail.gapExplanation && (
               <p
                 id="journey-point-gap-explanation"
-                className="text-[13px] font-normal leading-[18px] text-[#706A7C]"
+                className="text-[12px] font-normal leading-[16px] text-[#6F687B]"
               >
                 {pointDetail.gapExplanation}
               </p>
@@ -547,33 +557,33 @@ export function YourJourneyView({
                 aria-label={day.accessibleLabel}
                 className="flex flex-col items-center gap-1 py-1.5 rounded-[10px] bg-white/80 border border-[rgba(74,66,98,0.06)]"
               >
-                <span aria-hidden="true" className="text-[11px] font-normal leading-[14px] text-[#706A7C]">
+                <span aria-hidden="true" className="text-[12px] font-normal leading-[16px] text-[#6F687B]">
                   {day.weekdayShort.slice(0, 2)}
                 </span>
                 <span
                   aria-hidden="true"
-                  className="text-[13px] font-medium leading-[18px] text-[#302D3D] tabular-nums"
+                  className="text-[12px] font-normal leading-[16px] text-[#211D2C] tabular-nums"
                 >
                   {day.dayNum}
                 </span>
                 <span aria-hidden="true" className="h-[14px] flex items-center justify-center">
                   {day.status === 'practice' && (
-                    <span className="w-[8px] h-[8px] rounded-full bg-[#7770B6]" />
+                    <span className="w-[8px] h-[8px] rounded-full bg-[#51489A]" />
                   )}
                   {day.status === 'rest' && (
                     <span className="w-[10px] h-[2px] rounded-full bg-[#9A93A8]" />
                   )}
                   {day.status === 'paused' && (
                     <span className="inline-flex items-center gap-[2.5px]">
-                      <span className="w-[2px] h-[9px] rounded-[1px] bg-[#706A7C]" />
-                      <span className="w-[2px] h-[9px] rounded-[1px] bg-[#706A7C]" />
+                      <span className="w-[2px] h-[9px] rounded-[1px] bg-[#6F687B]" />
+                      <span className="w-[2px] h-[9px] rounded-[1px] bg-[#6F687B]" />
                     </span>
                   )}
                   {day.status === 'unrecorded' && (
                     <span className="w-[8px] h-[8px] rounded-full border-[1.5px] border-[#B8B2C6] bg-transparent" />
                   )}
                   {day.status === 'unknown' && (
-                    <span className="text-[12px] font-semibold leading-none text-[#8B8498]">?</span>
+                    <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">?</span>
                   )}
                 </span>
               </div>
@@ -582,10 +592,10 @@ export function YourJourneyView({
 
           <p
             id="journey-strip-legend"
-            className="text-[12px] font-normal leading-[17px] text-[#706A7C] flex flex-wrap items-center gap-x-2.5 gap-y-1"
+            className="text-[12px] font-normal leading-[16px] text-[#6F687B] flex flex-wrap items-center gap-x-2.5 gap-y-1"
           >
             <span className="inline-flex items-center gap-1">
-              <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[#7770B6]" />
+              <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[#51489A]" />
               Practice
             </span>
             <span className="inline-flex items-center gap-1">
@@ -593,7 +603,7 @@ export function YourJourneyView({
               Rest
             </span>
             <span className="inline-flex items-center gap-1">
-              <span aria-hidden="true" className="font-semibold text-[#706A7C]">‖</span>
+              <span aria-hidden="true" className="font-semibold text-[#6F687B]">‖</span>
               Paused
             </span>
             <span className="inline-flex items-center gap-1">
@@ -601,7 +611,7 @@ export function YourJourneyView({
               Unrecorded
             </span>
             <span className="inline-flex items-center gap-1">
-              <span aria-hidden="true" className="font-semibold text-[#8B8498]">?</span>
+              <span aria-hidden="true" className="font-semibold text-[#6F687B]">?</span>
               Unknown
             </span>
           </p>
@@ -610,21 +620,25 @@ export function YourJourneyView({
             id="journey-point-sources"
             className="pt-2.5 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-1.5"
           >
-            <span className="text-[13px] font-semibold leading-[18px] text-[#302D3D]">Records</span>
+            <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">Records</span>
             {pointDetail.windowSourceRecords.length > 0 ? (
               <ul className="flex flex-col gap-1.5">
                 {pointDetail.windowSourceRecords.map((rec) => (
                   <li
                     key={rec.id}
-                    className="flex flex-wrap items-baseline justify-between gap-x-2 text-[13px] leading-[18px]"
+                    className="flex flex-wrap items-baseline justify-between gap-x-2"
                   >
-                    <span className="text-[#302D3D] font-medium break-words">{rec.title}</span>
-                    <span className="text-[#706A7C] tabular-nums shrink-0">{rec.shortDateLabel}</span>
+                    <span className="text-[14px] font-normal leading-[21px] text-[#211D2C] break-words">
+                      {rec.title}
+                    </span>
+                    <span className="text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums shrink-0">
+                      {rec.shortDateLabel}
+                    </span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+              <p className="text-[14px] font-normal leading-[21px] text-[#625B70]">
                 No records linked to this habit in these 7 days.
               </p>
             )}
@@ -640,7 +654,7 @@ export function YourJourneyView({
       >
         <h4
           id="journey-timeline-heading"
-          className="text-[15px] font-semibold leading-[22px] text-[#302D3D]"
+          className="text-[16px] font-semibold leading-[22px] text-[#211D2C]"
         >
           History
         </h4>
@@ -648,7 +662,7 @@ export function YourJourneyView({
         {timelineEvents.length === 0 ? (
           <p
             id="journey-timeline-empty"
-            className="text-[15px] font-normal leading-[22px] text-[#706A7C]"
+            className="text-[14px] font-normal leading-[21px] text-[#625B70]"
           >
             No milestones yet.
           </p>
@@ -661,23 +675,23 @@ export function YourJourneyView({
                   data-timeline-event={ev.kind}
                   data-timeline-status-tag={ev.statusTag ?? ''}
                   data-timeline-updated={ev.wasUpdatedAfterEdit ? 'true' : 'false'}
-                  className="py-3 first:pt-0 last:pb-0 flex flex-col gap-0.5"
+                  className="py-3 first:pt-0 last:pb-0 flex flex-col gap-1"
                 >
                   <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-                    <span className="text-[15px] font-semibold leading-[22px] text-[#302D3D]">
+                    <span className="text-[14px] font-semibold leading-[20px] text-[#211D2C]">
                       {ev.title}
                       {ev.statusTag ? (
-                        <span className="font-normal text-[#5E5BAE]"> · {ev.statusTag}</span>
+                        <span className="font-normal text-[#51489A]"> · {ev.statusTag}</span>
                       ) : null}
                       {ev.wasUpdatedAfterEdit ? (
-                        <span className="font-normal text-[#706A7C]"> · Updated</span>
+                        <span className="font-normal text-[#6F687B]"> · Updated</span>
                       ) : null}
                     </span>
-                    <span className="text-[13px] font-normal leading-[18px] text-[#706A7C] tabular-nums shrink-0">
+                    <span className="text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums shrink-0">
                       {ev.shortDateLabel}
                     </span>
                   </div>
-                  <p className="text-[15px] font-normal leading-[22px] text-[#524C63] break-words">
+                  <p className="text-[14px] font-normal leading-[21px] text-[#625B70] break-words">
                     {ev.detail}
                   </p>
                 </li>
@@ -689,7 +703,7 @@ export function YourJourneyView({
                 type="button"
                 id="journey-show-earlier-btn"
                 onClick={() => setShowAllTimelineEvents(true)}
-                className="genki-plan-control genki-plan-control-base self-start min-h-[44px] px-1 text-[14px] font-medium leading-[20px] text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
+                className="genki-plan-control genki-plan-control-base self-start min-h-[44px] px-1 text-[14px] font-medium leading-[20px] text-[#51489A] hover:text-[#443B87] cursor-pointer"
               >
                 Show earlier ({hiddenEarlierCount})
               </button>
@@ -700,7 +714,7 @@ export function YourJourneyView({
                 type="button"
                 id="journey-show-fewer-btn"
                 onClick={() => setShowAllTimelineEvents(false)}
-                className="genki-plan-control genki-plan-control-base self-start min-h-[44px] px-1 text-[14px] font-medium leading-[20px] text-[#706A7C] cursor-pointer"
+                className="genki-plan-control genki-plan-control-base self-start min-h-[44px] px-1 text-[14px] font-medium leading-[20px] text-[#6F687B] cursor-pointer"
               >
                 Show recent 5
               </button>
@@ -719,7 +733,7 @@ export function YourJourneyView({
           aria-labelledby="journey-next-step-heading"
           className="mt-6 pt-5 border-t border-[rgba(74,66,98,0.08)] flex flex-col gap-3"
         >
-          <span className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+          <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">
             Optional next step
           </span>
 
@@ -728,10 +742,10 @@ export function YourJourneyView({
               id="journey-next-step-applied"
               className="rounded-[16px] bg-[#F7F5FB] border border-[#7770B6]/14 p-4 flex flex-col gap-1"
             >
-              <span className="text-[15px] font-semibold leading-[22px] text-[#514879]">
+              <span className="text-[16px] font-semibold leading-[22px] text-[#211D2C]">
                 Applied · {nextStep.title}
               </span>
-              <p className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
+              <p className="text-[14px] font-normal leading-[21px] text-[#625B70]">
                 {nextStep.afterLabel}
               </p>
             </div>
@@ -740,20 +754,20 @@ export function YourJourneyView({
               <div className="flex flex-col gap-1">
                 <h4
                   id="journey-next-step-heading"
-                  className="text-[15px] font-semibold leading-[22px] text-[#302D3D]"
+                  className="text-[16px] font-semibold leading-[22px] text-[#211D2C]"
                 >
                   {nextStep.title}
                 </h4>
                 <p
                   id="journey-next-step-basis"
-                  className="text-[15px] font-normal leading-[22px] text-[#524C63]"
+                  className="text-[14px] font-normal leading-[21px] text-[#625B70]"
                 >
                   {nextStep.basis}
                 </p>
               </div>
 
               {nextStepError && (
-                <p role="alert" className="text-[13px] font-medium leading-[18px] text-[#B42318]">
+                <p role="alert" className="text-[12px] font-normal leading-[16px] text-[#B42318]">
                   {nextStepError}
                 </p>
               )}
@@ -763,7 +777,7 @@ export function YourJourneyView({
                   type="button"
                   id="journey-next-step-primary-btn"
                   onClick={() => onOpenNextStepInNova(nextStep)}
-                  className="genki-plan-control min-h-[48px] px-4 rounded-[12px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold leading-[20px] transition-colors cursor-pointer"
+                  className="genki-plan-control min-h-[44px] px-4 rounded-[12px] bg-[#51489A] hover:bg-[#443B87] text-white text-[14px] font-semibold leading-[20px] transition-colors cursor-pointer"
                 >
                   {nextStep.primaryCtaLabel}
                 </button>
@@ -778,7 +792,7 @@ export function YourJourneyView({
                       setNextStepError(null);
                     }
                   }}
-                  className="genki-plan-control min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-[#524C63] text-[15px] font-medium leading-[20px] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
+                  className="genki-plan-control min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-[#625B70] text-[14px] font-medium leading-[20px] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
                 >
                   {nextStep.secondaryCtaLabel}
                 </button>

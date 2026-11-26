@@ -1025,10 +1025,37 @@ const GENKI_MOBILE_UI_STYLES = `
 export default function App() {
   const activePreviewProfileId = useMemo(() => getActivePreviewProfileIdFromUrl(), []);
   const initialTab = useMemo(() => getInitialTabFromUrl(), []);
-  const [activeTab, setActiveTab] = useState<'Today' | 'Plan' | 'Discover'>(initialTab);
+  const [selectedNavTab, setSelectedNavTab] = useState<PrimaryTabId>(initialTab);
+  const [activeTab, setActiveTab] = useState<PrimaryTabId>(initialTab);
   const [planEntryCount, setPlanEntryCount] = useState<number>(initialTab === 'Plan' ? 1 : 0);
   const [hasVisitedPlan, setHasVisitedPlan] = useState<boolean>(initialTab === 'Plan');
   const [hasVisitedDiscover, setHasVisitedDiscover] = useState<boolean>(initialTab === 'Discover');
+
+  const handleSelectPrimaryTab = useCallback((nextTab: PrimaryTabId) => {
+    // SharedBottomNav updates its own visualTab immediately (<1ms) so the pill begins moving
+    // on the very next frame; defer App's full tree + page switch into a concurrent transition
+    // so both start in the same interaction without blocking frame 1.
+    React.startTransition(() => {
+      setSelectedNavTab(nextTab);
+      if (nextTab === 'Plan') {
+        setHasVisitedPlan(true);
+        setPlanEntryCount((count) => count + 1);
+      }
+      if (nextTab === 'Discover') {
+        setHasVisitedDiscover(true);
+      }
+      setActiveTab(nextTab);
+    });
+  }, []);
+
+  const handlePrefetchPrimaryTab = useCallback((tabId: PrimaryTabId) => {
+    if (tabId === 'Plan') void loadPlanView().catch(() => {});
+    if (tabId === 'Discover') void loadDiscoverView().catch(() => {});
+  }, []);
+
+  const handleNavigateToToday = useCallback(() => {
+    handleSelectPrimaryTab('Today');
+  }, [handleSelectPrimaryTab]);
 
   useEffect(() => {
     if (!activePreviewProfileId || !isPreviewResetRequestedFromUrl()) return;
@@ -1661,7 +1688,8 @@ export default function App() {
     });
   }, []);
 
-  // Lightly idle-prefetch Plan & Discover JS chunks ONLY after Today UI & Avatar settle (never blocks first paint)
+  // Idle-prefetch Plan & Discover JS chunks right after Today first paint settles (never blocks first paint,
+  // and does not wait 2.2s for 3D WebGL so Plan is ready before the user taps Plan).
   useEffect(() => {
     if (!isHomeLayoutReady) return;
     let cancelled = false;
@@ -1674,15 +1702,14 @@ export default function App() {
       void loadDiscoverView().catch(() => {});
     };
 
-    const delayMs = isAvatarFirstFrameReady || avatarMode === '2d' ? 350 : 2200;
     timerId = window.setTimeout(() => {
       if (cancelled) return;
       if (typeof window.requestIdleCallback === 'function') {
-        idleId = window.requestIdleCallback(prefetchSecondaryTabs, { timeout: 1500 });
+        idleId = window.requestIdleCallback(prefetchSecondaryTabs, { timeout: 1000 });
       } else {
         prefetchSecondaryTabs();
       }
-    }, delayMs);
+    }, 300);
 
     return () => {
       cancelled = true;
@@ -1691,7 +1718,7 @@ export default function App() {
       }
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [isHomeLayoutReady, isAvatarFirstFrameReady, avatarMode]);
+  }, [isHomeLayoutReady]);
 
   // Hold-to-complete animation state (3 seconds = 3000ms)
   const HOLD_DURATION_MS = 3000;
@@ -2435,16 +2462,32 @@ export default function App() {
     setSheetInput('');
     setInputPlaceholder(request.inputPlaceholder || 'Type to update draft…');
     isNearBottomRef.current = true;
-    setChatMessages([
-      {
-        id: `plan-intro-${request.id}`,
-        sender: 'ai',
-        text: request.introMessage,
-      },
-    ]);
+    const handlesLocally = 'handlesThreadLocally' in request && request.handlesThreadLocally;
+    setChatMessages(
+      handlesLocally || !request.introMessage
+        ? []
+        : [
+            {
+              id: `plan-intro-${request.id}`,
+              sender: 'ai',
+              text: request.introMessage,
+            },
+          ]
+    );
     setIsChatSheetExited(false);
     setIsChatOpen(true);
     setTransitionPhase('opening');
+  }, []);
+
+  const scrollPlanChatToBottom = useCallback(() => {
+    isNearBottomRef.current = true;
+    window.requestAnimationFrame(() => {
+      chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
+  }, []);
+
+  const focusPlanChatInput = useCallback(() => {
+    chatInputRef.current?.focus();
   }, []);
 
   const handleAppendPlanNovaNotice = useCallback((text: string) => {
@@ -3033,6 +3076,12 @@ export default function App() {
     isNearBottomRef.current = true;
 
     if (activePlanChat) {
+      const handlesLocally =
+        'handlesThreadLocally' in activePlanChat && activePlanChat.handlesThreadLocally;
+      if (handlesLocally) {
+        setPlanChatTextEvent((prev) => ({ seq: (prev?.seq ?? 0) + 1, text }));
+        return;
+      }
       // Prevent duplicate submission of identical unconfirmed user text
       if (lastPlanUserMessageRef.current === text) return;
       lastPlanUserMessageRef.current = text;
@@ -3836,7 +3885,7 @@ export default function App() {
               >
                 <React.Suspense fallback={null}>
                   <LazyNovaAvatar3D
-                    isActiveTab={activeTab === 'Today'}
+                    isActiveTab={activeTab === 'Today' && selectedNavTab === 'Today'}
                     isTransitioning={transitionPhase === 'opening' || transitionPhase === 'closing'}
                     className="w-full h-full"
                     mode="3d"
@@ -5449,7 +5498,7 @@ export default function App() {
                 onUpsertRestDay={handleUpsertRestDay}
                 onDeleteRestRecord={handleDeleteRestRecord}
                 onClearDayRecords={handleClearDayRecords}
-                onNavigateToToday={() => setActiveTab('Today')}
+                onNavigateToToday={handleNavigateToToday}
                 isNovaChatOpen={isChatOpen}
                 onOpenPlanNovaChat={openPlanNovaChat}
                 onOverlayChange={setIsPlanOverlayOpen}
@@ -5476,21 +5525,9 @@ export default function App() {
 
         {/* 4. Shared Single-Row Floating Bottom Navigation: Left Tab Capsule + Right Morphing Nova Bubble */}
         <SharedBottomNav
-          activeTab={activeTab as PrimaryTabId}
-          onSelectTab={(nextTab) => {
-            if (nextTab === 'Plan') {
-              setHasVisitedPlan(true);
-              if (activeTab !== 'Plan') {
-                setPlanEntryCount((count) => count + 1);
-              }
-            }
-            if (nextTab === 'Discover') setHasVisitedDiscover(true);
-            setActiveTab(nextTab);
-          }}
-          onPrefetchTab={(tabId) => {
-            if (tabId === 'Plan') void loadPlanView().catch(() => {});
-            if (tabId === 'Discover') void loadDiscoverView().catch(() => {});
-          }}
+          activeTab={selectedNavTab}
+          onSelectTab={handleSelectPrimaryTab}
+          onPrefetchTab={handlePrefetchPrimaryTab}
           onOpenNovaChat={openGeneralNovaChat}
           isHidden={isSharedBottomNavHidden}
           barRef={bottomBarRef}
@@ -5837,6 +5874,9 @@ export default function App() {
                             incomingTextEvent={planChatTextEvent}
                             onAppendNovaNotice={handleAppendPlanNovaNotice}
                             onClose={closeChatWithTransition}
+                            onScrollToBottom={scrollPlanChatToBottom}
+                            onUpdateInputPlaceholder={setInputPlaceholder}
+                            onFocusChatInput={focusPlanChatInput}
                           />
                         </React.Suspense>
                       </div>

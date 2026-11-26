@@ -34,7 +34,15 @@ const RHYTHM_MILESTONES: Record<RhythmMilestoneId, RhythmMilestoneConfig> = {
 const GRAPHIC_HEIGHT = 152;
 const DEFAULT_WIDTH = 320;
 
-export const IllustrativeRhythmGraphic: React.FC = () => {
+interface IllustrativeRhythmGraphicProps {
+  idPrefix?: string;
+  showSelectedTitle?: boolean;
+}
+
+export const IllustrativeRhythmGraphic: React.FC<IllustrativeRhythmGraphicProps> = ({
+  idPrefix = 'rhythm',
+  showSelectedTitle = false,
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const [selectedId, setSelectedId] = useState<RhythmMilestoneId>('here');
@@ -61,16 +69,16 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
   }, []);
 
   // Fixed illustrative node geometry (1:1 CSS pixels, zero statistical coupling)
-  // 0% -> ~68-70%: solid past path with gentle start, brief pause dip, and restart
-  // ~68-70%: current point ("You’re here", selected by default)
-  // ~70% -> 90%: gentle, roughly level dashed line to hollow dot ("Possible next step")
+  // 0% -> ~69%: solid past path with gentle start, brief pause dip, and restart
+  // ~69%: current point ("You’re here", selected by default)
+  // ~69% -> 90%: gentle, roughly level dashed line to hollow dot ("Possible next step")
   const w = Math.max(220, width);
   const h = GRAPHIC_HEIGHT;
 
-  const p1 = { x: Math.round(w * 0.1), y: 94 }; // Start small
-  const p2 = { x: Math.round(w * 0.35), y: 109 }; // Took a break (lower pause)
-  const p3 = { x: Math.round(w * 0.53), y: 82 }; // Restarted (unlabeled dot only)
-  const pNow = { x: Math.round(w * 0.68), y: 66 }; // You're here (~70% width)
+  const p1 = { x: Math.round(w * 0.1), y: 90 }; // Start small
+  const p2 = { x: Math.round(w * 0.38), y: 108 }; // Took a break (lower pause)
+  const p3 = { x: Math.round(w * 0.55), y: 81 }; // Restarted (unlabeled dot only)
+  const pNow = { x: Math.round(w * 0.69), y: 66 }; // You're here
   const pNext = { x: Math.round(w * 0.9), y: 64 }; // Possible next step (roughly level)
 
   // Smooth cubic Bézier curve through past nodes arriving gently level at pNow
@@ -91,6 +99,9 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
   ].join(' ');
 
   const activeMilestone = RHYTHM_MILESTONES[selectedId];
+  const gradientId = `${idPrefix}-past-wash`;
+  const chartId = idPrefix === 'rhythm' ? 'plan-rhythm-illustrative-chart' : `${idPrefix}-illustrative-chart`;
+  const guidanceId = idPrefix === 'rhythm' ? 'plan-rhythm-guidance' : `${idPrefix}-guidance`;
 
   const renderInteractiveDot = (
     id: RhythmMilestoneId,
@@ -103,20 +114,20 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
       return (
         <g key={id} data-node-id={id} data-selected="true">
           <circle
-            id={`rhythm-node-${id}-ring`}
+            id={`${idPrefix}-node-${id}-ring`}
             cx={cx}
             cy={cy}
             r="8"
-            fill="rgba(119, 112, 182, 0.22)"
-            stroke="rgba(119, 112, 182, 0.36)"
+            fill="rgba(81, 72, 154, 0.18)"
+            stroke="rgba(81, 72, 154, 0.34)"
             strokeWidth="1"
           />
           <circle
-            id={`rhythm-node-${id}`}
+            id={`${idPrefix}-node-${id}`}
             cx={cx}
             cy={cy}
             r="4"
-            fill="#5E5BAE"
+            fill="#51489A"
           />
         </g>
       );
@@ -126,7 +137,7 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
       return (
         <circle
           key={id}
-          id={`rhythm-node-${id}`}
+          id={`${idPrefix}-node-${id}`}
           data-node-id={id}
           data-selected="false"
           cx={cx}
@@ -142,7 +153,7 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
     return (
       <circle
         key={id}
-        id={`rhythm-node-${id}`}
+        id={`${idPrefix}-node-${id}`}
         data-node-id={id}
         data-selected="false"
         cx={cx}
@@ -156,10 +167,10 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col font-sans">
       <div
         ref={containerRef}
-        id="plan-rhythm-illustrative-chart"
+        id={chartId}
         data-selected-node={selectedId}
         role="group"
         aria-label="Illustrative habit journey milestones"
@@ -173,7 +184,7 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
           aria-hidden="true"
         >
           <defs>
-            <linearGradient id="genkiRhythmPastWash" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#7770B6" stopOpacity="0.13" />
               <stop offset="78%" stopColor="#7770B6" stopOpacity="0.03" />
               <stop offset="100%" stopColor="#7770B6" stopOpacity="0" />
@@ -181,11 +192,11 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
           </defs>
 
           {/* Subtle lavender area under the already-walked path */}
-          <path d={pastAreaD} fill="url(#genkiRhythmPastWash)" />
+          <path d={pastAreaD} fill={`url(#${gradientId})`} />
 
           {/* Future optional step: gentle, roughly level soft-lavender dashed line */}
           <path
-            id="rhythm-future-dashed-path"
+            id={`${idPrefix}-future-dashed-path`}
             d={futurePathD}
             fill="none"
             stroke="#A8A0D2"
@@ -196,7 +207,7 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
 
           {/* Walked past path: 2px solid purple line */}
           <path
-            id="rhythm-past-solid-path"
+            id={`${idPrefix}-past-solid-path`}
             d={pastPathD}
             fill="none"
             stroke="#7770B6"
@@ -207,7 +218,7 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
 
           {/* Unlabeled restart dot on past path */}
           <circle
-            id="rhythm-node-restart"
+            id={`${idPrefix}-node-restart`}
             cx={p3.x}
             cy={p3.y}
             r="3.5"
@@ -226,9 +237,10 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
         {/* Shared dot + label hit-target buttons (>= 44x44px each, zero overlap) */}
         <button
           type="button"
-          id="rhythm-node-btn-start"
+          id={`${idPrefix}-node-btn-start`}
+          data-rhythm-milestone="start"
           aria-pressed={selectedId === 'start'}
-          aria-controls="plan-rhythm-guidance"
+          aria-controls={guidanceId}
           aria-label="Start small"
           onClick={() => setSelectedId('start')}
           data-selected={selectedId === 'start' ? 'true' : 'false'}
@@ -236,14 +248,14 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
           style={{
             left: '4px',
             top: `${p1.y - 14}px`,
-            width: `${Math.max(66, Math.min(72, Math.round(w * 0.24)))}px`,
+            width: `${Math.max(72, Math.min(82, Math.round(w * 0.25)))}px`,
             height: '52px',
           }}
         >
           <span
-            id="rhythm-label-start"
+            id={`${idPrefix}-label-start`}
             className="genki-plan-rhythm-node-label"
-            style={{ top: '27px', left: `${Math.max(4, p1.x - 20)}px` }}
+            style={{ top: '26px', left: '6px' }}
           >
             Start small
           </span>
@@ -251,25 +263,26 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
 
         <button
           type="button"
-          id="rhythm-node-btn-break"
+          id={`${idPrefix}-node-btn-break`}
+          data-rhythm-milestone="break"
           aria-pressed={selectedId === 'break'}
-          aria-controls="plan-rhythm-guidance"
+          aria-controls={guidanceId}
           aria-label="Took a break"
           onClick={() => setSelectedId('break')}
           data-selected={selectedId === 'break' ? 'true' : 'false'}
           className="genki-plan-rhythm-node-btn genki-plan-rhythm-node-btn-break"
           style={{
             left: `${p2.x}px`,
-            top: `${p2.y - 15}px`,
-            width: `${Math.max(52, Math.min(74, Math.round(w * 0.24)))}px`,
+            top: `${p2.y - 16}px`,
+            width: `${Math.max(78, Math.min(88, Math.round(w * 0.27)))}px`,
             height: '52px',
             transform: 'translateX(-50%)',
           }}
         >
           <span
-            id="rhythm-label-break"
+            id={`${idPrefix}-label-break`}
             className="genki-plan-rhythm-node-label genki-plan-rhythm-node-label-mid"
-            style={{ top: '28px', left: '50%', transform: 'translateX(-50%)' }}
+            style={{ top: '27px', left: '50%', transform: 'translateX(-50%)' }}
           >
             Took a break
           </span>
@@ -277,9 +290,10 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
 
         <button
           type="button"
-          id="rhythm-node-btn-here"
+          id={`${idPrefix}-node-btn-here`}
+          data-rhythm-milestone="here"
           aria-pressed={selectedId === 'here'}
-          aria-controls="plan-rhythm-guidance"
+          aria-controls={guidanceId}
           aria-label="You’re here"
           onClick={() => setSelectedId('here')}
           data-selected={selectedId === 'here' ? 'true' : 'false'}
@@ -287,14 +301,14 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
           style={{
             left: `${pNow.x}px`,
             top: `${pNow.y - 46}px`,
-            width: '74px',
+            width: '82px',
             height: '58px',
             transform: 'translateX(-50%)',
           }}
         >
           <span
-            id="rhythm-label-current"
-            className="genki-plan-rhythm-node-label genki-plan-rhythm-current-label"
+            id={`${idPrefix}-label-current`}
+            className="genki-plan-rhythm-node-label"
             style={{ top: '8px', left: '50%', transform: 'translateX(-50%)' }}
           >
             You’re here
@@ -303,9 +317,10 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
 
         <button
           type="button"
-          id="rhythm-node-btn-next"
+          id={`${idPrefix}-node-btn-next`}
+          data-rhythm-milestone="next"
           aria-pressed={selectedId === 'next'}
-          aria-controls="plan-rhythm-guidance"
+          aria-controls={guidanceId}
           aria-label="Possible next step"
           onClick={() => setSelectedId('next')}
           data-selected={selectedId === 'next' ? 'true' : 'false'}
@@ -313,29 +328,52 @@ export const IllustrativeRhythmGraphic: React.FC = () => {
           style={{
             right: '4px',
             top: `${pNext.y - 14}px`,
-            width: '66px',
-            height: '66px',
+            width: '74px',
+            height: '68px',
           }}
         >
           <span
-            id="rhythm-label-next"
+            id={`${idPrefix}-label-next`}
             className="genki-plan-rhythm-node-label genki-plan-rhythm-next-label"
-            style={{ top: '30px', right: '4px' }}
+            style={{ top: '28px', right: '4px' }}
           >
             Possible next step
           </span>
         </button>
       </div>
 
-      <p
-        id="plan-rhythm-guidance"
-        role="status"
-        aria-live="polite"
-        data-selected-node={selectedId}
-        className="genki-plan-rhythm-guidance"
-      >
-        {activeMilestone.description}
-      </p>
+      {showSelectedTitle ? (
+        <div
+          id={guidanceId}
+          role="status"
+          aria-live="polite"
+          data-selected-node={selectedId}
+          className="mt-3 min-h-[68px] flex flex-col gap-[4px]"
+        >
+          <h4
+            id={`${idPrefix}-selected-title`}
+            className="font-sans text-[16px] font-semibold leading-[22px] text-[#211D2C]"
+          >
+            {activeMilestone.label}
+          </h4>
+          <p
+            id={`${idPrefix}-selected-description`}
+            className="font-sans text-[14px] font-normal leading-[21px] text-[#625B70] break-words"
+          >
+            {activeMilestone.description}
+          </p>
+        </div>
+      ) : (
+        <p
+          id={guidanceId}
+          role="status"
+          aria-live="polite"
+          data-selected-node={selectedId}
+          className="genki-plan-rhythm-guidance"
+        >
+          {activeMilestone.description}
+        </p>
+      )}
     </div>
   );
 };

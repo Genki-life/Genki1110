@@ -80,6 +80,10 @@ import {
   type GoalNextStepSubmitInput,
 } from './GoalDetailView';
 import {
+  buildStrategySummary,
+  type GoalPlanSnapshot,
+} from './GoalNovaConversation';
+import {
   AdjustGoalCommitmentInput,
   ConfirmedActionStrategy,
   DEFAULT_HABIT_EASE_QUESTION_ID,
@@ -697,26 +701,50 @@ const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
   isShortViewport?: boolean;
 }) {
   const [shouldMount3D, setShouldMount3D] = useState(false);
+  const [is3DActive, setIs3DActive] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
-  // Defer 3D initialization until after Plan becomes active and paints its first frame
-  // so header copy and planning content render immediately without waiting for WebGL.
+  // Defer 3D WebGL context/shader initialization until AFTER the bottom tab pill spring (~360ms)
+  // finishes settling so Today -> Plan first transition stays completely smooth at 60fps.
   useEffect(() => {
     if (!isActive || shouldMount3D) return;
     let cancelled = false;
-    let rafId2: number | null = null;
-    const rafId1 = requestAnimationFrame(() => {
-      rafId2 = requestAnimationFrame(() => {
+    let idleId: number | null = null;
+    const timerId = window.setTimeout(() => {
+      if (cancelled) return;
+      const mountNow = () => {
         if (!cancelled) {
           setShouldMount3D(true);
+          setIs3DActive(true);
         }
-      });
-    });
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(mountNow, { timeout: 300 });
+      } else {
+        mountNow();
+      }
+    }, 460);
     return () => {
       cancelled = true;
-      cancelAnimationFrame(rafId1);
-      if (rafId2 !== null) cancelAnimationFrame(rafId2);
+      window.clearTimeout(timerId);
+      if (idleId !== null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId);
+      }
     };
+  }, [isActive, shouldMount3D]);
+
+  // Pause 3D immediately when leaving Plan; on repeat returns, resume WebGL loop after the
+  // tab pill slide settles so repeat Today -> Plan switches also avoid GPU/Compositor contention.
+  useEffect(() => {
+    if (!shouldMount3D) return;
+    if (!isActive) {
+      setIs3DActive(false);
+      return;
+    }
+    const timerId = window.setTimeout(() => {
+      setIs3DActive(true);
+    }, 380);
+    return () => window.clearTimeout(timerId);
   }, [isActive, shouldMount3D]);
 
   const handleReady = useCallback(() => {
@@ -730,20 +758,21 @@ const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
       aria-hidden="true"
     >
       {!isReady && (
-        <div
-          className="absolute inset-2 rounded-full bg-radial from-[#E6E8DE]/75 via-[#F2F1F7]/45 to-transparent blur-sm pointer-events-none"
+        <FurryNovaStaticAvatar
+          size={isShortViewport ? 80 : 96}
+          className="w-full h-full"
         />
       )}
       {shouldMount3D && (
         <div
-          className={`w-full h-full transition-opacity duration-200 ${
-            isReady ? 'opacity-100' : 'opacity-0'
+          className={`absolute inset-0 w-full h-full transition-opacity duration-200 ${
+            isReady ? 'opacity-100' : 'opacity-0 pointer-events-none'
           }`}
         >
           <React.Suspense fallback={null}>
             <LazyNovaAvatar3D
               variant="compact"
-              isActiveTab={isActive}
+              isActiveTab={is3DActive}
               onReady={handleReady}
               className="w-full h-full"
             />
@@ -823,13 +852,13 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-rhythm-node-btn {position:absolute;min-width:44px;min-height:44px;padding:0;border:0;border-radius:12px;background:transparent;cursor:pointer;touch-action:manipulation;z-index:1;transition:background-color 140ms ease;}
 .genki-plan-rhythm-node-btn-here {z-index:2;}
 .genki-plan-rhythm-node-btn:active {background:rgba(119,112,182,0.06);}
-.genki-plan-rhythm-node-label {position:absolute;font-size:11px;font-weight:500;line-height:15px;color:#766F86;white-space:nowrap;pointer-events:none;transition:color 140ms ease;}
-.genki-plan-rhythm-node-label-mid {color:#878098;}
-@media (max-width: 359px) {.genki-plan-rhythm-node-label-mid {display:none;}}
-.genki-plan-rhythm-current-label {font-size:12px;line-height:16px;color:#6E6780;}
-.genki-plan-rhythm-next-label {font-size:11px;font-weight:500;line-height:14px;color:#7E788E;text-align:right;white-space:normal;max-width:60px;}
-.genki-plan-rhythm-node-btn[data-selected="true"] .genki-plan-rhythm-node-label {color:#463E6B;font-weight:600;}
-.genki-plan-rhythm-guidance {margin:12px 0 0 0;min-height:44px;font-size:15px;font-weight:500;line-height:22px;color:#302D3D;min-width:0;overflow-wrap:break-word;}
+.genki-plan-rhythm-node-label {position:absolute;font-size:12px;font-weight:500;line-height:16px;color:#625B70;white-space:nowrap;pointer-events:none;transition:color 140ms ease;}
+.genki-plan-rhythm-node-label-mid {color:#625B70;}
+@media (max-width: 329px) {.genki-plan-rhythm-node-label-mid {display:none;}}
+.genki-plan-rhythm-current-label {font-size:12px;font-weight:500;line-height:16px;color:#625B70;}
+.genki-plan-rhythm-next-label {font-size:12px;font-weight:500;line-height:16px;color:#625B70;text-align:right;white-space:normal;max-width:68px;}
+.genki-plan-rhythm-node-btn[data-selected="true"] .genki-plan-rhythm-node-label {color:#51489A;font-weight:500;}
+.genki-plan-rhythm-guidance {margin:12px 0 0 0;min-height:42px;font-size:14px;font-weight:400;line-height:21px;color:#625B70;min-width:0;overflow-wrap:break-word;}
 .genki-plan-rhythm-journey-btn {margin:0;min-height:44px;min-width:44px;padding:0;border:0;border-radius:8px;background:transparent;color:#5E5BAE;font-size:14px;font-weight:600;line-height:20px;display:inline-flex;align-items:center;justify-content:flex-end;gap:3px;cursor:pointer;touch-action:manipulation;flex-shrink:0;transition:color 140ms ease,opacity 140ms ease;}
 .genki-plan-rhythm-journey-btn:hover {color:#4B4895;}
 .genki-plan-rhythm-journey-btn:active {opacity:.72;}
@@ -906,6 +935,19 @@ const GENKI_PLAN_UI_STYLES = `
 .genki-plan-screen [id$="progress"] {font-variant-numeric:tabular-nums;}
 @media(prefers-reduced-motion:reduce) {.genki-plan-control,.genki-plan-text-action,.genki-plan-header-goal-btn,.genki-plan-header-inline-pencil,.genki-plan-section-chevron-btn,.genki-plan-section-date-chevron-btn,.genki-plan-week-day-btn,.genki-plan-workout-icon-item,.genki-plan-rhythm-node-btn,.genki-plan-rhythm-node-label,.genki-plan-rhythm-journey-btn,.genki-plan-week-row,.genki-plan-workout-row,.genki-plan-week-nav-btn,.genki-plan-week-back-btn,.genki-plan-view-all-btn,.genki-plan-phase-row,.genki-plan-control-feedback,.genki-plan-progress-fill {transition:none;} .genki-plan-week-content-fade {animation:none;}}
 `;
+
+const GENKI_PLAN_STYLE_EL_ID = 'genki-plan-ui-styles';
+function ensurePlanStylesInjected() {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(GENKI_PLAN_STYLE_EL_ID)) return;
+  const styleEl = document.createElement('style');
+  styleEl.id = GENKI_PLAN_STYLE_EL_ID;
+  styleEl.textContent = GENKI_PLAN_UI_STYLES;
+  document.head.appendChild(styleEl);
+}
+// Inject once when the Plan chunk is parsed (e.g. during Today idle prefetch)
+// so clicking Plan does not trigger a document-wide stylesheet insertion during animation.
+ensurePlanStylesInjected();
 
 const PRIMARY_WEEKLY_FIT_DISPLAY: Record<
   WeeklyReviewFitAnswer,
@@ -1580,17 +1622,25 @@ export function MyPlanView({
     const wasActive = prevIsActiveForWeekRef.current;
     prevIsActiveForWeekRef.current = isActive;
     if (wasActive && !isActive) {
-      setSelectedTrackDateKey(deviceToday.dateStr);
+      setSelectedTrackDateKey((prev) => (prev === deviceToday.dateStr ? prev : deviceToday.dateStr));
     } else if (!wasActive && isActive) {
       weekNavSeqRef.current += 1;
-      setSelectedTrackDateKey(deviceToday.dateStr);
-      setWeekActivitySheet({
-        open: false,
-        weekStartKey: currentWeekBounds.weekStartKey,
-        selectedDateKey: null,
-        filterTypeKey: null,
-        expandAllTypes: false,
-      });
+      setSelectedTrackDateKey((prev) => (prev === deviceToday.dateStr ? prev : deviceToday.dateStr));
+      setWeekActivitySheet((prev) =>
+        !prev.open &&
+        prev.weekStartKey === currentWeekBounds.weekStartKey &&
+        prev.selectedDateKey === null &&
+        prev.filterTypeKey === null &&
+        !prev.expandAllTypes
+          ? prev
+          : {
+              open: false,
+              weekStartKey: currentWeekBounds.weekStartKey,
+              selectedDateKey: null,
+              filterTypeKey: null,
+              expandAllTypes: false,
+            }
+      );
     }
   }, [isActive, currentWeekBounds.weekStartKey, deviceToday.dateStr]);
 
@@ -1616,9 +1666,20 @@ export function MyPlanView({
   );
 
   // Secondary activity detail sheet snapshot tracks whichever week the user is browsing inside the sheet
+  // Reuse currentWeekSnapshot when sheet is closed or viewing the current week to avoid redundant work on initial mount.
   const sheetWeekSnapshot = useMemo(
-    () => getPlanWeekSnapshot(effectivePlanStore, weekActivitySheet.weekStartKey, referenceTodayDate),
-    [effectivePlanStore, weekActivitySheet.weekStartKey, referenceTodayDate]
+    () =>
+      !weekActivitySheet.open || weekActivitySheet.weekStartKey === currentWeekBounds.weekStartKey
+        ? currentWeekSnapshot
+        : getPlanWeekSnapshot(effectivePlanStore, weekActivitySheet.weekStartKey, referenceTodayDate),
+    [
+      weekActivitySheet.open,
+      weekActivitySheet.weekStartKey,
+      currentWeekBounds.weekStartKey,
+      currentWeekSnapshot,
+      effectivePlanStore,
+      referenceTodayDate,
+    ]
   );
 
   // Synchronously computed Your rhythm model strictly scoped to a single user-confirmed habitId
@@ -1735,6 +1796,9 @@ export function MyPlanView({
       filterTypeKey?: string | null;
       expandAllTypes?: boolean;
     }) => {
+      if (selectedModule === null && planScrollRef.current) {
+        savedPlanScrollTopRef.current = planScrollRef.current.scrollTop;
+      }
       weekNavSeqRef.current += 1;
       setWeekActivitySheet({
         open: true,
@@ -1744,7 +1808,7 @@ export function MyPlanView({
         expandAllTypes: opts?.expandAllTypes ?? false,
       });
     },
-    [currentWeekBounds.weekStartKey]
+    [currentWeekBounds.weekStartKey, selectedModule]
   );
 
   const handleStepSheetWeek = useCallback(
@@ -2595,7 +2659,9 @@ export function MyPlanView({
   };
 
   // 6-Month Trend Series derived directly from effectiveActivityLogs ending at viewed month
+  // Computed only when the secondary History view is open so Plan first-screen mount stays light.
   const monthlyTrendSeries: MonthlyTrendPoint[] = useMemo(() => {
+    if (selectedModule !== 'history') return [];
     const series: MonthlyTrendPoint[] = [];
     for (let offset = -5; offset <= 0; offset++) {
       const mDate = new Date(viewYear, viewMonth + offset, 1);
@@ -2614,10 +2680,23 @@ export function MyPlanView({
       });
     }
     return series;
-  }, [effectiveActivityLogs, viewYear, viewMonth]);
+  }, [selectedModule, effectiveActivityLogs, viewYear, viewMonth]);
 
   // Dynamic 7-Day and Month Rhythm Summaries derived from the exact same activityLogs
+  // Computed only when History view is open to keep Plan initial mount off the click frame.
   const rhythmSummaries: Record<RhythmTimeframe, RecentSummaryData> = useMemo(() => {
+    if (selectedModule !== 'history') {
+      const emptySummary: RecentSummaryData = {
+        rangeLabel: '',
+        activeDaysCount: 0,
+        completedCount: 0,
+        activeMinutes: 0,
+        restDaysCount: 0,
+        novaObservation: '',
+        dailyBreakdown: [],
+      };
+      return { '7d': emptySummary, month: emptySummary };
+    }
     // Determine anchor end date for 7d window:
     // If viewing current month, use max(deviceToday.dateStr, latest logged date in current month)
     // so logging on any day in the month or past 7 days reflects immediately.
@@ -2766,6 +2845,7 @@ export function MyPlanView({
       }
     };
   }, [
+    selectedModule,
     effectiveActivityLogs,
     currentMonthRecords,
     deviceToday,
@@ -2988,19 +3068,85 @@ export function MyPlanView({
   };
 
   // --- Handlers for Phase Commitment Header / Goal Detail ---
+  const openGoalHubInNova = useCallback(() => {
+    const primaryHabit = activeRhythmHabit ?? effectiveCommitment?.strategies?.[0] ?? null;
+    const initialSnapshot: GoalPlanSnapshot = {
+      goalText: effectiveCommitment?.summary?.trim() || direction.goalTitle?.trim() || 'Build a steady movement routine',
+      durationAction: primaryHabit?.regularAction?.trim() || '15-minute walks',
+      frequency: primaryHabit?.frequencyDescription?.trim() || 'Three times a week',
+      lighterOption: primaryHabit?.minimumAction?.trim() || '2-minute walk',
+      habitLabel: primaryHabit?.label?.trim() || 'Short walks',
+      hasConfirmedCommitment,
+      status: effectiveCommitment?.status ?? 'active',
+    };
+
+    launchPlanNovaChat({
+      id: `goal-hub-${Date.now()}`,
+      kind: 'goal_hub',
+      actionTitle: 'Your goal',
+      sourceModule: 'goal',
+      sourceLabel: 'Plan',
+      introMessage: '',
+      inputPlaceholder: 'Ask Nova or type a new goal…',
+      handlesThreadLocally: true,
+      initialSnapshot,
+      handlers: {
+        onSaveGoalPlan: (next, options): PlanNovaCommitResult => {
+          const res = handleGoalAdjust(
+            {
+              mode: options?.isNewDirection ? 'new_direction' : 'adjust_strategy',
+              summary: next.goalText,
+              strategySummary: buildStrategySummary(next),
+              habitLabel: next.habitLabel || primaryHabit?.label || 'Short walks',
+              regularAction: next.durationAction,
+              minimumAction: next.lighterOption,
+              frequencyDescription: next.frequency,
+            },
+            { stayOnDetail: true }
+          );
+          if (!res.ok) return { ok: false, error: res.error };
+          return { ok: true };
+        },
+        onReviewGoal: ({ decision, feeling }): PlanNovaCommitResult => {
+          const res =
+            decision === 'mark_complete'
+              ? handleGoalConfirmCompletion({ feeling })
+              : handleGoalKeepExploring({ feeling });
+          if (!res.ok) return { ok: false, error: res.error };
+          return { ok: true };
+        },
+        onApplyNextStep: ({ choice, nextSnapshot }): PlanNovaCommitResult => {
+          const res = handleGoalApplyNextStep({
+            choice,
+            nextStrategySummary: buildStrategySummary(nextSnapshot),
+            nextRegularAction: nextSnapshot.durationAction,
+            nextMinimumAction: nextSnapshot.lighterOption,
+            nextFrequencyDescription: nextSnapshot.frequency,
+            newFocusSummary: choice === 'new_focus' ? nextSnapshot.goalText : undefined,
+            newFocusOriginalIntent: choice === 'new_focus' ? nextSnapshot.goalText : undefined,
+          });
+          if (!res.ok) return { ok: false, error: res.error };
+          return { ok: true };
+        },
+      },
+    });
+  }, [
+    activeRhythmHabit,
+    direction.goalTitle,
+    effectiveCommitment,
+    handleGoalAdjust,
+    handleGoalApplyNextStep,
+    handleGoalConfirmCompletion,
+    handleGoalKeepExploring,
+    hasConfirmedCommitment,
+    launchPlanNovaChat,
+  ]);
+
   const handleOpenFocusAdjust = () => {
-    if (hasConfirmedCommitment && effectiveCommitment) {
-      const targetMode: GoalDetailSubMode =
-        effectiveCommitment.reviewRequested && effectiveCommitment.status !== 'completed'
-          ? 'review'
-          : 'overview';
-      setGoalOpenedDirectlyForAdjust(false);
-      setGoalSheetInitialMode(targetMode);
-      setGoalSheetActiveMode(targetMode);
-      openSecondaryModule('goal', 'plan');
-      return;
+    if (planScrollRef.current) {
+      savedPlanScrollTopRef.current = planScrollRef.current.scrollTop;
     }
-    openUnifiedGoalAdjustFlow();
+    openGoalHubInNova();
   };
 
   const handleCloseFocusAdjust = () => {
@@ -3854,7 +4000,6 @@ export function MyPlanView({
       ref={planScrollRef}
       className="genki-plan-screen flex-1 overflow-y-auto overflow-x-hidden px-5 pt-[8px] pb-[calc(100px+env(safe-area-inset-bottom,0px))] flex flex-col z-10 scrollbar-none select-none"
     >
-      <style>{GENKI_PLAN_UI_STYLES}</style>
       {/* Toast Notifications */}
       <AnimatePresence>
         {directionToast && (
@@ -4422,66 +4567,40 @@ export function MyPlanView({
                 />
 
                 <motion.div
-                  ref={secondarySheetScrollRef}
                   initial={{ y: '100%' }}
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
                   transition={{ type: 'spring', damping: 28, stiffness: 280 }}
-                  className="relative w-full max-h-[90%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] p-5 sm:p-6 pb-[calc(24px+env(safe-area-inset-bottom,0px))] shadow-2xl border-t border-white/90 overflow-y-auto z-10 flex flex-col gap-4 text-[#1C1C1E]"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="secondary-sheet-title"
+                  className="relative w-full h-[88%] max-h-[88%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] shadow-2xl border-t border-white/90 overflow-hidden z-10 flex flex-col text-[#211D2C] font-sans"
                   id="my-plan-secondary-sheet"
                 >
-                  {/* Sheet Header with clear Back navigation */}
-                  <div className="flex flex-col gap-1.5 pb-3 border-b border-black/[0.06] shrink-0">
-                    <div className="flex items-center justify-between gap-2">
+                  {/* Shared sticky secondary sheet header (matches This week benchmark) */}
+                  <header className="shrink-0 px-5 pt-[max(14px,env(safe-area-inset-top,0px))] pb-3 border-b border-black/[0.06] bg-white/95 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1 min-w-0 flex-1">
                       <button
                         type="button"
                         id="secondary-sheet-back-btn"
                         onClick={handleSecondarySheetBack}
-                        className="genki-plan-control genki-plan-control-base min-h-[44px] -ml-2 px-2 flex items-center gap-1 text-[15px] font-medium leading-[21px] text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 transition-opacity cursor-pointer"
+                        className="w-11 h-11 min-w-[44px] min-h-[44px] -ml-3 rounded-full flex items-center justify-center text-[#211D2C] hover:bg-black/[0.04] active:bg-black/[0.08] active:opacity-75 transition-colors shrink-0 cursor-pointer"
                         aria-label={
                           selectedModule === 'history' && historyReturnModule === 'journey'
-                            ? 'Return to Your journey'
+                            ? 'Return to Your rhythm'
                             : selectedModule === 'history' && historyReturnModule === 'weekly_review'
                             ? 'Return to Weekly review'
                             : 'Return to Plan'
                         }
                       >
-                        <ChevronLeft className="w-5 h-5 stroke-[2.2]" />
-                        <span>
-                          {selectedModule === 'history' && historyReturnModule === 'journey'
-                            ? 'Your journey'
-                            : selectedModule === 'history' && historyReturnModule === 'weekly_review'
-                            ? 'Weekly review'
-                            : 'Plan'}
-                        </span>
+                        <ChevronLeft className="w-[22px] h-[22px] stroke-[2.2]" aria-hidden="true" />
                       </button>
 
-                      {selectedModule === 'preferences' && (
-                        <button
-                          type="button"
-                          onClick={() => setIsMemoryInfoModalOpen(true)}
-                          className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[13px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
-                          aria-label="Why preferences"
-                        >
-                          Why
-                        </button>
-                      )}
-
-                      {selectedModule === 'history' && (
-                        <button
-                          type="button"
-                          id="history-add-activity-btn"
-                          onClick={() => openLogWorkoutInNova(deviceToday.dateStr)}
-                          className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 -mr-2 text-[15px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
-                        >
-                          Add activity
-                        </button>
-                      )}
-                    </div>
-
-                    <div>
-                      <h3 className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] text-[#1C1C1E] tracking-[-0.02em]">
-                        {selectedModule === 'journey' && 'Your journey'}
+                      <h3
+                        id="secondary-sheet-title"
+                        className="font-sans text-[20px] font-semibold leading-[26px] tracking-[-0.015em] text-[#211D2C] truncate"
+                      >
+                        {selectedModule === 'journey' && 'Your rhythm'}
                         {selectedModule === 'weekly_review' && 'Weekly review'}
                         {selectedModule === 'goal' && 'About this goal'}
                         {selectedModule === 'history' && 'History'}
@@ -4489,7 +4608,35 @@ export function MyPlanView({
                         {selectedModule === 'health' && 'Health data'}
                       </h3>
                     </div>
-                  </div>
+
+                    {selectedModule === 'preferences' && (
+                      <button
+                        type="button"
+                        onClick={() => setIsMemoryInfoModalOpen(true)}
+                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[13px] font-medium text-[#51489A] hover:text-[#413980] shrink-0 cursor-pointer"
+                        aria-label="Why preferences"
+                      >
+                        Why
+                      </button>
+                    )}
+
+                    {selectedModule === 'history' && (
+                      <button
+                        type="button"
+                        id="history-add-activity-btn"
+                        onClick={() => openLogWorkoutInNova(deviceToday.dateStr)}
+                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 -mr-2 text-[14px] font-medium text-[#51489A] hover:text-[#413980] shrink-0 cursor-pointer"
+                      >
+                        Add activity
+                      </button>
+                    )}
+                  </header>
+
+                  <div
+                    ref={secondarySheetScrollRef}
+                    id="my-plan-secondary-sheet-body"
+                    className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pt-4 pb-[calc(24px+env(safe-area-inset-bottom,0px))] flex flex-col gap-4"
+                  >
 
                   {/* ======================================================= */}
                   {/* SECONDARY PAGE 0: YOUR JOURNEY                          */}
@@ -4516,13 +4663,13 @@ export function MyPlanView({
                       />
                     ) : (
                       <div id="view-journey-secondary-page" className="flex flex-col gap-3">
-                        <p className="text-[15px] leading-[22px] text-[#625A76]">
+                        <p className="font-sans text-[14px] font-normal leading-[21px] text-[#625B70]">
                           No habit tracked yet.
                         </p>
                         <button
                           type="button"
                           onClick={() => openEditHabitInNova(null)}
-                          className="genki-plan-control genki-plan-control-primary self-start min-h-[48px] px-5 rounded-[12px] bg-[#5E5BAE] text-white text-[15px] font-semibold cursor-pointer"
+                          className="genki-plan-control genki-plan-control-primary self-start min-h-[48px] px-5 rounded-[12px] bg-[#51489A] text-white text-[14px] font-semibold cursor-pointer"
                         >
                           Confirm a habit
                         </button>
@@ -5119,6 +5266,7 @@ export function MyPlanView({
                       </div>
                     </div>
                   )}
+                  </div>
                 </motion.div>
               </div>
             )}
@@ -6083,7 +6231,7 @@ export function MyPlanView({
           return `${datePart} · ${time}`;
         };
 
-        const closeActivitySheet = () =>
+        const closeActivitySheet = () => {
           setWeekActivitySheet((prev) => ({
             ...prev,
             open: false,
@@ -6091,6 +6239,15 @@ export function MyPlanView({
             filterTypeKey: null,
             expandAllTypes: false,
           }));
+          const targetTop = savedPlanScrollTopRef.current;
+          if (typeof window !== 'undefined') {
+            window.requestAnimationFrame(() => {
+              if (planScrollRef.current) {
+                planScrollRef.current.scrollTop = targetTop;
+              }
+            });
+          }
+        };
 
         const activityListPortal = (
           <AnimatePresence>
@@ -6106,46 +6263,46 @@ export function MyPlanView({
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.16 }}
                   onClick={closeActivitySheet}
-                  className="absolute inset-0 bg-black/30 backdrop-blur-xs"
+                  className="absolute inset-0 bg-black/25 backdrop-blur-xs"
                 />
 
                 <motion.div
                   initial={{ y: '100%' }}
                   animate={{ y: 0 }}
                   exit={{ y: '100%' }}
-                  transition={{ type: 'spring', damping: 28, stiffness: 290 }}
+                  transition={{ type: 'spring', damping: 28, stiffness: 280 }}
                   role="dialog"
                   aria-modal="true"
                   aria-labelledby="this-week-activity-sheet-title"
                   id="this-week-activity-sheet"
                   data-week-start={sheetWeekSnapshot.weekStartKey}
                   data-selected-date={selectedDateKey ?? ''}
-                  className="relative w-full max-h-[84%] bg-white rounded-t-[32px] shadow-2xl border-t border-black/[0.05] z-10 flex flex-col overflow-hidden text-[#1C1C1E]"
+                  className="relative w-full h-[88%] max-h-[88%] bg-white/95 backdrop-blur-2xl rounded-t-[32px] shadow-2xl border-t border-white/90 overflow-hidden z-10 flex flex-col text-[#211D2C] font-sans"
                 >
-                  {/* Sheet top title + close button */}
-                  <div className="px-5 pt-5 pb-2 flex items-center justify-between gap-3 shrink-0">
-                    <div className="min-w-0">
+                  {/* Shared sticky secondary sheet header (matches Your rhythm) */}
+                  <header className="shrink-0 px-5 pt-[max(14px,env(safe-area-inset-top,0px))] pb-3 border-b border-black/[0.06] bg-white/95 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1 min-w-0 flex-1">
+                      <button
+                        type="button"
+                        id="this-week-activity-close-btn"
+                        onClick={closeActivitySheet}
+                        className="w-11 h-11 min-w-[44px] min-h-[44px] -ml-3 rounded-full flex items-center justify-center text-[#211D2C] hover:bg-black/[0.04] active:bg-black/[0.08] active:opacity-75 transition-colors shrink-0 cursor-pointer"
+                        aria-label="Return to Plan"
+                      >
+                        <ChevronLeft className="w-[22px] h-[22px] stroke-[2.2]" aria-hidden="true" />
+                      </button>
+
                       <h3
                         id="this-week-activity-sheet-title"
-                        className="genki-plan-sheet-heading text-[22px] font-semibold leading-[28px] tracking-[-0.02em] text-[#1C1C1E] truncate"
+                        className="font-sans text-[20px] font-semibold leading-[26px] tracking-[-0.015em] text-[#211D2C] truncate"
                       >
                         {sheetTitle}
                       </h3>
                     </div>
-
-                    <button
-                      type="button"
-                      id="this-week-activity-close-btn"
-                      onClick={closeActivitySheet}
-                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] cursor-pointer transition-colors"
-                      aria-label="Close"
-                    >
-                      <X className="w-4 h-4 stroke-[2.2]" />
-                    </button>
-                  </div>
+                  </header>
 
                   {/* Top week switcher: ‹ Date range › (disables › on current week) */}
-                  <div className="px-3 pb-2 border-b border-black/[0.06] shrink-0">
+                  <div className="px-3 py-1.5 border-b border-black/[0.06] shrink-0">
                     <div
                       id="this-week-sheet-nav-row"
                       className="flex items-center justify-between gap-1"
@@ -6163,7 +6320,7 @@ export function MyPlanView({
 
                       <span
                         id="this-week-activity-sheet-range"
-                        className="genki-plan-week-nav-date"
+                        className="flex-1 min-w-0 text-center font-sans text-[12px] font-normal leading-[16px] text-[#6F687B] tabular-nums truncate"
                       >
                         {sheetWeekSnapshot.rangeLabel}
                       </span>
@@ -6183,7 +6340,7 @@ export function MyPlanView({
                     {sheetWeekSnapshot.showEarlierUnavailableNote && (
                       <p
                         id="this-week-sheet-coverage-note"
-                        className="mt-[2px] pb-1 text-center text-[13px] font-normal leading-[18px] text-[#8B8498]"
+                        className="mt-[2px] pb-1 text-center font-sans text-[12px] font-normal leading-[16px] text-[#6F687B]"
                       >
                         Earlier records unavailable
                       </p>
@@ -6197,7 +6354,7 @@ export function MyPlanView({
                       >
                         <span
                           id="this-week-sheet-selected-day-label"
-                          className="text-[13px] font-medium leading-[18px] text-[#514879]"
+                          className="font-sans text-[12px] font-normal leading-[16px] text-[#6F687B]"
                         >
                           {selectedDayLabel}
                         </span>
@@ -6211,7 +6368,7 @@ export function MyPlanView({
                               filterTypeKey: null,
                             }))
                           }
-                          className="min-h-[44px] px-2 -my-2 rounded-[8px] text-[13px] font-semibold text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer transition-colors"
+                          className="min-h-[44px] px-2 -my-2 rounded-[8px] font-sans text-[13px] font-semibold text-[#51489A] hover:text-[#413980] cursor-pointer transition-colors"
                         >
                           All days
                         </button>
@@ -6221,14 +6378,14 @@ export function MyPlanView({
 
                   <div
                     key={`${sheetWeekSnapshot.weekStartKey}::${selectedDateKey ?? 'all'}`}
-                    className="genki-plan-week-content-fade flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 flex flex-col gap-4"
+                    className="genki-plan-week-content-fade flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pt-4 pb-[calc(24px+env(safe-area-inset-bottom,0px))] flex flex-col gap-4"
                   >
                     {/* Synchronized week/day summary stat */}
                     <div
                       id="this-week-sheet-stats"
                       className="flex items-baseline justify-between gap-2"
                     >
-                      <span className="text-[15px] font-medium leading-[22px] text-[#514879] tabular-nums">
+                      <span className="font-sans text-[16px] font-semibold leading-[22px] text-[#211D2C] tabular-nums">
                         {sheetWeekSnapshot.isWeekCoverageUnknown && !selectedDateKey
                           ? sheetWeekSnapshot.hasLoadFailure
                             ? 'Unable to load records'
@@ -6243,7 +6400,7 @@ export function MyPlanView({
                     {scopedWorkoutTypes.length > 0 && (
                       <div id="this-week-sheet-type-summary" className="flex flex-col">
                         <div className="flex items-center justify-between mb-1">
-                          <span className="text-[12px] font-medium uppercase tracking-[0.04em] text-[#8B8498]">
+                          <span className="font-sans text-[12px] font-normal leading-[16px] text-[#6F687B]">
                             Workout types ({scopedWorkoutTypes.length})
                           </span>
                           {activeFilterKey && (
