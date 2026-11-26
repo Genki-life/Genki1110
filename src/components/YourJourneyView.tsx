@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Info, Pencil } from 'lucide-react';
 import {
   getHabitJourneyNextStep,
   getHabitJourneyPointDetail,
@@ -10,7 +10,6 @@ import {
   type JourneyNextStepExperiment,
   type PlanFoundationStore,
 } from '../utils/planDataFoundation';
-import { IllustrativeRhythmGraphic } from './IllustrativeRhythmGraphic';
 import { PlanRhythmChart } from './PlanRhythmChart';
 
 export interface SharedWeeklyReviewProposalInput {
@@ -155,12 +154,31 @@ export function YourJourneyView({
     ]
   );
 
-  const habitDetailsList = [
-    habit.regularAction ? `Regular: ${habit.regularAction}` : null,
-    habit.minimumAction ? `Lighter: ${habit.minimumAction}` : null,
-    habit.alternativeAction ? `Backup: ${habit.alternativeAction}` : null,
-    habit.cueTiming ? `Cue: ${habit.cueTiming}` : null,
-  ].filter((item): item is string => Boolean(item));
+  const habitSummaryLine = useMemo(() => {
+    const regular = habit.regularAction?.trim();
+    const minimum = habit.minimumAction?.trim();
+    const parts: string[] = [];
+    if (regular) {
+      parts.push(regular);
+    }
+    if (minimum) {
+      const lowerMin = minimum.toLowerCase();
+      if (lowerMin.includes('fallback')) {
+        parts.push(minimum);
+      } else {
+        const walkMinMatch = minimum.match(/^(\d+[\s-]*(?:min|minute|minutes))\s+walk(s)?$/i);
+        if (walkMinMatch && regular?.toLowerCase().includes('walk')) {
+          parts.push(`${walkMinMatch[1].replace(/\s+/g, '-')} fallback`);
+        } else {
+          parts.push(`${minimum} fallback`);
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join(' · ');
+    if (habit.alternativeAction?.trim()) return habit.alternativeAction.trim();
+    if (habit.cueTiming?.trim()) return habit.cueTiming.trim();
+    return 'No session details yet';
+  }, [habit.regularAction, habit.minimumAction, habit.alternativeAction, habit.cueTiming]);
 
   return (
     <div
@@ -170,39 +188,27 @@ export function YourJourneyView({
       data-journey-status={journeyModel.statusCode}
       className="flex flex-col font-sans text-[#625B70]"
     >
-      {/* 0. Habit Journey Chart (preserved milestones, labels, click behavior) */}
-      <section
-        id="journey-section-milestones"
-        aria-label="Habit journey"
-        className="pb-5 border-b border-[rgba(74,66,98,0.08)] flex flex-col"
-      >
-        <IllustrativeRhythmGraphic idPrefix="journey-rhythm" showSelectedTitle />
-      </section>
-
       {/* 1. Current Habit */}
       <section
         id="journey-section-habit"
         aria-label="Current habit"
-        className="py-5 border-b border-[rgba(74,66,98,0.08)] flex flex-col gap-1.5"
+        className="pb-5 border-b border-[rgba(74,66,98,0.08)] flex flex-col gap-1"
       >
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col min-w-0">
-            <span className="text-[12px] font-normal leading-[16px] text-[#6F687B]">Habit</span>
-            <h4
-              id="journey-habit-label"
-              className="mt-1 text-[16px] font-semibold leading-[22px] text-[#211D2C] break-words"
-            >
-              {habit.label}
-            </h4>
-          </div>
+        <div className="flex items-center justify-between gap-2 min-h-[44px] -my-2">
+          <h4
+            id="journey-habit-label"
+            className="font-sans text-[16px] font-semibold leading-[22px] text-[#211D2C] break-words min-w-0"
+          >
+            {habit.label}
+          </h4>
 
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-0.5 shrink-0">
             {confirmedHabitCount > 1 && onSwitchHabit && (
               <button
                 type="button"
                 id="journey-switch-habit-btn"
                 onClick={onSwitchHabit}
-                className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[14px] font-medium leading-[20px] text-[#6F687B] hover:text-[#51489A] cursor-pointer whitespace-nowrap"
+                className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[13px] font-medium leading-[18px] text-[#6F687B] hover:text-[#51489A] cursor-pointer whitespace-nowrap"
               >
                 Switch
               </button>
@@ -211,20 +217,20 @@ export function YourJourneyView({
               type="button"
               id="journey-edit-habit-btn"
               onClick={() => onEditHabit(habit)}
-              className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[14px] font-medium leading-[20px] text-[#51489A] hover:text-[#443B87] cursor-pointer whitespace-nowrap"
+              aria-label={`Edit ${habit.label}`}
+              className="w-11 h-11 min-w-[44px] min-h-[44px] -mr-2.5 rounded-full flex items-center justify-center text-[#51489A] hover:bg-[#51489A]/[0.08] active:bg-[#51489A]/[0.14] transition-colors shrink-0 cursor-pointer"
             >
-              Edit
+              <Pencil className="w-[18px] h-[18px] stroke-[2]" aria-hidden="true" />
             </button>
           </div>
         </div>
 
-        <div id="journey-habit-config" className="flex flex-col gap-1 mt-0.5">
-          {habitDetailsList.map((line) => (
-            <p key={line} className="text-[14px] font-normal leading-[21px] text-[#625B70] break-words">
-              {line}
-            </p>
-          ))}
-        </div>
+        <p
+          id="journey-habit-config"
+          className="font-sans text-[14px] font-normal leading-[21px] text-[#625B70] break-words"
+        >
+          {habitSummaryLine}
+        </p>
       </section>
 
       {/* 2. 14 / 30 / 90 days segmented switcher */}
@@ -287,22 +293,23 @@ export function YourJourneyView({
             </button>
           </div>
         ) : (
-          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <div className="flex items-center justify-between gap-3 min-h-[44px] -my-2">
             <h4
               id="journey-status-label"
-              className="text-[16px] font-semibold leading-[22px] text-[#211D2C]"
+              className="font-sans text-[16px] font-semibold leading-[22px] text-[#211D2C] min-w-0"
             >
               {journeyModel.statusLabel}
             </h4>
             <button
               type="button"
               id="journey-why-btn"
+              aria-label="Why this rhythm status?"
               aria-expanded={isWhyOpen}
               aria-controls="journey-why-panel"
               onClick={() => setIsWhyOpen((prev) => !prev)}
-              className="genki-plan-control genki-plan-control-base min-h-[44px] px-1 text-[12px] font-medium leading-[16px] text-[#51489A] hover:text-[#443B87] cursor-pointer whitespace-nowrap"
+              className="w-11 h-11 min-w-[44px] min-h-[44px] -mr-2.5 rounded-full flex items-center justify-center text-[#51489A] hover:bg-[#51489A]/[0.08] active:bg-[#51489A]/[0.14] transition-colors shrink-0 cursor-pointer"
             >
-              Why
+              <Info className="w-[18px] h-[18px] stroke-[2]" aria-hidden="true" />
             </button>
           </div>
         )}
@@ -393,18 +400,20 @@ export function YourJourneyView({
                     type="button"
                     id="journey-fix-records-btn"
                     onClick={onOpenHistoryFromJourney}
-                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[21px] text-[#211D2C] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
+                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left flex items-center justify-between gap-2 text-[14px] font-medium leading-[21px] text-[#211D2C] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
                   >
-                    Review records in History
+                    <span>Review records in History</span>
+                    <ChevronRight className="w-[18px] h-[18px] stroke-[2] text-[#6F687B] shrink-0" aria-hidden="true" />
                   </button>
 
                   <button
                     type="button"
                     id="journey-add-feeling-btn"
                     onClick={onOpenStartingFeelInNova}
-                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left text-[14px] font-medium leading-[21px] text-[#211D2C] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
+                    className="genki-plan-control w-full min-h-[44px] px-3.5 rounded-[12px] bg-white border border-[rgba(74,66,98,0.12)] text-left flex items-center justify-between gap-2 text-[14px] font-medium leading-[21px] text-[#211D2C] hover:bg-[#F3F1F8] transition-colors cursor-pointer"
                   >
-                    Add how starting feels
+                    <span>Add how starting feels</span>
+                    <Pencil className="w-[18px] h-[18px] stroke-[2] text-[#51489A] shrink-0" aria-hidden="true" />
                   </button>
 
                   <button

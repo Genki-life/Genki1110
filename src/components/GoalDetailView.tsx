@@ -294,7 +294,7 @@ export function GoalDetailView({
               className="genki-plan-control w-full min-h-[48px] px-4 py-3 rounded-[12px] bg-[#F6F4FA] border border-[rgba(74,66,98,0.08)] text-[#302D3D] hover:bg-[#EFEBF7] text-left flex items-center justify-between gap-3 cursor-pointer"
             >
               <span className="text-[15px] font-semibold leading-[22px]">Keep this rhythm</span>
-              <ChevronRight className="w-4 h-4 text-[#706A7C] shrink-0" aria-hidden="true" />
+              <ChevronRight className="w-[18px] h-[18px] stroke-[2] text-[#6F687B] shrink-0" aria-hidden="true" />
             </button>
 
             <button
@@ -304,7 +304,7 @@ export function GoalDetailView({
               className="genki-plan-control w-full min-h-[48px] px-4 py-3 rounded-[12px] bg-[#F6F4FA] border border-[rgba(74,66,98,0.08)] text-[#302D3D] hover:bg-[#EFEBF7] text-left flex items-center justify-between gap-3 cursor-pointer"
             >
               <span className="text-[15px] font-semibold leading-[22px]">Build a little</span>
-              <ChevronRight className="w-4 h-4 text-[#706A7C] shrink-0" aria-hidden="true" />
+              <ChevronRight className="w-[18px] h-[18px] stroke-[2] text-[#6F687B] shrink-0" aria-hidden="true" />
             </button>
 
             <button
@@ -314,7 +314,7 @@ export function GoalDetailView({
               className="genki-plan-control w-full min-h-[48px] px-4 py-3 rounded-[12px] bg-[#F6F4FA] border border-[rgba(74,66,98,0.08)] text-[#302D3D] hover:bg-[#EFEBF7] text-left flex items-center justify-between gap-3 cursor-pointer"
             >
               <span className="text-[15px] font-semibold leading-[22px]">Choose a new focus</span>
-              <ChevronRight className="w-4 h-4 text-[#706A7C] shrink-0" aria-hidden="true" />
+              <ChevronRight className="w-[18px] h-[18px] stroke-[2] text-[#6F687B] shrink-0" aria-hidden="true" />
             </button>
           </div>
         </section>

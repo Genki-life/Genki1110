@@ -11,6 +11,8 @@ export const DISCOVER_CATALOG_IDS = [
   'desk-decompression',
   'parasympathetic-breath',
   'evening-soundscape',
+  'morning-yoga-flow',
+  'after-lunch-stroll',
 ] as const;
 
 export type DiscoverCatalogId = (typeof DISCOVER_CATALOG_IDS)[number];

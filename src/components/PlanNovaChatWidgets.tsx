@@ -17,12 +17,17 @@ import {
   WeeklyHardFollowUpAnswer,
   WeeklyReviewFitAnswer,
 } from '../utils/planDataFoundation';
-import { MemoryCategory, PreferenceItem } from '../utils/preferencesStore';
+import { PreferenceItem } from '../utils/preferencesStore';
 import {
   GoalNovaConversation,
   type GoalHubHandlers,
   type GoalPlanSnapshot,
 } from './GoalNovaConversation';
+import { HabitNovaConversation } from './HabitNovaConversation';
+import {
+  PreferenceNovaConversation,
+  type StructuredPreferenceSavePayload,
+} from './PreferenceNovaConversation';
 
 export type PlanNovaSourceModule =
   | 'goal'
@@ -113,6 +118,7 @@ export type PlanNovaChatRequest =
       sourceLabel: string;
       introMessage: string;
       inputPlaceholder: string;
+      handlesThreadLocally: true;
       isConfirmingNew: boolean;
       initialValues: {
         habitName: string;
@@ -191,6 +197,10 @@ export type PlanNovaChatRequest =
       introMessage: string;
       inputPlaceholder: string;
       initialDateKey: string;
+      initialMode?: 'workout' | 'rest';
+      initialEditActivityId?: string | null;
+      initialRestNote?: string;
+      externalImportIds?: string[];
       activityRecords: ActivityCompletionRecord[];
       restRecords: RestRecord[];
       onAddActivity: (input: ManualActivityInput) => PlanNovaCommitResult;
@@ -208,16 +218,12 @@ export type PlanNovaChatRequest =
       sourceLabel: string;
       introMessage: string;
       inputPlaceholder: string;
+      handlesThreadLocally: true;
       mode: 'add' | 'edit' | 'confirm';
       existingItem?: PreferenceItem;
-      onSave: (input: {
-        title: string;
-        shortTag?: string;
-        summary?: string;
-        category: MemoryCategory;
-      }) => PlanNovaCommitResult;
-      onIgnorePending?: () => PlanNovaCommitResult;
-      onDelete?: () => PlanNovaCommitResult;
+      allItems: PreferenceItem[];
+      onSave: (payload: StructuredPreferenceSavePayload) => PlanNovaCommitResult;
+      onIgnorePending?: (itemId: string) => PlanNovaCommitResult;
     }
   | {
       id: string;
@@ -256,12 +262,6 @@ const STRATEGY_CHIPS = [
   'Short walk twice a week',
 ];
 
-const HABIT_PRESETS = [
-  { name: 'Short walk', regular: '10-minute walk', minimum: '5-minute walk' },
-  { name: 'Morning stretch', regular: '5-minute stretch', minimum: '2-minute shoulder stretch' },
-  { name: 'After-dinner walk', regular: '15-minute walk', minimum: '5-minute walk outside' },
-];
-
 type WorkoutCategory = Exclude<ActivityCategory, 'rest'>;
 
 const WORKOUT_PRESETS: Array<{
@@ -278,12 +278,6 @@ const WORKOUT_PRESETS: Array<{
   { label: 'Bike · 20m', title: 'Cycling', category: 'other', durationMinutes: 20 },
 ];
 
-const PREFERENCE_SUGGESTIONS: Array<{ title: string; shortTag: string }> = [
-  { title: 'Short walks work best on busy days', shortTag: 'Short walks' },
-  { title: 'Prefer morning movement', shortTag: 'Mornings' },
-  { title: 'Gentle stretches on low-energy days', shortTag: 'Gentle stretch' },
-  { title: 'Keep workouts easy to do at home', shortTag: 'At home' },
-];
 
 const WEEKLY_FIT_CHOICES: Array<{ value: WeeklyReviewFitAnswer; label: string }> = [
   { value: 'hard_to_fit_in', label: 'Hard to fit' },
@@ -354,12 +348,50 @@ export const PlanNovaChatWidget: React.FC<PlanNovaChatWidgetProps> = ({
       />
     );
   }
+  if (request.kind === 'edit_habit') {
+    return (
+      <HabitNovaConversation
+        key={request.id}
+        initialSnapshot={request.initialValues}
+        isConfirmingNew={request.isConfirmingNew}
+        onSaveHabit={(next) =>
+          request.onCommit({
+            habitName: next.habitName,
+            regularAction: next.regularAction,
+            minimumAction: next.minimumAction.trim() || undefined,
+          })
+        }
+        incomingTextEvent={rest.incomingTextEvent}
+        onScrollToBottom={rest.onScrollToBottom}
+        onUpdateInputPlaceholder={rest.onUpdateInputPlaceholder}
+        onFocusChatInput={rest.onFocusChatInput}
+      />
+    );
+  }
+  if (request.kind === 'edit_preference') {
+    return (
+      <PreferenceNovaConversation
+        key={request.id}
+        mode={request.mode}
+        existingItem={request.existingItem}
+        allItems={request.allItems}
+        onSavePreference={request.onSave}
+        onIgnorePending={request.onIgnorePending}
+        incomingTextEvent={rest.incomingTextEvent}
+        onScrollToBottom={rest.onScrollToBottom}
+        onUpdateInputPlaceholder={rest.onUpdateInputPlaceholder}
+      />
+    );
+  }
   return <LegacyPlanNovaChatWidget {...rest} request={request} />;
 };
 
 const LegacyPlanNovaChatWidget: React.FC<
   Omit<PlanNovaChatWidgetProps, 'request'> & {
-    request: Exclude<PlanNovaChatRequest, { kind: 'goal_hub' }>;
+    request: Exclude<
+      PlanNovaChatRequest,
+      { kind: 'goal_hub' } | { kind: 'edit_habit' } | { kind: 'edit_preference' }
+    >;
   }
 > = ({
   request,
@@ -408,8 +440,6 @@ const LegacyPlanNovaChatWidget: React.FC<
   const [habitName, setHabitName] = useState(
     request.kind === 'adjust_goal'
       ? request.initialValues.habitName
-      : request.kind === 'edit_habit'
-      ? request.initialValues.habitName
       : request.kind === 'goal_next_step'
       ? request.currentHabitName
       : ''
@@ -417,18 +447,12 @@ const LegacyPlanNovaChatWidget: React.FC<
   const [habitRegular, setHabitRegular] = useState(
     request.kind === 'adjust_goal'
       ? request.initialValues.habitRegularAction
-      : request.kind === 'edit_habit'
-      ? request.initialValues.regularAction
       : request.kind === 'goal_next_step'
       ? request.currentHabitAction
       : ''
   );
   const [habitMinimum, setHabitMinimum] = useState(
-    request.kind === 'adjust_goal'
-      ? request.initialValues.habitMinimumAction
-      : request.kind === 'edit_habit'
-      ? request.initialValues.minimumAction
-      : ''
+    request.kind === 'adjust_goal' ? request.initialValues.habitMinimumAction : ''
   );
 
   // 2. review_goal
@@ -486,19 +510,6 @@ const LegacyPlanNovaChatWidget: React.FC<
   const [workoutNote, setWorkoutNote] = useState('');
   const [restNote, setRestNote] = useState('');
 
-  // 10. edit_preference
-  const [prefTitle, setPrefTitle] = useState(
-    request.kind === 'edit_preference'
-      ? (request.existingItem?.title ?? '').replace(/\?+$/, '').trim()
-      : ''
-  );
-  const [prefShortTag, setPrefShortTag] = useState(
-    request.kind === 'edit_preference' ? request.existingItem?.shortTag ?? '' : ''
-  );
-  const [prefSummary, setPrefSummary] = useState(
-    request.kind === 'edit_preference' ? request.existingItem?.summary ?? '' : ''
-  );
-  const [confirmingPrefDelete, setConfirmingPrefDelete] = useState(false);
 
   // Sync draft state when request changes
   useEffect(() => {
@@ -520,10 +531,6 @@ const LegacyPlanNovaChatWidget: React.FC<
       setHabitName(request.currentHabitName);
       setHabitRegular(request.currentHabitAction);
       setHabitMinimum('');
-    } else if (request.kind === 'edit_habit') {
-      setHabitName(request.initialValues.habitName);
-      setHabitRegular(request.initialValues.regularAction);
-      setHabitMinimum(request.initialValues.minimumAction);
     } else if (request.kind === 'starting_feel') {
       setStartingFeelDraft(request.initialValue);
     } else if (request.kind === 'review_suggestion') {
@@ -535,20 +542,37 @@ const LegacyPlanNovaChatWidget: React.FC<
       setWeeklyNoteDraft(request.initialNote);
     } else if (request.kind === 'log_workout') {
       setLogDateKey(request.initialDateKey);
-      setLogMode('workout');
-      setEditingRecordId(null);
       setPendingDeleteActivityId(null);
       setPendingDeleteRestId(null);
-      setWorkoutTitle('Short walk');
-      setWorkoutCategory('walk');
-      setWorkoutDuration('10');
-      setWorkoutNote('');
-      setRestNote('');
-    } else if (request.kind === 'edit_preference') {
-      setPrefTitle((request.existingItem?.title ?? '').replace(/\?+$/, '').trim());
-      setPrefShortTag(request.existingItem?.shortTag ?? '');
-      setPrefSummary(request.existingItem?.summary ?? '');
-      setConfirmingPrefDelete(false);
+      const externalSet = new Set(request.externalImportIds ?? []);
+      const targetEditRec = request.initialEditActivityId
+        ? request.activityRecords.find((r) => r.id === request.initialEditActivityId) ?? null
+        : null;
+      if (targetEditRec && !externalSet.has(targetEditRec.id)) {
+        setLogMode('workout');
+        setEditingRecordId(targetEditRec.id);
+        setWorkoutTitle(targetEditRec.title);
+        setWorkoutCategory(targetEditRec.category === 'rest' ? 'other' : targetEditRec.category);
+        setWorkoutDuration(String(targetEditRec.durationMinutes || 10));
+        setWorkoutNote(targetEditRec.note ?? '');
+        setRestNote('');
+      } else if (request.initialMode === 'rest') {
+        setLogMode('rest');
+        setEditingRecordId(null);
+        setWorkoutTitle('Short walk');
+        setWorkoutCategory('walk');
+        setWorkoutDuration('10');
+        setWorkoutNote('');
+        setRestNote(request.initialRestNote ?? '');
+      } else {
+        setLogMode('workout');
+        setEditingRecordId(null);
+        setWorkoutTitle('Short walk');
+        setWorkoutCategory('walk');
+        setWorkoutDuration('10');
+        setWorkoutNote('');
+        setRestNote('');
+      }
     }
   }, [request]);
 
@@ -580,13 +604,6 @@ const LegacyPlanNovaChatWidget: React.FC<
         setStrategyText(text);
       }
       onAppendNovaNotice('Updated your next-step draft. Confirm when ready.');
-    } else if (request.kind === 'edit_habit') {
-      if (!habitName.trim()) {
-        setHabitName(text);
-      } else {
-        setHabitRegular(text);
-      }
-      onAppendNovaNotice('Updated the habit draft. Confirm to save.');
     } else if (request.kind === 'starting_feel') {
       const lower = text.toLowerCase();
       if (lower.includes('hard') || lower.includes('tough') || lower.includes('difficult')) {
@@ -634,9 +651,6 @@ const LegacyPlanNovaChatWidget: React.FC<
         if (parsed.durationMinutes) setWorkoutDuration(String(parsed.durationMinutes));
         onAppendNovaNotice('Filled your workout draft. Check the details and confirm.');
       }
-    } else if (request.kind === 'edit_preference') {
-      setPrefTitle(text);
-      onAppendNovaNotice('Updated the preference draft. Tap Confirm to save.');
     }
   }, [
     incomingTextEvent,
@@ -1140,111 +1154,13 @@ const LegacyPlanNovaChatWidget: React.FC<
     );
   }
 
-  if (request.kind === 'edit_habit') {
-    const canSave = habitName.trim().length > 0 && habitRegular.trim().length > 0;
-    const beforeLine = request.initialValues.regularAction || request.initialValues.habitName;
-
-    return (
-      <div
-        id="plan-nova-widget-edit-habit"
-        className="w-full rounded-[20px] bg-white border border-black/[0.07] p-3.5 shadow-xs space-y-3"
-      >
-        {!isCommitted && (
-          <>
-            <div className="flex flex-wrap gap-1.5">
-              {HABIT_PRESETS.map((preset) => (
-                <button
-                  key={preset.name}
-                  type="button"
-                  onClick={() => {
-                    setHabitName(preset.name);
-                    setHabitRegular(preset.regular);
-                    setHabitMinimum(preset.minimum);
-                  }}
-                  className="px-2.5 py-1.5 rounded-[10px] text-[12px] font-medium bg-[#F7F6FA] border border-black/[0.06] text-[#555066] hover:border-[#5E5BAE]/40 cursor-pointer"
-                >
-                  {preset.name}
-                </button>
-              ))}
-            </div>
-
-            <div className="space-y-2">
-              <div>
-                <label className="block text-[13px] font-semibold text-[#555066] mb-1">
-                  Habit name
-                </label>
-                <input
-                  type="text"
-                  value={habitName}
-                  onChange={(e) => setHabitName(e.target.value)}
-                  placeholder="e.g. Short walk"
-                  className="w-full min-h-[40px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[14px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
-                />
-              </div>
-              <div>
-                <label className="block text-[13px] font-semibold text-[#555066] mb-1">
-                  Regular action
-                </label>
-                <input
-                  type="text"
-                  value={habitRegular}
-                  onChange={(e) => setHabitRegular(e.target.value)}
-                  placeholder="e.g. 10-minute walk"
-                  className="w-full min-h-[40px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[14px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
-                />
-              </div>
-              <div>
-                <label className="block text-[13px] font-semibold text-[#555066] mb-1">
-                  Lighter version (optional)
-                </label>
-                <input
-                  type="text"
-                  value={habitMinimum}
-                  onChange={(e) => setHabitMinimum(e.target.value)}
-                  placeholder="e.g. 5-minute walk"
-                  className="w-full min-h-[40px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[14px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
-                />
-              </div>
-            </div>
-
-            {beforeLine && !request.isConfirmingNew && (
-              <div className="rounded-[12px] bg-[#F7F6FA] border border-black/[0.06] px-3 py-2 text-[13px] leading-[18px] space-y-0.5">
-                <div className="text-[#787287]">Before: {beforeLine}</div>
-                <div className="text-[#1C1C1E] font-medium">
-                  After: {habitRegular.trim() || '—'}
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {renderFooterButtons(
-          request.isConfirmingNew ? 'Confirm habit' : 'Save habit',
-          () => {
-            if (!canSave) return;
-            runCommit(
-              () =>
-                request.onCommit({
-                  habitName: habitName.trim(),
-                  regularAction: habitRegular.trim(),
-                  minimumAction: habitMinimum.trim() || undefined,
-                }),
-              'Habit saved.'
-            );
-          },
-          !canSave
-        )}
-      </div>
-    );
-  }
-
   if (request.kind === 'starting_feel') {
     const options: Array<{ value: HabitStartFrictionLevel; label: string }> = [
       { value: 'hard_to_start', label: 'Hard to start' },
-      { value: 'manageable', label: 'Manageable' },
+      { value: 'manageable', label: 'Took a nudge' },
       {
         value: 'easier',
-        label: request.contextLabel === 'weekly_review' ? 'Felt natural' : 'Feels easier',
+        label: request.contextLabel === 'weekly_review' ? 'Easy to start' : 'Feels easier',
       },
     ];
 
@@ -1512,38 +1428,48 @@ const LegacyPlanNovaChatWidget: React.FC<
                 {dayActivities.map((rec) => {
                   const isEditingThis = editingRecordId === rec.id;
                   const isDeletingThis = pendingDeleteActivityId === rec.id;
+                  const isExternalImport = Boolean(request.externalImportIds?.includes(rec.id));
                   return (
                     <div
                       key={rec.id}
                       className="flex items-center justify-between gap-2 text-[13px] text-[#1C1C1E]"
                     >
-                      <span className="truncate font-medium">
-                        {rec.title}
-                        {rec.durationMinutes ? ` · ${rec.durationMinutes}m` : ''}
-                      </span>
+                      <div className="min-w-0 flex flex-col">
+                        <span className="truncate font-medium">
+                          {rec.title}
+                          {rec.durationMinutes ? ` · ${rec.durationMinutes}m` : ''}
+                        </span>
+                        {isExternalImport && (
+                          <span className="text-[11px] font-normal text-[#787287]">
+                            Apple Health · imported
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setLogMode('workout');
-                            setEditingRecordId(rec.id);
-                            setPendingDeleteActivityId(null);
-                            setPendingDeleteRestId(null);
-                            setWorkoutTitle(rec.title);
-                            setWorkoutCategory(
-                              rec.category === 'rest' ? 'other' : rec.category
-                            );
-                            setWorkoutDuration(String(rec.durationMinutes || 10));
-                            setWorkoutNote(rec.note ?? '');
-                          }}
-                          className={`px-2 py-1 rounded-[8px] text-[12px] font-semibold cursor-pointer ${
-                            isEditingThis
-                              ? 'bg-[#5E5BAE] text-white'
-                              : 'bg-white border border-black/[0.08] text-[#5E5BAE]'
-                          }`}
-                        >
-                          {isEditingThis ? 'Editing' : 'Edit'}
-                        </button>
+                        {!isExternalImport && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLogMode('workout');
+                              setEditingRecordId(rec.id);
+                              setPendingDeleteActivityId(null);
+                              setPendingDeleteRestId(null);
+                              setWorkoutTitle(rec.title);
+                              setWorkoutCategory(
+                                rec.category === 'rest' ? 'other' : rec.category
+                              );
+                              setWorkoutDuration(String(rec.durationMinutes || 10));
+                              setWorkoutNote(rec.note ?? '');
+                            }}
+                            className={`px-2 py-1 rounded-[8px] text-[12px] font-semibold cursor-pointer ${
+                              isEditingThis
+                                ? 'bg-[#5E5BAE] text-white'
+                                : 'bg-white border border-black/[0.08] text-[#5E5BAE]'
+                            }`}
+                          >
+                            {isEditingThis ? 'Editing' : 'Edit'}
+                          </button>
+                        )}
                         <button
                           type="button"
                           aria-label={`Delete ${rec.title}`}
@@ -1699,6 +1625,15 @@ const LegacyPlanNovaChatWidget: React.FC<
                         <span className="text-[12px] text-[#787287]">min</span>
                       </div>
                     </div>
+
+                    <input
+                      type="text"
+                      value={workoutNote}
+                      onChange={(e) => setWorkoutNote(e.target.value)}
+                      placeholder="Optional note"
+                      aria-label="Workout note"
+                      className="w-full min-h-[38px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[13px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
+                    />
                   </div>
                 )}
 
@@ -1801,119 +1736,5 @@ const LegacyPlanNovaChatWidget: React.FC<
     );
   }
 
-  // 10. edit_preference
-  const canSavePref = prefTitle.trim().length > 0;
-
-  return (
-    <div
-      id="plan-nova-widget-preference"
-      className="w-full rounded-[20px] bg-white border border-black/[0.07] p-3.5 shadow-xs space-y-3"
-    >
-      {!isCommitted && (
-        <>
-          {request.mode === 'add' && (
-            <div className="flex flex-wrap gap-1.5">
-              {PREFERENCE_SUGGESTIONS.map((s) => (
-                <button
-                  key={s.title}
-                  type="button"
-                  onClick={() => {
-                    setPrefTitle(s.title);
-                    setPrefShortTag(s.shortTag);
-                  }}
-                  className={`px-2.5 py-1.5 rounded-[10px] text-[12px] font-medium border cursor-pointer ${
-                    prefTitle === s.title
-                      ? 'bg-[#F3EEFE] border-[#5E5BAE] text-[#4E4A93]'
-                      : 'bg-[#F7F6FA] border-black/[0.06] text-[#555066]'
-                  }`}
-                >
-                  {s.title}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <input
-              type="text"
-              value={prefTitle}
-              onChange={(e) => setPrefTitle(e.target.value)}
-              placeholder="e.g. Short walks work best on busy days"
-              className="w-full min-h-[42px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[14px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
-            />
-            <input
-              type="text"
-              value={prefShortTag}
-              onChange={(e) => setPrefShortTag(e.target.value)}
-              placeholder="Short label (optional), e.g. Short walks"
-              className="w-full min-h-[38px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[13px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
-            />
-            <input
-              type="text"
-              value={prefSummary}
-              onChange={(e) => setPrefSummary(e.target.value)}
-              placeholder="Short note (optional)"
-              className="w-full min-h-[38px] px-3 rounded-[12px] bg-[#F7F6FA] border border-black/[0.08] text-[13px] text-[#1C1C1E] outline-none focus:border-[#5E5BAE]"
-            />
-          </div>
-
-          {request.mode === 'edit' && request.existingItem && (
-            <div className="rounded-[12px] bg-[#F7F6FA] border border-black/[0.06] px-3 py-2 text-[13px] leading-[18px] space-y-0.5">
-              <div className="text-[#787287]">Before: {request.existingItem.title}</div>
-              <div className="text-[#1C1C1E] font-medium">After: {prefTitle.trim() || '—'}</div>
-            </div>
-          )}
-
-          {confirmingPrefDelete && (
-            <p className="text-[13px] leading-[18px] text-[#9A3832]">
-              Remove this preference? Tap Confirm remove below.
-            </p>
-          )}
-        </>
-      )}
-
-      {renderFooterButtons(
-        confirmingPrefDelete
-          ? 'Confirm remove'
-          : request.mode === 'confirm'
-          ? 'Confirm preference'
-          : request.mode === 'edit'
-          ? 'Save change'
-          : 'Save preference',
-        () => {
-          if (confirmingPrefDelete && request.onDelete) {
-            runCommit(() => request.onDelete!(), 'Preference removed.');
-            return;
-          }
-          if (!canSavePref) return;
-          const existingCat = request.existingItem?.category;
-          const targetCategory: MemoryCategory =
-            existingCat && existingCat !== 'check' ? existingCat : 'feels_right';
-          runCommit(
-            () =>
-              request.onSave({
-                title: prefTitle.trim(),
-                shortTag: prefShortTag.trim() || undefined,
-                summary: prefSummary.trim() || undefined,
-                category: targetCategory,
-              }),
-            request.mode === 'confirm' ? 'Preference confirmed.' : 'Preference saved.'
-          );
-        },
-        !confirmingPrefDelete && !canSavePref,
-        request.mode === 'confirm' && request.onIgnorePending
-          ? {
-              label: 'Ignore',
-              onClick: () => runCommit(() => request.onIgnorePending!(), 'Ignored suggestion.'),
-            }
-          : request.mode === 'edit' && request.onDelete && !confirmingPrefDelete
-          ? {
-              label: 'Remove',
-              danger: true,
-              onClick: () => setConfirmingPrefDelete(true),
-            }
-          : undefined
-      )}
-    </div>
-  );
+  return null;
 };

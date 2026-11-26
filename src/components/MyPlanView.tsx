@@ -14,21 +14,20 @@ import {
   Check,
   Clock,
   Calendar as CalendarIcon,
-  TrendingUp,
   ShieldCheck,
-  HelpCircle,
-  BarChart2,
   AlertCircle,
-  Info,
   RotateCcw,
   MessageSquare,
   Trash2,
   ArrowUp,
-  CornerDownRight
+  CornerDownRight,
+  Pencil,
+  Plus
 } from 'lucide-react';
 import { HandwrittenGoalText } from './HandwrittenGoalText';
 import { FurryNovaStaticAvatar } from './Avatar3D/FurryNovaStaticAvatar';
 import { LazyNovaAvatar3D } from './Avatar3D/loadNovaAvatar3D';
+import { PreferencesInlineView } from './PreferencesInlineView';
 import {
   ActivityCategory,
   ActivityCompletionRecord,
@@ -69,11 +68,13 @@ import {
 } from '../utils/previewRuntime';
 import { IllustrativeRhythmGraphic } from './IllustrativeRhythmGraphic';
 import { WorkoutActivityIcon, getWorkoutDisplayLabel } from './WorkoutActivityIcon';
+import { ActivityRecordRow } from './ActivityRecordRow';
 import { YourJourneyView, type JourneyActionResult } from './YourJourneyView';
+import { WeeklyReviewDetailView } from './WeeklyReviewDetailView';
 import {
-  WEEKLY_FIT_OPTIONS,
-  WeeklyReviewDetailView,
-} from './WeeklyReviewDetailView';
+  WEEKLY_FIT_EMOJI_OPTIONS,
+  WeeklyEmojiSelector,
+} from './WeeklyEmojiSelector';
 import {
   GoalDetailView,
   type GoalDetailSubMode,
@@ -94,6 +95,8 @@ import {
   WEEKLY_REVIEW_FIT_QUESTION_ID,
   WEEKLY_REVIEW_HARD_FOLLOWUP_QUESTION_ID,
   WEEKLY_REVIEW_SELF_REPORT_QUESTION_ID,
+  WEEKLY_STARTING_FEEL_RESTED_VALUE,
+  WEEKLY_STARTING_FEEL_SKIPPED_VALUE,
   WeeklyHardFollowUpAnswer,
   WeeklyReviewFitAnswer,
   adjustGoalCommitment,
@@ -105,6 +108,7 @@ import {
   createEmptyPlanFoundationStore,
   deriveCommitmentStrategyLine,
   getConfirmedHabits,
+  getDayActivityItems,
   getDayWorkoutTypeSummary,
   getHabitRhythmModel,
   getPlanWeekSnapshot,
@@ -135,6 +139,8 @@ import {
   deriveShortPreferenceTag,
   formatAsCheckQuestion,
   getConfirmedPreferenceTags,
+  getPreferenceDisplayRow,
+  inferPreferenceKind,
   loadPreferences,
   savePreferences,
 } from '../utils/preferencesStore';
@@ -142,6 +148,7 @@ import type {
   PlanNovaChatRequest,
   PlanNovaCommitResult,
 } from './PlanNovaChatWidgets';
+import type { StructuredPreferenceSavePayload } from './PreferenceNovaConversation';
 import type { CompletedGoalNextStepChoice } from '../utils/planDataFoundation';
 
 export type { MemoryCategory };
@@ -505,171 +512,7 @@ const HEALTH_METRICS_DEFINITIONS: HealthMetricDefinition[] = [
 ];
 
 // ============================================================================
-// 2. VISUAL CHART SUB-COMPONENTS (DRIVEN BY UNIFIED ACTIVITY LOGS)
-// ============================================================================
-
-function MonthlyTrendCurve({
-  series,
-  compact = false
-}: {
-  series: MonthlyTrendPoint[];
-  compact?: boolean;
-}) {
-  const maxVal = Math.max(18, ...series.map((s) => s.activeDays), 1) + 2;
-  const minVal = 0;
-  const width = 280;
-  const height = compact ? 68 : 96;
-  const padX = 18;
-  const padY = compact ? 14 : 18;
-
-  const points = series.map((item, idx) => {
-    const x = padX + (idx / Math.max(1, series.length - 1)) * (width - padX * 2);
-    const y =
-      height -
-      padY -
-      ((item.activeDays - minVal) / Math.max(1, maxVal - minVal)) * (height - padY * 2);
-    return { x, y, ...item };
-  });
-
-  const linePath = points
-    .map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`)
-    .join(' ');
-
-  const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${height} L ${points[0].x.toFixed(1)} ${height} Z`;
-
-  return (
-    <div className="w-full">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full overflow-visible select-none"
-        aria-label="Monthly active days trend curve"
-      >
-        <defs>
-          <linearGradient id="rhythmTrendFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#5E5BAE" stopOpacity="0.24" />
-            <stop offset="100%" stopColor="#5E5BAE" stopOpacity="0.0" />
-          </linearGradient>
-        </defs>
-
-        <line
-          x1={padX}
-          y1={height / 2}
-          x2={width - padX}
-          y2={height / 2}
-          stroke="#26263F"
-          strokeOpacity="0.06"
-          strokeDasharray="3 3"
-        />
-
-        <path d={areaPath} fill="url(#rhythmTrendFill)" />
-
-        <path
-          d={linePath}
-          fill="none"
-          stroke="#5E5BAE"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-
-        {points.map((pt, idx) => {
-          const isLatest = idx === points.length - 1;
-          return (
-            <g key={pt.key}>
-              <circle
-                cx={pt.x}
-                cy={pt.y}
-                r={isLatest ? 4.5 : 3}
-                className={
-                  isLatest
-                    ? 'fill-[#5E5BAE] stroke-white stroke-2'
-                    : 'fill-[#8E8CD6] stroke-white stroke-[1.5]'
-                }
-              />
-              {(!compact || isLatest || idx === 0 || idx === 2 || idx === 4) && (
-                <text
-                  x={pt.x}
-                  y={pt.y - 8}
-                  textAnchor="middle"
-                  className={`text-[11px] font-semibold ${
-                    isLatest ? 'fill-[#5E5BAE]' : 'fill-[#6E6E78]'
-                  }`}
-                >
-                  {pt.activeDays}d
-                </text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
-
-      <div className="flex items-center justify-between px-1.5 mt-1.5 text-[12px] font-medium text-[#6E6E78]">
-        {series.map((item, idx) => (
-          <span
-            key={item.key}
-            className={idx === series.length - 1 ? 'text-[#5E5BAE] font-semibold' : ''}
-          >
-            {item.month}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ActiveMinutesBarChart({
-  items,
-  timeframe
-}: {
-  items: DailyBarItem[];
-  timeframe: RhythmTimeframe;
-}) {
-  const maxVal = Math.max(timeframe === '7d' ? 20 : 60, ...items.map((i) => i.minutes), 1);
-
-  return (
-    <div className="pt-2">
-      <div className="flex items-end justify-between gap-2 h-24 px-1 pt-4 border-b border-[#26263F]/[0.06]">
-        {items.map((bar, idx) => {
-          const heightPct =
-            bar.minutes === 0
-              ? bar.status === 'rest'
-                ? 14
-                : 6
-              : Math.max(22, Math.round((bar.minutes / maxVal) * 100));
-          return (
-            <div key={idx} className="flex-1 flex flex-col items-center gap-1 h-full justify-end min-w-0">
-              <span className="text-[11px] font-medium text-[#6E6E78] truncate">
-                {bar.minutes > 0 ? `${bar.minutes}m` : bar.status === 'rest' ? 'Rest' : '–'}
-              </span>
-              <div
-                style={{ height: `${heightPct}%` }}
-                className={`w-full max-w-[24px] rounded-t-[8px] transition-all duration-300 ${
-                  bar.status === 'done'
-                    ? 'bg-[#5E5BAE]'
-                    : bar.status === 'light'
-                    ? 'bg-[#8E8CD6]'
-                    : bar.status === 'rest'
-                    ? 'bg-[#E59980]/70'
-                    : 'bg-[#26263F]/10'
-                }`}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <div className="flex items-center justify-between gap-2 px-1 mt-1.5">
-        {items.map((bar, idx) => (
-          <span key={idx} className="flex-1 text-center text-[12px] font-medium text-[#6E6E78] truncate">
-            {bar.label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ============================================================================
-// 3. MAIN COMPONENT: PLAN VIEW (MERGED MY PLAN + MEMORY)
+// 2. MAIN COMPONENT: PLAN VIEW (MERGED MY PLAN + MEMORY)
 // ============================================================================
 
 interface MyPlanViewProps {
@@ -691,6 +534,7 @@ interface MyPlanViewProps {
   isNovaChatOpen?: boolean;
   onOpenPlanNovaChat?: (request: PlanNovaChatRequest) => void;
   onOverlayChange?: (hasOverlay: boolean) => void;
+  onPreferencesChange?: (items: PreferenceItem[]) => void;
 }
 
 const PlanNovaGuideAvatar = React.memo(function PlanNovaGuideAvatar({
@@ -989,6 +833,7 @@ export function MyPlanView({
   isNovaChatOpen = false,
   onOpenPlanNovaChat,
   onOverlayChange,
+  onPreferencesChange,
 }: MyPlanViewProps) {
   // Real device date state with automatic local midnight & background-resume sync
   const [deviceToday, setDeviceToday] = useState(getDeviceTodayState);
@@ -1086,8 +931,10 @@ export function MyPlanView({
     };
   }, []);
 
-  // 2. Your Rhythm Filter State
-  const [rhythmFilter, setRhythmFilter] = useState<RhythmTimeframe>('7d');
+  // 2. History Selected Calendar Date (drives selected-day details & default backfill date)
+  const [historySelectedDate, setHistorySelectedDate] = useState<string>(
+    () => deviceToday.dateStr
+  );
 
   // 3. Secondary Sheet Navigation ('journey' | 'weekly_review' | 'goal' | 'history' | 'preferences' | 'health' | null)
   const [selectedModule, setSelectedModule] = useState<SecondaryModuleType>(null);
@@ -1151,12 +998,18 @@ export function MyPlanView({
       }
       if (mod === 'history') {
         setHistoryReturnModule(returnTarget);
+        setViewYear(deviceToday.year);
+        setViewMonth(deviceToday.month);
+        setHistorySelectedDate(deviceToday.dateStr);
       } else {
         setHistoryReturnModule('plan');
       }
+      if (mod === 'weekly_review' && returnTarget === 'plan') {
+        setSelectedReviewWeekStartKey(null);
+      }
       setSelectedModule(mod);
     },
-    [selectedModule]
+    [selectedModule, deviceToday.year, deviceToday.month, deviceToday.dateStr]
   );
 
   const openUnifiedGoalAdjustFlow = useCallback(() => {
@@ -1180,7 +1033,14 @@ export function MyPlanView({
     }
   }, []);
 
+  const [isPreferencesDirty, setIsPreferencesDirty] = useState<boolean>(false);
+  const [isPreferencesDiscardModalOpen, setIsPreferencesDiscardModalOpen] = useState<boolean>(false);
+
   const handleSecondarySheetBack = useCallback(() => {
+    if (selectedModule === 'preferences' && isPreferencesDirty) {
+      setIsPreferencesDiscardModalOpen(true);
+      return;
+    }
     if (selectedModule === 'history' && historyReturnModule === 'journey') {
       setHistoryReturnModule('plan');
       setSelectedModule('journey');
@@ -1191,11 +1051,16 @@ export function MyPlanView({
       setSelectedModule('weekly_review');
       return;
     }
+    setIsPreferencesDirty(false);
+    setIsPreferencesDiscardModalOpen(false);
     closeSecondaryModuleToPlan();
-  }, [selectedModule, historyReturnModule, closeSecondaryModuleToPlan]);
+  }, [selectedModule, isPreferencesDirty, historyReturnModule, closeSecondaryModuleToPlan]);
 
-  // 4. Methodology Info Popup State (Inside Your Rhythm Secondary Sheet)
-  const [isMethodologyOpen, setIsMethodologyOpen] = useState<boolean>(false);
+  const handleConfirmDiscardPreferences = useCallback(() => {
+    setIsPreferencesDirty(false);
+    setIsPreferencesDiscardModalOpen(false);
+    closeSecondaryModuleToPlan();
+  }, [closeSecondaryModuleToPlan]);
 
   // Official user storage is loaded cleanly via PlanFoundationStore (no demo auto-seeding).
 
@@ -1269,7 +1134,11 @@ export function MyPlanView({
   } | null>(null);
 
   // 6. Preferences (Migrated from What Nova Knows)
-  const [memories, setMemories] = useState<PreferenceItem[]>(loadPreferences);
+  const [memories, setMemories] = useState<PreferenceItem[]>(() =>
+    loadPreferences(previewProfileId)
+  );
+  const memoriesRef = useRef<PreferenceItem[]>(memories);
+  memoriesRef.current = memories;
   const [selectedMemory, setSelectedMemory] = useState<PreferenceItem | null>(null);
   const [memoryToDelete, setMemoryToDelete] = useState<PreferenceItem | null>(null);
   const [isMemoryInfoModalOpen, setIsMemoryInfoModalOpen] = useState<boolean>(false);
@@ -1496,34 +1365,27 @@ export function MyPlanView({
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
   const isCurrentMonth = viewYear === deviceToday.year && viewMonth === deviceToday.month;
 
-  const monthPrefix = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
-  const currentMonthRecords = useMemo(
-    () => Object.values(effectiveActivityLogs).filter((r) => r.date.startsWith(monthPrefix)),
-    [effectiveActivityLogs, monthPrefix]
+  const effectivePlanStore = useMemo(
+    () => planStore ?? createEmptyPlanFoundationStore(),
+    [planStore]
   );
 
-  // Distinguish Active Days vs Completed Activities / Sessions vs Independent Rest Days
-  const activeDaysCount = useMemo(
-    () => currentMonthRecords.filter((r) => r.type === 'active').length,
-    [currentMonthRecords]
-  );
-  const completedSessionsInMonth = useMemo(
+  // Selected day activity & explicit rest items for History (exact same source/duration model as This week)
+  const selectedHistoryDayItems = useMemo(
     () =>
-      currentMonthRecords
-        .filter((r) => r.type === 'active')
-        .reduce((sum, r) => sum + (r.sessionsCount ?? 1), 0),
-    [currentMonthRecords]
+      selectedModule === 'history'
+        ? getDayActivityItems(effectivePlanStore, historySelectedDate)
+        : [],
+    [selectedModule, effectivePlanStore, historySelectedDate]
   );
-  const restDaysCount = useMemo(
-    () => currentMonthRecords.filter((r) => r.type === 'rest' || r.hasRest === true).length,
-    [currentMonthRecords]
-  );
-  const totalMinutes = useMemo(
+
+  // Track external import (e.g. Apple Health) record IDs so History & Nova preserve source edit permissions
+  const externalImportRecordIds = useMemo(
     () =>
-      currentMonthRecords
-        .filter((r) => r.type === 'active')
-        .reduce((acc, cur) => acc + (cur.durationMinutes || 0), 0),
-    [currentMonthRecords]
+      effectivePlanStore.exerciseSessions
+        .filter((s) => s.source === 'external_import')
+        .map((s) => s.id),
+    [effectivePlanStore.exerciseSessions]
   );
 
   // Current & Next local week bounds (Monday start -> Sunday end) & per-week schedules
@@ -1608,11 +1470,6 @@ export function MyPlanView({
   const referenceTodayDate = useMemo(
     () => new Date(deviceToday.year, deviceToday.month, deviceToday.day),
     [deviceToday.year, deviceToday.month, deviceToday.day]
-  );
-
-  const effectivePlanStore = useMemo(
-    () => planStore ?? createEmptyPlanFoundationStore(),
-    [planStore]
   );
 
   // Leaving or returning to the Plan tab resets the 7-day track to local today (so re-entering Plan
@@ -1854,11 +1711,36 @@ export function MyPlanView({
     ]
   );
 
-  // Stage 6 Weekly review model: strictly defaults to most recent COMPLETED local Mon-Sun week
+  // Stage 6 Weekly review model: Plan level-1 strictly defaults to most recent COMPLETED local Mon-Sun week
   // and is completely isolated from the This week switcher!
   const weeklyReviewModel = useMemo(
     () => getWeeklyReviewModel(effectivePlanStore, referenceTodayDate, activeRhythmHabit),
     [effectivePlanStore, referenceTodayDate, activeRhythmHabit]
+  );
+
+  // Secondary Weekly review page supports stepping back through historical completed weeks
+  const [selectedReviewWeekStartKey, setSelectedReviewWeekStartKey] = useState<string | null>(null);
+  const detailWeeklyReviewModel = useMemo(
+    () =>
+      getWeeklyReviewModel(
+        effectivePlanStore,
+        referenceTodayDate,
+        activeRhythmHabit,
+        selectedReviewWeekStartKey
+      ),
+    [effectivePlanStore, referenceTodayDate, activeRhythmHabit, selectedReviewWeekStartKey]
+  );
+
+  const handleStepDetailReviewWeek = useCallback(
+    (deltaWeeks: -1 | 1) => {
+      const nextKey = shiftLocalWeekStartKey(detailWeeklyReviewModel.weekStartKey, deltaWeeks);
+      if (nextKey >= weeklyReviewModel.weekStartKey) {
+        setSelectedReviewWeekStartKey(null);
+      } else {
+        setSelectedReviewWeekStartKey(nextKey);
+      }
+    },
+    [detailWeeklyReviewModel.weekStartKey, weeklyReviewModel.weekStartKey]
   );
 
   // Synchronized week snapshot for last completed week coverage/load-failure status
@@ -1972,8 +1854,8 @@ export function MyPlanView({
 
   // Atomic Stage 6 Weekly review handlers (persists first; save failure leaves state clean with Retry)
   const handleWeeklyFitSelect = useCallback(
-    (answer: WeeklyReviewFitAnswer): JourneyActionResult => {
-      const weekStartKey = weeklyReviewModel.weekStartKey;
+    (answer: WeeklyReviewFitAnswer, weekStartKeyOverride?: string): JourneyActionResult => {
+      const weekStartKey = weekStartKeyOverride ?? weeklyReviewModel.weekStartKey;
       const nowIso = new Date().toISOString();
       const ok = tryCommitPlanStoreUpdate(
         (prev) =>
@@ -2016,8 +1898,8 @@ export function MyPlanView({
   );
 
   const handleWeeklyFollowUpSelect = useCallback(
-    (answer: WeeklyHardFollowUpAnswer): JourneyActionResult => {
-      const weekStartKey = weeklyReviewModel.weekStartKey;
+    (answer: WeeklyHardFollowUpAnswer, weekStartKeyOverride?: string): JourneyActionResult => {
+      const weekStartKey = weekStartKeyOverride ?? weeklyReviewModel.weekStartKey;
       const nowIso = new Date().toISOString();
       const ok = tryCommitPlanStoreUpdate(
         (prev) =>
@@ -2039,8 +1921,13 @@ export function MyPlanView({
   );
 
   const handleWeeklyStartingFeelSelect = useCallback(
-    (level: HabitStartFrictionLevel): JourneyActionResult => {
-      const weekStartKey = weeklyReviewModel.weekStartKey;
+    (
+      level: HabitStartFrictionLevel,
+      weekStartKeyOverride?: string,
+      weekEndKeyOverride?: string
+    ): JourneyActionResult => {
+      const weekStartKey = weekStartKeyOverride ?? weeklyReviewModel.weekStartKey;
+      const checkInDateKey = weekEndKeyOverride ?? weeklyReviewModel.weekEndKey;
       const nowIso = new Date().toISOString();
       const ok = tryCommitPlanStoreUpdate((prev) => {
         let next = upsertWeeklyReviewAnswer(prev, {
@@ -2055,7 +1942,7 @@ export function MyPlanView({
           next = recordHabitCheckIn(next, {
             habitId: activeRhythmHabit.habitId,
             frictionLevel: level,
-            dateKey: deviceToday.dateStr,
+            dateKey: checkInDateKey,
             questionId: DEFAULT_HABIT_EASE_QUESTION_ID,
             recordedAt: nowIso,
           }).store;
@@ -2063,21 +1950,53 @@ export function MyPlanView({
         return next;
       });
       if (!ok) {
-        return { ok: false, error: 'Couldn’t save your check-in. Please try again.' };
+        return { ok: false, error: 'Couldn’t save your answer. Please try again.' };
       }
       return { ok: true };
     },
     [
       weeklyReviewModel.weekStartKey,
+      weeklyReviewModel.weekEndKey,
       activeRhythmHabit,
-      deviceToday.dateStr,
       tryCommitPlanStoreUpdate,
     ]
   );
 
+  const handleWeeklyStartingFeelSpecialState = useCallback(
+    (
+      state: 'skipped' | 'rested_all_week' | 'clear',
+      weekStartKeyOverride?: string
+    ): JourneyActionResult => {
+      const weekStartKey = weekStartKeyOverride ?? detailWeeklyReviewModel.weekStartKey;
+      const nowIso = new Date().toISOString();
+      const rawAnswer =
+        state === 'skipped'
+          ? WEEKLY_STARTING_FEEL_SKIPPED_VALUE
+          : state === 'rested_all_week'
+          ? WEEKLY_STARTING_FEEL_RESTED_VALUE
+          : '';
+      const ok = tryCommitPlanStoreUpdate(
+        (prev) =>
+          upsertWeeklyReviewAnswer(prev, {
+            weekStartKey,
+            questionId: DEFAULT_HABIT_EASE_QUESTION_ID,
+            rawAnswer,
+            commitmentVersion: prev.commitment?.version ?? null,
+            habitVersion: activeRhythmHabit?.version ?? null,
+            timestamp: nowIso,
+          }).store
+      );
+      if (!ok) {
+        return { ok: false, error: 'Couldn’t update this right now. Please try again.' };
+      }
+      return { ok: true };
+    },
+    [detailWeeklyReviewModel.weekStartKey, activeRhythmHabit?.version, tryCommitPlanStoreUpdate]
+  );
+
   const handleWeeklySelfReportSave = useCallback(
-    (noteOrSkipped: string): JourneyActionResult => {
-      const weekStartKey = weeklyReviewModel.weekStartKey;
+    (noteOrSkipped: string, weekStartKeyOverride?: string): JourneyActionResult => {
+      const weekStartKey = weekStartKeyOverride ?? detailWeeklyReviewModel.weekStartKey;
       const nowIso = new Date().toISOString();
       const ok = tryCommitPlanStoreUpdate(
         (prev) =>
@@ -2095,7 +2014,7 @@ export function MyPlanView({
       }
       return { ok: true };
     },
-    [weeklyReviewModel.weekStartKey, activeRhythmHabit?.version, tryCommitPlanStoreUpdate]
+    [detailWeeklyReviewModel.weekStartKey, activeRhythmHabit?.version, tryCommitPlanStoreUpdate]
   );
 
   const handleConfirmSharedSuggestion = useCallback(
@@ -2114,7 +2033,7 @@ export function MyPlanView({
       ): PlanFoundationStore => {
         if (!isWeeklySuggestion) return storeAfterUpdate;
         return appendWeeklyReviewDecision(storeAfterUpdate, {
-          weekStartKey: weeklyReviewModel.weekStartKey,
+          weekStartKey: detailWeeklyReviewModel.weekStartKey,
           questionId: WEEKLY_REVIEW_FIT_QUESTION_ID,
           decision: {
             id: `wdec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -2414,7 +2333,7 @@ export function MyPlanView({
       adjustmentTargetBaseSchedule,
       weeklySchedulesByWeek,
       resolvedAdjustmentKeys,
-      weeklyReviewModel.weekStartKey,
+      detailWeeklyReviewModel.weekStartKey,
       deviceToday.dateStr,
       tryCommitPlanStoreUpdate,
     ]
@@ -2658,208 +2577,6 @@ export function MyPlanView({
     setWeeklyReviewFailedAnswer(null);
   };
 
-  // 6-Month Trend Series derived directly from effectiveActivityLogs ending at viewed month
-  // Computed only when the secondary History view is open so Plan first-screen mount stays light.
-  const monthlyTrendSeries: MonthlyTrendPoint[] = useMemo(() => {
-    if (selectedModule !== 'history') return [];
-    const series: MonthlyTrendPoint[] = [];
-    for (let offset = -5; offset <= 0; offset++) {
-      const mDate = new Date(viewYear, viewMonth + offset, 1);
-      const y = mDate.getFullYear();
-      const m = mDate.getMonth();
-      const prefix = `${y}-${String(m + 1).padStart(2, '0')}`;
-      const records = Object.values(effectiveActivityLogs).filter((r) => r.date.startsWith(prefix));
-      const activeRecs = records.filter((r) => r.type === 'active');
-
-      series.push({
-        key: prefix,
-        month: SHORT_MONTH_NAMES[m],
-        activeDays: activeRecs.length,
-        completedSessions: activeRecs.reduce((s, r) => s + (r.sessionsCount ?? 1), 0),
-        totalMinutes: activeRecs.reduce((s, r) => s + (r.durationMinutes || 0), 0)
-      });
-    }
-    return series;
-  }, [selectedModule, effectiveActivityLogs, viewYear, viewMonth]);
-
-  // Dynamic 7-Day and Month Rhythm Summaries derived from the exact same activityLogs
-  // Computed only when History view is open to keep Plan initial mount off the click frame.
-  const rhythmSummaries: Record<RhythmTimeframe, RecentSummaryData> = useMemo(() => {
-    if (selectedModule !== 'history') {
-      const emptySummary: RecentSummaryData = {
-        rangeLabel: '',
-        activeDaysCount: 0,
-        completedCount: 0,
-        activeMinutes: 0,
-        restDaysCount: 0,
-        novaObservation: '',
-        dailyBreakdown: [],
-      };
-      return { '7d': emptySummary, month: emptySummary };
-    }
-    // Determine anchor end date for 7d window:
-    // If viewing current month, use max(deviceToday.dateStr, latest logged date in current month)
-    // so logging on any day in the month or past 7 days reflects immediately.
-    let anchorDateObj = new Date(deviceToday.year, deviceToday.month, deviceToday.day);
-    if (!isCurrentMonth) {
-      if (currentMonthRecords.length > 0) {
-        const maxLoggedInViewedMonth = [...currentMonthRecords]
-          .map((r) => r.date)
-          .sort()
-          .pop()!;
-        const [ly, lm, ld] = maxLoggedInViewedMonth.split('-').map(Number);
-        anchorDateObj = new Date(ly, lm - 1, ld);
-      } else {
-        const lastDay = new Date(viewYear, viewMonth + 1, 0).getDate();
-        anchorDateObj = new Date(viewYear, viewMonth, lastDay);
-      }
-    } else if (currentMonthRecords.length > 0) {
-      const maxLoggedDateStr = [...currentMonthRecords]
-        .map((r) => r.date)
-        .sort()
-        .pop();
-      if (maxLoggedDateStr && maxLoggedDateStr > deviceToday.dateStr) {
-        const [ly, lm, ld] = maxLoggedDateStr.split('-').map(Number);
-        anchorDateObj = new Date(ly, lm - 1, ld);
-      }
-    }
-
-    // 1. Compute 7-Day Window
-    let sevenDayActiveDays = 0;
-    let sevenDaySessions = 0;
-    let sevenDayMinutes = 0;
-    let sevenDayRestDays = 0;
-    const sevenDayBars: DailyBarItem[] = [];
-
-    for (let i = 6; i >= 0; i--) {
-      const dObj = new Date(
-        anchorDateObj.getFullYear(),
-        anchorDateObj.getMonth(),
-        anchorDateObj.getDate() - i
-      );
-      const dKey = formatDateKey(dObj.getFullYear(), dObj.getMonth(), dObj.getDate());
-      const rec = effectiveActivityLogs[dKey];
-      const dayLabel = SHORT_WEEKDAYS[dObj.getDay()];
-
-      if (rec?.type === 'active') {
-        const mins = rec.durationMinutes ?? 15;
-        const sess = rec.sessionsCount ?? 1;
-        sevenDayActiveDays += 1;
-        sevenDaySessions += sess;
-        sevenDayMinutes += mins;
-        if (rec.hasRest) {
-          sevenDayRestDays += 1;
-        }
-        sevenDayBars.push({
-          label: dayLabel,
-          minutes: mins,
-          sessions: sess,
-          status: mins <= 5 ? 'light' : 'done'
-        });
-      } else if (rec?.type === 'rest') {
-        sevenDayRestDays += 1;
-        sevenDayBars.push({
-          label: dayLabel,
-          minutes: 0,
-          sessions: 0,
-          status: 'rest'
-        });
-      } else {
-        sevenDayBars.push({
-          label: dayLabel,
-          minutes: 0,
-          sessions: 0,
-          status: 'none'
-        });
-      }
-    }
-
-    const sevenDayObservation =
-      sevenDayActiveDays === 0 && sevenDayRestDays === 0
-        ? 'No activities logged in this 7-day window yet. Tap any date on the Activity calendar to log an activity or rest day.'
-        : `In this 7-day window, you logged ${sevenDayActiveDays} active ${
-            sevenDayActiveDays === 1 ? 'day' : 'days'
-          } (${sevenDaySessions} ${
-            sevenDaySessions === 1 ? 'activity' : 'activities'
-          }, ${sevenDayMinutes} min) and ${sevenDayRestDays} mindful rest ${
-            sevenDayRestDays === 1 ? 'day' : 'days'
-          }.`;
-
-    // 2. Compute Month Window (Viewed Month: viewYear - viewMonth)
-    const weekBuckets: DailyBarItem[] = [
-      { label: 'Wk 1', minutes: 0, sessions: 0, status: 'none' },
-      { label: 'Wk 2', minutes: 0, sessions: 0, status: 'none' },
-      { label: 'Wk 3', minutes: 0, sessions: 0, status: 'none' },
-      { label: 'Wk 4', minutes: 0, sessions: 0, status: 'none' }
-    ];
-    const weekHasRest = [false, false, false, false];
-
-    for (const rec of currentMonthRecords) {
-      const dayNum = Number(rec.date.split('-')[2] || 1);
-      const bucketIdx = Math.min(3, Math.floor((dayNum - 1) / 7));
-      if (rec.type === 'active') {
-        weekBuckets[bucketIdx].minutes += rec.durationMinutes ?? 15;
-        weekBuckets[bucketIdx].sessions += rec.sessionsCount ?? 1;
-      } else if (rec.type === 'rest') {
-        weekHasRest[bucketIdx] = true;
-      }
-    }
-
-    for (let b = 0; b < 4; b++) {
-      if (weekBuckets[b].minutes > 0) {
-        weekBuckets[b].status = weekBuckets[b].minutes <= 15 ? 'light' : 'done';
-      } else if (weekHasRest[b]) {
-        weekBuckets[b].status = 'rest';
-      }
-    }
-
-    const monthObservation =
-      activeDaysCount === 0 && restDaysCount === 0
-        ? `No records logged in ${MONTH_NAMES[viewMonth]} ${viewYear} yet.`
-        : `In ${MONTH_NAMES[viewMonth]}, you’ve recorded ${activeDaysCount} active ${
-            activeDaysCount === 1 ? 'day' : 'days'
-          } across ${completedSessionsInMonth} completed ${
-            completedSessionsInMonth === 1 ? 'activity' : 'activities'
-          } (${totalMinutes} min total) and ${restDaysCount} mindful rest ${
-            restDaysCount === 1 ? 'day' : 'days'
-          }.`;
-
-    return {
-      '7d': {
-        rangeLabel: isCurrentMonth ? 'Past 7 days' : `${ SHORT_MONTH_NAMES[viewMonth] } (last 7d)`,
-        activeDaysCount: sevenDayActiveDays,
-        completedCount: sevenDaySessions,
-        activeMinutes: sevenDayMinutes,
-        restDaysCount: sevenDayRestDays,
-        novaObservation: sevenDayObservation,
-        dailyBreakdown: sevenDayBars
-      },
-      month: {
-        rangeLabel: `${MONTH_NAMES[viewMonth]} ${viewYear}`,
-        activeDaysCount,
-        completedCount: completedSessionsInMonth,
-        activeMinutes: totalMinutes,
-        restDaysCount,
-        novaObservation: monthObservation,
-        dailyBreakdown: weekBuckets
-      }
-    };
-  }, [
-    selectedModule,
-    effectiveActivityLogs,
-    currentMonthRecords,
-    deviceToday,
-    isCurrentMonth,
-    viewYear,
-    viewMonth,
-    activeDaysCount,
-    completedSessionsInMonth,
-    totalMinutes,
-    restDaysCount
-  ]);
-
-  const currentRecentData = rhythmSummaries[rhythmFilter];
-
   // --- Computed Preferences (User-confirmed vs Pending confirmation) ---
   const confirmedMemories = useMemo(
     () => memories.filter((m) => m.isConfirmed && m.source === 'user_explicit'),
@@ -2874,25 +2591,45 @@ export function MyPlanView({
     [memories]
   );
 
-  // --- Handlers for Month Switching ---
+  // --- Handlers for Month Switching (keeps selected date aligned with viewed month) ---
+  const pickDefaultDateForMonth = (targetYear: number, targetMonth: number): string => {
+    if (targetYear === deviceToday.year && targetMonth === deviceToday.month) {
+      return deviceToday.dateStr;
+    }
+    const prefix = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+    const recordedDates = Object.keys(effectiveActivityLogs)
+      .filter((d) => d.startsWith(prefix))
+      .sort();
+    if (recordedDates.length > 0) {
+      return recordedDates[recordedDates.length - 1];
+    }
+    return formatDateKey(targetYear, targetMonth, 1);
+  };
+
+  const syncHistoryFocusToDate = (dateKey: string) => {
+    const parsed = parseLocalDateKey(dateKey);
+    if (!parsed) return;
+    setHistorySelectedDate(dateKey);
+    setViewYear(parsed.getFullYear());
+    setViewMonth(parsed.getMonth());
+  };
+
   const handlePrevMonth = () => {
     setSlideDirection(-1);
-    if (viewMonth === 0) {
-      setViewYear((y) => y - 1);
-      setViewMonth(11);
-    } else {
-      setViewMonth((m) => m - 1);
-    }
+    const nextYear = viewMonth === 0 ? viewYear - 1 : viewYear;
+    const nextMonth = viewMonth === 0 ? 11 : viewMonth - 1;
+    setViewYear(nextYear);
+    setViewMonth(nextMonth);
+    setHistorySelectedDate(pickDefaultDateForMonth(nextYear, nextMonth));
   };
 
   const handleNextMonth = () => {
     setSlideDirection(1);
-    if (viewMonth === 11) {
-      setViewYear((y) => y + 1);
-      setViewMonth(0);
-    } else {
-      setViewMonth((m) => m + 1);
-    }
+    const nextYear = viewMonth === 11 ? viewYear + 1 : viewYear;
+    const nextMonth = viewMonth === 11 ? 0 : viewMonth + 1;
+    setViewYear(nextYear);
+    setViewMonth(nextMonth);
+    setHistorySelectedDate(pickDefaultDateForMonth(nextYear, nextMonth));
   };
 
   const handleSelectMonth = (targetYear: number, targetMonth: number) => {
@@ -2901,6 +2638,7 @@ export function MyPlanView({
     setSlideDirection(targetTotal >= currentTotal ? 1 : -1);
     setViewYear(targetYear);
     setViewMonth(targetMonth);
+    setHistorySelectedDate(pickDefaultDateForMonth(targetYear, targetMonth));
     setIsMonthPickerOpen(false);
   };
 
@@ -2912,6 +2650,7 @@ export function MyPlanView({
     setSlideDirection(todayTotal >= currentTotal ? 1 : -1);
     setViewYear(latestToday.year);
     setViewMonth(latestToday.month);
+    setHistorySelectedDate(latestToday.dateStr);
   };
 
   // --- Handlers for Day Detail & Unified Record Management ---
@@ -2924,21 +2663,42 @@ export function MyPlanView({
     setDayDraftNote('');
   };
 
-  const openLogWorkoutInNova = (dateStr: string) => {
+  const openLogWorkoutInNova = (
+    dateStr: string,
+    options?: {
+      initialMode?: 'workout' | 'rest';
+      initialEditActivityId?: string | null;
+      initialRestNote?: string;
+    }
+  ) => {
     const hasExisting =
       activityRecords.some((r) => r.dateKey === dateStr) ||
       restRecords.some((r) => r.dateKey === dateStr);
+    const isTargetedEdit = Boolean(options?.initialEditActivityId);
+    const isRestMode = options?.initialMode === 'rest';
     launchPlanNovaChat({
-      id: `log-workout-${dateStr}-${Date.now()}`,
+      id: `log-workout-${dateStr}-${options?.initialEditActivityId ?? options?.initialMode ?? 'add'}-${Date.now()}`,
       kind: 'log_workout',
-      actionTitle: hasExisting ? 'Edit day' : 'Log a workout',
+      actionTitle: isTargetedEdit
+        ? 'Edit record'
+        : isRestMode
+        ? 'Rest day'
+        : hasExisting
+        ? 'Edit day'
+        : 'Add activity',
       sourceModule: 'history',
       sourceLabel: 'History',
-      introMessage: hasExisting
-        ? 'Review or update this day’s entries below, or type a workout to add.'
-        : 'Pick a workout below or type what you did — nothing saves until you confirm.',
+      introMessage: isTargetedEdit
+        ? 'Update the details below or remove this record — nothing saves until you confirm.'
+        : isRestMode
+        ? 'Add or update a rest day note below — nothing saves until you confirm.'
+        : 'Pick a workout below or adjust the date first — nothing saves until you confirm.',
       inputPlaceholder: 'e.g. 15 min walk after dinner…',
       initialDateKey: dateStr,
+      initialMode: options?.initialMode ?? 'workout',
+      initialEditActivityId: options?.initialEditActivityId ?? null,
+      initialRestNote: options?.initialRestNote ?? '',
+      externalImportIds: externalImportRecordIds,
       activityRecords,
       restRecords,
       onAddActivity: (input): PlanNovaCommitResult => {
@@ -2946,6 +2706,7 @@ export function MyPlanView({
         if (res === false) {
           return { ok: false, error: "Couldn't save workout. Try again." };
         }
+        syncHistoryFocusToDate(input.dateKey);
         showPlanToast('Workout logged');
         return { ok: true };
       },
@@ -2953,6 +2714,9 @@ export function MyPlanView({
         const res = onUpdateActivity?.(recordId, patch);
         if (res === false) {
           return { ok: false, error: "Couldn't update workout. Try again." };
+        }
+        if (patch.dateKey) {
+          syncHistoryFocusToDate(patch.dateKey);
         }
         showPlanToast('Workout updated');
         return { ok: true };
@@ -2970,6 +2734,7 @@ export function MyPlanView({
         if (res === false) {
           return { ok: false, error: "Couldn't save rest day. Try again." };
         }
+        syncHistoryFocusToDate(dk);
         showPlanToast('Rest day saved');
         return { ok: true };
       },
@@ -2992,13 +2757,29 @@ export function MyPlanView({
     });
   };
 
-  const handleOpenDayDetail = (dateStr: string) => {
+  const handleOpenDayDetail = (
+    dateStr: string,
+    options?: {
+      initialMode?: 'workout' | 'rest';
+      initialEditActivityId?: string | null;
+      initialRestNote?: string;
+    }
+  ) => {
     if (onOpenPlanNovaChat) {
-      openLogWorkoutInNova(dateStr);
+      openLogWorkoutInNova(dateStr, options);
       return;
     }
     setActiveDayModalDate(dateStr);
     resetDayActivityDraft();
+    if (options?.initialMode === 'rest') {
+      setDayDraftType('rest');
+      setDayDraftNote(options.initialRestNote ?? '');
+    } else if (options?.initialEditActivityId) {
+      const target = activityRecords.find((r) => r.id === options.initialEditActivityId);
+      if (target && !externalImportRecordIds.includes(target.id)) {
+        handleStartEditDayActivity(target);
+      }
+    }
   };
 
   const handleStartEditDayActivity = (rec: ActivityCompletionRecord) => {
@@ -3303,10 +3084,12 @@ export function MyPlanView({
   const updatePreferencesState = (
     updater: (prev: PreferenceItem[]) => PreferenceItem[]
   ): boolean => {
-    const next = updater(memories);
-    const saved = savePreferences(next);
+    const next = updater(memoriesRef.current);
+    const saved = savePreferences(next, previewProfileId);
     if (!saved) return false;
+    memoriesRef.current = next;
     setMemories(next);
+    onPreferencesChange?.(next);
     return true;
   };
 
@@ -3320,83 +3103,164 @@ export function MyPlanView({
       kind: 'edit_preference',
       actionTitle:
         mode === 'confirm'
-          ? 'Confirm preference'
+          ? 'Review preference'
           : mode === 'edit'
           ? 'Edit preference'
           : 'Add preference',
       sourceModule: 'preferences',
       sourceLabel: 'Preferences',
-      introMessage:
-        mode === 'confirm' && item
-          ? `Does this fit you: “${formatAsCheckQuestion(item.title)}”? Edit if needed, then confirm.`
-          : mode === 'edit' && item
-          ? `Update “${item.title}” below or type how you’d like it phrased.`
-          : 'Tell me what helps movement fit your routine, or pick an option below.',
-      inputPlaceholder: 'Type a preference…',
+      introMessage: '',
+      inputPlaceholder: 'Tell Nova a preference, e.g. after lunch or less HIIT…',
+      handlesThreadLocally: true,
       mode,
       existingItem: item ?? undefined,
-      onSave: ({ title, shortTag, summary, category }): PlanNovaCommitResult => {
-        if (item) {
-          const ok = updatePreferencesState((prev) =>
-            prev.map((m) =>
-              m.id === item.id
-                ? {
-                    ...m,
-                    title,
-                    shortTag: shortTag || m.shortTag,
-                    summary: summary ?? m.summary,
-                    category: category === 'check' ? 'feels_right' : category,
-                    isConfirmed: true,
-                    source: 'user_explicit',
-                    learnedFrom: mode === 'confirm' ? 'Confirmed by you.' : m.learnedFrom,
-                    updatedAt: 'Updated just now',
-                  }
-                : m
-            )
-          );
-          if (!ok) return { ok: false, error: "Couldn't save preference. Try again." };
-          showMemoryFeedback(mode === 'confirm' ? 'Preference confirmed' : 'Preference updated');
-          return {
-            ok: true,
-            confirmedSummary:
-              mode === 'confirm' ? `Confirmed “${title}”.` : `Updated “${title}”.`,
+      allItems: memoriesRef.current,
+      onSave: (payload: StructuredPreferenceSavePayload): PlanNovaCommitResult => {
+        const isSingletonStructuredKind =
+          payload.kind === 'session_length' ||
+          payload.kind === 'best_time' ||
+          payload.kind === 'where' ||
+          payload.kind === 'activities';
+
+        const ok = updatePreferencesState((prev) => {
+          const pendingSourceId =
+            mode === 'confirm' && item ? item.id : undefined;
+
+          // Build the structured fields patch
+          const structuredPatch: Partial<PreferenceItem> = {
+            prefKind: payload.kind,
+            title: payload.title,
+            shortTag: payload.shortTag,
+            summary: payload.summary ?? '',
+            category: 'feels_right',
+            isConfirmed: true,
+            source: 'user_explicit',
+            learnedFrom: mode === 'confirm' ? 'Confirmed by you.' : 'Saved by you.',
+            updatedAt: 'Updated just now',
+            sessionLength: payload.sessionLength,
+            bestTime: payload.bestTime,
+            where: payload.where,
+            activities: payload.activities,
+            avoidActivity: payload.avoidActivity,
           };
-        }
-        const newItem: PreferenceItem = {
-          id: `pref-user-${Date.now()}`,
-          category: 'feels_right',
-          title,
-          shortTag: shortTag || undefined,
-          summary: summary || '',
-          learnedFrom: 'Added by you.',
-          howItHelps: '',
-          updatedAt: 'Saved just now',
-          isConfirmed: true,
-          source: 'user_explicit',
-        };
-        const ok = updatePreferencesState((prev) => [newItem, ...prev]);
+
+          if (isSingletonStructuredKind) {
+            const existingConfirmedIdx = prev.findIndex(
+              (m) =>
+                m.isConfirmed &&
+                m.source === 'user_explicit' &&
+                inferPreferenceKind(m) === payload.kind
+            );
+
+            if (existingConfirmedIdx !== -1) {
+              return prev
+                .map((m, idx) =>
+                  idx === existingConfirmedIdx ? { ...m, ...structuredPatch } : m
+                )
+                .filter((m) => !pendingSourceId || m.id !== pendingSourceId);
+            }
+
+            if (pendingSourceId) {
+              return prev.map((m) =>
+                m.id === pendingSourceId ? { ...m, ...structuredPatch } : m
+              );
+            }
+
+            const newItem: PreferenceItem = {
+              id: `pref-${payload.kind}-${Date.now()}`,
+              category: 'feels_right',
+              title: payload.title,
+              summary: payload.summary ?? '',
+              learnedFrom: 'Saved by you.',
+              howItHelps: '',
+              updatedAt: 'Saved just now',
+              isConfirmed: true,
+              source: 'user_explicit',
+              shortTag: payload.shortTag,
+              prefKind: payload.kind,
+              sessionLength: payload.sessionLength,
+              bestTime: payload.bestTime,
+              where: payload.where,
+              activities: payload.activities,
+            };
+            return [...prev, newItem];
+          }
+
+          if (payload.kind === 'avoid_activity' && payload.avoidActivity?.activity) {
+            const normalizedAct = payload.avoidActivity.activity.trim().toLowerCase();
+            const existingAvoidIdx = prev.findIndex(
+              (m) =>
+                m.isConfirmed &&
+                m.source === 'user_explicit' &&
+                inferPreferenceKind(m) === 'avoid_activity' &&
+                m.avoidActivity?.activity.trim().toLowerCase() === normalizedAct
+            );
+            const cleaned = prev.filter((m) => {
+              if (pendingSourceId && m.id === pendingSourceId) return false;
+              if (
+                !m.isConfirmed &&
+                inferPreferenceKind(m) === 'avoid_activity' &&
+                m.avoidActivity?.activity.trim().toLowerCase() === normalizedAct
+              ) {
+                return false;
+              }
+              return true;
+            });
+            if (existingAvoidIdx !== -1) {
+              return cleaned.map((m) =>
+                m.id === prev[existingAvoidIdx].id ? { ...m, ...structuredPatch } : m
+              );
+            }
+            const newAvoid: PreferenceItem = {
+              id: `pref-avoid-${Date.now()}`,
+              category: 'feels_right',
+              title: payload.title,
+              summary: payload.summary ?? payload.avoidActivity.activity,
+              learnedFrom: mode === 'confirm' ? 'Confirmed by you.' : 'Saved by you.',
+              howItHelps: '',
+              updatedAt: 'Saved just now',
+              isConfirmed: true,
+              source: 'user_explicit',
+              shortTag: payload.shortTag,
+              prefKind: 'avoid_activity',
+              avoidActivity: payload.avoidActivity,
+            };
+            return [...cleaned, newAvoid];
+          }
+
+          // Custom preference fallback
+          const targetId = payload.targetItemId ?? item?.id;
+          if (targetId && prev.some((m) => m.id === targetId)) {
+            return prev.map((m) =>
+              m.id === targetId ? { ...m, ...structuredPatch } : m
+            );
+          }
+          const newCustom: PreferenceItem = {
+            id: `pref-user-${Date.now()}`,
+            category: 'feels_right',
+            title: payload.title,
+            summary: payload.summary ?? '',
+            learnedFrom: 'Saved by you.',
+            howItHelps: '',
+            updatedAt: 'Saved just now',
+            isConfirmed: true,
+            source: 'user_explicit',
+            shortTag: payload.shortTag,
+            prefKind: 'custom',
+          };
+          return [...prev, newCustom];
+        });
+
         if (!ok) return { ok: false, error: "Couldn't save preference. Try again." };
-        showMemoryFeedback('Preference saved');
-        return { ok: true, confirmedSummary: `Saved “${title}”.` };
+        showMemoryFeedback(mode === 'confirm' ? 'Preference confirmed' : 'Preference saved');
+        return { ok: true, confirmedSummary: 'Preference saved.' };
       },
-      onIgnorePending:
-        mode === 'confirm' && item
-          ? (): PlanNovaCommitResult => {
-              const ok = updatePreferencesState((prev) => prev.filter((m) => m.id !== item.id));
-              if (!ok) return { ok: false, error: "Couldn't update preferences. Try again." };
-              showMemoryFeedback('Suggestion ignored');
-              return { ok: true, confirmedSummary: 'Ignored suggestion.' };
-            }
-          : undefined,
-      onDelete:
-        mode === 'edit' && item
-          ? (): PlanNovaCommitResult => {
-              const ok = updatePreferencesState((prev) => prev.filter((m) => m.id !== item.id));
-              if (!ok) return { ok: false, error: "Couldn't remove preference. Try again." };
-              showMemoryFeedback('Preference removed');
-              return { ok: true, confirmedSummary: 'Preference removed.' };
-            }
-          : undefined,
+      onIgnorePending: (targetId: string): PlanNovaCommitResult => {
+        const ok = updatePreferencesState((prev) => prev.filter((m) => m.id !== targetId));
+        if (!ok) return { ok: false, error: "Couldn't update preferences. Try again." };
+        showMemoryFeedback('Suggestion ignored');
+        return { ok: true, confirmedSummary: 'Ignored suggestion.' };
+      },
     });
   };
 
@@ -3508,11 +3372,10 @@ export function MyPlanView({
       kind: 'edit_habit',
       actionTitle: isNew ? 'Confirm a habit' : 'Edit habit',
       sourceModule: 'journey',
-      sourceLabel: 'Your journey',
-      introMessage: isNew
-        ? 'Pick a small habit to track in Your journey, then confirm.'
-        : `Update “${existing.label}” below. Nothing changes until you confirm.`,
-      inputPlaceholder: 'Type your regular action…',
+      sourceLabel: 'Your rhythm',
+      introMessage: '',
+      inputPlaceholder: 'Ask Nova or describe a custom change…',
+      handlesThreadLocally: true,
       isConfirmingNew: isNew,
       initialValues: {
         habitName: existing?.label ?? '',
@@ -3613,42 +3476,50 @@ export function MyPlanView({
   };
 
   const openWeeklyFitInNova = () => {
+    const targetWeekStartKey = detailWeeklyReviewModel.weekStartKey;
     launchPlanNovaChat({
-      id: `weekly-fit-${weeklyReviewModel.weekStartKey}-${Date.now()}`,
+      id: `weekly-fit-${targetWeekStartKey}-${Date.now()}`,
       kind: 'weekly_fit',
-      actionTitle: 'Update weekly answer',
+      actionTitle: 'Weekly check-in',
       sourceModule: 'weekly_review',
       sourceLabel: 'Weekly review',
-      introMessage: `How did movement fit into ${weeklyReviewModel.rangeLabel}? Select an option and confirm.`,
-      inputPlaceholder: 'Or tell Nova how the week felt…',
-      weekRangeLabel: weeklyReviewModel.rangeLabel,
-      initialFit: weeklyReviewModel.fitAnswer,
-      initialFollowUp: weeklyReviewModel.followUpAnswer,
+      introMessage: `Want to share what made ${detailWeeklyReviewModel.rangeLabel} feel that way? Any plan change is up to you to confirm.`,
+      inputPlaceholder: 'Tell Nova what got in the way or worked well…',
+      weekRangeLabel: detailWeeklyReviewModel.rangeLabel,
+      initialFit: detailWeeklyReviewModel.fitAnswer,
+      initialFollowUp: detailWeeklyReviewModel.followUpAnswer,
       onCommit: ({ fit, followUp }): PlanNovaCommitResult => {
-        const fitRes = handleWeeklyFitSelect(fit);
+        const fitRes = handleWeeklyFitSelect(fit, targetWeekStartKey);
         if (!fitRes.ok) return { ok: false, error: fitRes.error };
         if (fit === 'hard_to_fit_in' && followUp) {
-          const fuRes = handleWeeklyFollowUpSelect(followUp);
+          const fuRes = handleWeeklyFollowUpSelect(followUp, targetWeekStartKey);
           if (!fuRes.ok) return { ok: false, error: fuRes.error };
         }
-        return { ok: true, confirmedSummary: 'Weekly answer saved.' };
+        return { ok: true, confirmedSummary: 'Weekly feedback saved.' };
       },
     });
   };
 
   const openWeeklyNoteInNova = () => {
+    const targetWeekStartKey = detailWeeklyReviewModel.weekStartKey;
     launchPlanNovaChat({
-      id: `weekly-note-${weeklyReviewModel.weekStartKey}-${Date.now()}`,
+      id: `weekly-note-${targetWeekStartKey}-${Date.now()}`,
       kind: 'weekly_note',
-      actionTitle: weeklyReviewModel.selfReport.status === 'note' ? 'Edit weekly note' : 'Add weekly note',
+      actionTitle:
+        detailWeeklyReviewModel.selfReport.status === 'note'
+          ? 'Edit weekly note'
+          : 'Add weekly note',
       sourceModule: 'weekly_review',
       sourceLabel: 'Weekly review',
-      introMessage: `Add a short note for ${weeklyReviewModel.rangeLabel}, or skip.`,
+      introMessage: `Add a short note for ${detailWeeklyReviewModel.rangeLabel}, or skip.`,
       inputPlaceholder: 'Type a short note…',
-      weekRangeLabel: weeklyReviewModel.rangeLabel,
-      initialNote: weeklyReviewModel.selfReport.note ?? '',
+      weekRangeLabel: detailWeeklyReviewModel.rangeLabel,
+      initialNote: detailWeeklyReviewModel.selfReport.note ?? '',
       onCommit: ({ note, skipped }): PlanNovaCommitResult => {
-        const res = handleWeeklySelfReportSave(skipped ? '__skipped__' : note);
+        const res = handleWeeklySelfReportSave(
+          skipped ? '__skipped__' : note,
+          targetWeekStartKey
+        );
         if (!res.ok) return { ok: false, error: res.error };
         return {
           ok: true,
@@ -4399,36 +4270,14 @@ export function MyPlanView({
                   How did movement fit into your week?
                 </p>
 
-                <div
-                  role="group"
-                  aria-labelledby="weekly-review-question"
-                  className="genki-plan-feedback-grid mt-[10px]"
-                >
-                  {WEEKLY_FIT_OPTIONS.map((opt) => {
-                    const display = PRIMARY_WEEKLY_FIT_DISPLAY[opt.value];
-                    const isSelected = weeklyReviewModel.fitAnswer === opt.value;
-                    return (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        id={`weekly-review-option-${opt.value}`}
-                        aria-pressed={isSelected}
-                        onClick={() => triggerPrimaryFitSelect(opt.value)}
-                        className="genki-plan-control genki-plan-control-feedback genki-plan-control-feedback-stacked"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="genki-plan-control-feedback-emoji"
-                        >
-                          {display.emoji}
-                        </span>
-                        <span className="genki-plan-control-feedback-label">
-                          {display.label}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <WeeklyEmojiSelector
+                  options={WEEKLY_FIT_EMOJI_OPTIONS}
+                  selectedValue={weeklyReviewModel.fitAnswer}
+                  onSelect={triggerPrimaryFitSelect}
+                  ariaLabelledBy="weekly-review-question"
+                  optionIdPrefix="weekly-review-option"
+                  className="mt-[10px]"
+                />
 
                 {weeklyReviewModel.fitAnswer && (
                   <p
@@ -4515,12 +4364,15 @@ export function MyPlanView({
             )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {checkMemories.length > 0 && confirmedPreferenceTags.length === 0 && (
-              <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                {checkMemories.length} to confirm
+            {checkMemories.length > 0 && (
+              <span
+                id="plan-entry-preferences-pending-count"
+                className="text-[13px] font-medium leading-[18px] text-[#51489A] tabular-nums whitespace-nowrap"
+              >
+                {checkMemories.length} to review
               </span>
             )}
-            <ChevronRight className="w-4 h-4 text-[#6E6E78] stroke-[2]" />
+            <ChevronRight className="w-[18px] h-[18px] text-[#6E6E78] stroke-[2]" aria-hidden="true" />
           </div>
         </button>
 
@@ -4609,22 +4461,13 @@ export function MyPlanView({
                       </h3>
                     </div>
 
-                    {selectedModule === 'preferences' && (
-                      <button
-                        type="button"
-                        onClick={() => setIsMemoryInfoModalOpen(true)}
-                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[13px] font-medium text-[#51489A] hover:text-[#413980] shrink-0 cursor-pointer"
-                        aria-label="Why preferences"
-                      >
-                        Why
-                      </button>
-                    )}
-
                     {selectedModule === 'history' && (
                       <button
                         type="button"
                         id="history-add-activity-btn"
-                        onClick={() => openLogWorkoutInNova(deviceToday.dateStr)}
+                        onClick={() =>
+                          handleOpenDayDetail(historySelectedDate, { initialMode: 'workout' })
+                        }
                         className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 -mr-2 text-[14px] font-medium text-[#51489A] hover:text-[#413980] shrink-0 cursor-pointer"
                       >
                         Add activity
@@ -4632,6 +4475,14 @@ export function MyPlanView({
                     )}
                   </header>
 
+                  {selectedModule === 'preferences' ? (
+                    <PreferencesInlineView
+                      items={memories}
+                      onCommitAll={(nextItems) => updatePreferencesState(() => nextItems)}
+                      onDirtyChange={setIsPreferencesDirty}
+                      scrollContainerRef={secondarySheetScrollRef}
+                    />
+                  ) : (
                   <div
                     ref={secondarySheetScrollRef}
                     id="my-plan-secondary-sheet-body"
@@ -4682,13 +4533,29 @@ export function MyPlanView({
                   {/* ======================================================= */}
                   {selectedModule === 'weekly_review' && (
                     <WeeklyReviewDetailView
-                      model={weeklyReviewModel}
+                      model={detailWeeklyReviewModel}
                       habit={activeRhythmHabit}
+                      onSelectFit={(answer) =>
+                        handleWeeklyFitSelect(answer, detailWeeklyReviewModel.weekStartKey)
+                      }
+                      onSelectStartingFeel={(level) =>
+                        handleWeeklyStartingFeelSelect(
+                          level,
+                          detailWeeklyReviewModel.weekStartKey,
+                          detailWeeklyReviewModel.weekEndKey
+                        )
+                      }
+                      onSetStartingFeelSpecialState={(state) =>
+                        handleWeeklyStartingFeelSpecialState(
+                          state,
+                          detailWeeklyReviewModel.weekStartKey
+                        )
+                      }
+                      onStepWeek={handleStepDetailReviewWeek}
                       onOpenFitInNova={openWeeklyFitInNova}
                       onOpenSuggestionInNova={(step) =>
                         openSuggestionInNova(step, 'weekly_review')
                       }
-                      onOpenStartingFeelInNova={() => openStartingFeelInNova('weekly_review')}
                       onOpenSelfReportInNova={openWeeklyNoteInNova}
                       onOpenHistory={() => openSecondaryModule('history', 'weekly_review')}
                     />
@@ -4709,498 +4576,332 @@ export function MyPlanView({
                   )}
 
                   {/* ======================================================= */}
-                  {/* SECONDARY PAGE 1: HISTORY                               */}
+                  {/* SECONDARY PAGE 1: HISTORY (CALENDAR + SELECTED DAY)     */}
                   {/* ======================================================= */}
-                  {selectedModule === 'history' && (
-                    <div className="flex flex-col gap-4 text-[13px] leading-[18px] text-[#3C3C43]">
-                      {/* Activity Monthly Calendar */}
+                  {selectedModule === 'history' && (() => {
+                    const selectedDateObj = parseLocalDateKey(historySelectedDate);
+                    const selectedDateLabel = selectedDateObj
+                      ? `${SHORT_WEEKDAYS[selectedDateObj.getDay()]}, ${SHORT_MONTH_NAMES[selectedDateObj.getMonth()]} ${selectedDateObj.getDate()}`
+                      : historySelectedDate;
+                    const isSelectedToday = historySelectedDate === deviceToday.dateStr;
+                    const selectedDayHasActive = selectedHistoryDayItems.some(
+                      (i) => i.kind !== 'rest'
+                    );
+                    const selectedDayHasRest = selectedHistoryDayItems.some(
+                      (i) => i.kind === 'rest'
+                    );
+                    const selectedDayStatusLabel = selectedDayHasActive
+                      ? 'Active'
+                      : selectedDayHasRest
+                      ? 'Rest'
+                      : 'No record';
+
+                    return (
                       <div
-                        id="history-calendar-card"
-                        className="py-4 px-3 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3"
+                        id="view-history-secondary-page"
+                        className="flex flex-col gap-4 text-[13px] leading-[18px] text-[#3C3C43]"
                       >
-                        <div className="flex items-center justify-between gap-2 flex-wrap px-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPickerYear(viewYear);
-                              setIsMonthPickerOpen(true);
-                            }}
-                            className="genki-plan-control genki-plan-control-base min-h-[44px] flex items-center gap-1.5 text-[14px] font-semibold text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
-                            aria-label="Select month"
-                          >
-                            <CalendarIcon className="w-4 h-4 text-[#5E5BAE]" />
-                            <span>
-                              {isCurrentMonth ? MONTH_NAMES[viewMonth] : SHORT_MONTH_NAMES[viewMonth]} {viewYear}
-                            </span>
-                            <ChevronDown className="w-3.5 h-3.5 text-[#5E5BAE] opacity-85 shrink-0" />
-                          </button>
+                        {/* 1. Monthly Calendar with Cross-Month Controls */}
+                        <div
+                          id="history-calendar-card"
+                          className="py-4 px-3 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3"
+                        >
+                          <div className="flex items-center justify-between gap-1 px-0.5">
+                            <div className="flex items-center gap-0.5 min-w-0">
+                              <button
+                                type="button"
+                                id="history-prev-month-btn"
+                                onClick={handlePrevMonth}
+                                aria-label="Previous month"
+                                className="genki-plan-week-nav-btn"
+                              >
+                                <ChevronLeft className="w-[18px] h-[18px] stroke-[2]" aria-hidden="true" />
+                              </button>
 
-                          {!isCurrentMonth && (
-                            <button
-                              type="button"
-                              id="activity-this-month-btn"
-                              onClick={handleJumpToThisMonth}
-                              className="genki-plan-control genki-plan-control-base min-h-[44px] flex items-center gap-1.5 text-[13px] font-semibold text-[#5E5BAE] bg-[#5E5BAE]/10 hover:bg-[#5E5BAE]/18 active:scale-95 px-3.5 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
-                              aria-label="Return to this month"
-                            >
-                              <RotateCcw className="w-3.5 h-3.5 stroke-[2.2]" />
-                              <span>This month</span>
-                            </button>
-                          )}
-                        </div>
+                              <button
+                                type="button"
+                                id="history-month-picker-btn"
+                                onClick={() => {
+                                  setPickerYear(viewYear);
+                                  setIsMonthPickerOpen(true);
+                                }}
+                                className="genki-plan-control genki-plan-control-base min-h-[44px] flex items-center gap-1.5 text-[14px] font-semibold text-[#1C1C1E] bg-[#F2F2F7] hover:bg-[#E5E5EA] active:scale-95 px-3 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
+                                aria-label="Select month"
+                              >
+                                <CalendarIcon className="w-4 h-4 text-[#5E5BAE]" aria-hidden="true" />
+                                <span>
+                                  {isCurrentMonth
+                                    ? MONTH_NAMES[viewMonth]
+                                    : SHORT_MONTH_NAMES[viewMonth]}{' '}
+                                  {viewYear}
+                                </span>
+                                <ChevronDown className="w-3.5 h-3.5 text-[#5E5BAE] opacity-85 shrink-0" aria-hidden="true" />
+                              </button>
 
-                        {/* Weekday indicators */}
-                        <div className="grid grid-cols-7 gap-x-0 text-center select-none pt-0.5">
-                          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayInitial, idx) => (
-                            <span key={idx} className="text-[13px] font-semibold text-[#6E6E78] uppercase tracking-wider">
-                              {dayInitial}
-                            </span>
-                          ))}
-                        </div>
+                              <button
+                                type="button"
+                                id="history-next-month-btn"
+                                onClick={handleNextMonth}
+                                aria-label="Next month"
+                                className="genki-plan-week-nav-btn"
+                              >
+                                <ChevronRight className="w-[18px] h-[18px] stroke-[2]" aria-hidden="true" />
+                              </button>
+                            </div>
 
-                        {/* Monthly Calendar Grid */}
-                        <div className="relative select-none overflow-hidden touch-pan-y">
-                          <motion.div
-                            key={`${viewYear}-${viewMonth}`}
-                            initial={{ opacity: 0, x: slideDirection * 24 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ duration: 0.2, ease: 'easeOut' }}
-                            drag="x"
-                            dragConstraints={{ left: 0, right: 0 }}
-                            dragElastic={0.15}
-                            onDragEnd={(_, info) => {
-                              if (info.offset.x > 40) handlePrevMonth();
-                              else if (info.offset.x < -40) handleNextMonth();
-                            }}
-                            className="grid grid-cols-7 gap-x-0 gap-y-0.5 cursor-grab active:cursor-grabbing py-1"
-                          >
-                            {Array.from({ length: firstDayOfWeek }).map((_, idx) => (
-                              <div key={`empty-prefix-${idx}`} className="w-full min-h-[44px]" />
+                            {!isCurrentMonth && (
+                              <button
+                                type="button"
+                                id="activity-this-month-btn"
+                                onClick={handleJumpToThisMonth}
+                                className="genki-plan-control genki-plan-control-base min-h-[44px] flex items-center gap-1 text-[13px] font-semibold text-[#5E5BAE] bg-[#5E5BAE]/10 hover:bg-[#5E5BAE]/18 active:scale-95 px-3 py-2 rounded-full transition-all cursor-pointer whitespace-nowrap shrink-0"
+                                aria-label="Return to this month"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5 stroke-[2.2]" aria-hidden="true" />
+                                <span>This month</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Weekday indicators */}
+                          <div className="grid grid-cols-7 gap-x-0 text-center select-none pt-0.5">
+                            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayInitial, idx) => (
+                              <span
+                                key={idx}
+                                className="text-[13px] font-semibold text-[#6E6E78] uppercase tracking-wider"
+                              >
+                                {dayInitial}
+                              </span>
                             ))}
-
-                            {Array.from({ length: daysInCurrentMonth }, (_, i) => i + 1).map((dayNum) => {
-                              const dStr = formatDateKey(viewYear, viewMonth, dayNum);
-                              const record = effectiveActivityLogs[dStr];
-                              const isToday =
-                                viewYear === deviceToday.year &&
-                                viewMonth === deviceToday.month &&
-                                dayNum === deviceToday.day;
-                              const isFuture =
-                                viewYear > deviceToday.year ||
-                                (viewYear === deviceToday.year && viewMonth > deviceToday.month) ||
-                                (viewYear === deviceToday.year &&
-                                  viewMonth === deviceToday.month &&
-                                  dayNum > deviceToday.day);
-
-                              const tileClasses =
-                                record?.type === 'active'
-                                  ? 'bg-[#5E5BAE] text-[#FFFFFF] shadow-[0_2px_6px_rgba(94,91,174,0.22)] group-hover:brightness-105'
-                                  : record?.type === 'rest'
-                                  ? 'bg-[#E59980] text-[#3A2D29] shadow-[0_2px_6px_rgba(229,153,128,0.22)] group-hover:brightness-105'
-                                  : isFuture
-                                  ? 'bg-[#F2F2F7]/70 text-[#8E8E93] border border-dashed border-[#D1D1D6] group-hover:bg-[#E5E5EA]'
-                                  : 'bg-[#F2F2F7] text-[#6E6E78] group-hover:bg-[#E5E5EA]';
-
-                              return (
-                                <button
-                                  type="button"
-                                  key={dStr}
-                                  data-calendar-date={dStr}
-                                  onClick={() => handleOpenDayDetail(dStr)}
-                                  aria-label={`${dStr}: ${record?.type || 'no record'}`}
-                                  aria-current={isToday ? 'date' : undefined}
-                                  className="genki-plan-control genki-plan-control-base w-full min-h-[44px] flex items-center justify-center rounded-[10px] cursor-pointer group active:scale-92 transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5E5BAE]/50"
-                                >
-                                  <span
-                                    className={`w-9 h-9 rounded-[10px] flex items-center justify-center text-[13px] font-medium leading-[18px] tabular-nums transition-colors duration-150 ${
-                                      isToday ? 'ring-2 ring-[#5E5BAE] ring-offset-2 ring-offset-white' : ''
-                                    } ${tileClasses}`}
-                                  >
-                                    {dayNum}
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </motion.div>
-                        </div>
-
-                        {/* Status Legend */}
-                        <div className="pt-2.5 border-t border-black/[0.05] flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-[18px] text-[#6E6E78]">
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2.5 h-2.5 rounded-[4px] bg-[#5E5BAE]" />
-                            <span className="text-[#1C1C1E] font-medium">Active</span>
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E59980]" />
-                            <span className="text-[#1C1C1E] font-medium">Rest</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E5E5EA]" />
-                            <span>No record</span>
-                          </div>
-                        </div>
-                      </div>
 
-                      {/* 6-Month Trend */}
-                      <div
-                        id="history-trend-chart-card"
-                        className="bg-white p-4 rounded-[24px] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2"
-                      >
-                        <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                          <div className="flex items-center gap-1.5">
-                            <TrendingUp className="w-4 h-4 text-[#5E5BAE]" />
-                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
-                              Active days
-                            </span>
-                          </div>
-                          <span className="text-[13px] text-[#6E6E78] shrink-0 tabular-nums">
-                            {monthlyTrendSeries[0]?.month}–{monthlyTrendSeries[monthlyTrendSeries.length - 1]?.month} {viewYear}
-                          </span>
-                        </div>
+                          {/* Monthly Calendar Grid */}
+                          <div className="relative select-none overflow-hidden touch-pan-y">
+                            <motion.div
+                              key={`${viewYear}-${viewMonth}`}
+                              initial={{ opacity: 0, x: slideDirection * 24 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ duration: 0.2, ease: 'easeOut' }}
+                              drag="x"
+                              dragConstraints={{ left: 0, right: 0 }}
+                              dragElastic={0.15}
+                              onDragEnd={(_, info) => {
+                                if (info.offset.x > 40) handlePrevMonth();
+                                else if (info.offset.x < -40) handleNextMonth();
+                              }}
+                              className="grid grid-cols-7 gap-x-0 gap-y-0.5 cursor-grab active:cursor-grabbing py-1"
+                            >
+                              {Array.from({ length: firstDayOfWeek }).map((_, idx) => (
+                                <div key={`empty-prefix-${idx}`} className="w-full min-h-[44px]" />
+                              ))}
 
-                        <MonthlyTrendCurve series={monthlyTrendSeries} compact={false} />
-                      </div>
+                              {Array.from({ length: daysInCurrentMonth }, (_, i) => i + 1).map(
+                                (dayNum) => {
+                                  const dStr = formatDateKey(viewYear, viewMonth, dayNum);
+                                  const record = effectiveActivityLogs[dStr];
+                                  const isToday =
+                                    viewYear === deviceToday.year &&
+                                    viewMonth === deviceToday.month &&
+                                    dayNum === deviceToday.day;
+                                  const isSelected = historySelectedDate === dStr;
+                                  const isFuture =
+                                    viewYear > deviceToday.year ||
+                                    (viewYear === deviceToday.year &&
+                                      viewMonth > deviceToday.month) ||
+                                    (viewYear === deviceToday.year &&
+                                      viewMonth === deviceToday.month &&
+                                      dayNum > deviceToday.day);
 
-                      {/* Detailed Stats Range Toggle */}
-                      <div className="flex items-center justify-between bg-[#F2F2F7]/80 p-1 rounded-full border border-black/[0.04]">
-                        <span className="text-[13px] leading-[18px] font-semibold text-[#1C1C1E] pl-3 tabular-nums">
-                          {currentRecentData.rangeLabel}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setRhythmFilter('7d')}
-                            className={`genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-full text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
-                              rhythmFilter === '7d'
-                                ? 'bg-white text-[#1C1C1E] shadow-2xs'
-                                : 'text-[#6E6E78] hover:text-[#1C1C1E]'
-                            }`}
-                          >
-                            7 days
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRhythmFilter('month')}
-                            className={`genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-full text-[13px] leading-[18px] font-semibold transition-all cursor-pointer ${
-                              rhythmFilter === 'month'
-                                ? 'bg-white text-[#1C1C1E] shadow-2xs'
-                                : 'text-[#6E6E78] hover:text-[#1C1C1E]'
-                            }`}
-                          >
-                            Month
-                          </button>
-                        </div>
-                      </div>
+                                  const tileClasses =
+                                    record?.type === 'active'
+                                      ? 'bg-[#5E5BAE] text-[#FFFFFF] shadow-[0_2px_6px_rgba(94,91,174,0.22)] group-hover:brightness-105'
+                                      : record?.type === 'rest'
+                                      ? 'bg-[#E59980] text-[#3A2D29] shadow-[0_2px_6px_rgba(229,153,128,0.22)] group-hover:brightness-105'
+                                      : isFuture
+                                      ? 'bg-[#F2F2F7]/70 text-[#8E8E93] border border-dashed border-[#D1D1D6] group-hover:bg-[#E5E5EA]'
+                                      : 'bg-[#F2F2F7] text-[#6E6E78] group-hover:bg-[#E5E5EA]';
 
-                      {/* 4 Metrics */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[13px] font-medium text-[#6E6E78]">Active days</span>
-                          <span className="mt-1 text-[20px] font-bold text-[#1C1C1E] leading-none tabular-nums">
-                            {currentRecentData.activeDaysCount}
-                          </span>
-                        </div>
+                                  const ringClasses = isSelected
+                                    ? 'ring-2 ring-[#211D2C] ring-offset-2 ring-offset-white'
+                                    : isToday
+                                    ? 'ring-2 ring-[#5E5BAE]/65 ring-offset-2 ring-offset-white'
+                                    : '';
 
-                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[13px] font-medium text-[#6E6E78]">Activities</span>
-                          <span className="mt-1 text-[20px] font-bold text-[#5E5BAE] leading-none tabular-nums">
-                            {currentRecentData.completedCount}
-                          </span>
-                        </div>
-
-                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[13px] font-medium text-[#6E6E78]">Minutes</span>
-                          <span className="mt-1 text-[20px] font-bold text-[#1C1C1E] leading-none tabular-nums">
-                            {currentRecentData.activeMinutes}
-                          </span>
-                        </div>
-
-                        <div className="bg-[#F2F2F7]/75 p-3 rounded-[16px] border border-black/[0.03] flex flex-col justify-between min-h-[68px]">
-                          <span className="text-[13px] font-medium text-[#6E6E78]">Rest days</span>
-                          <span className="mt-1 text-[20px] font-bold text-[#E59980] leading-none tabular-nums">
-                            {currentRecentData.restDaysCount}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div
-                        id="history-minutes-chart-card"
-                        className="bg-white p-4 rounded-[24px] border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-2"
-                      >
-                        <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                          <div className="flex items-center gap-1.5">
-                            <BarChart2 className="w-4 h-4 text-[#5E5BAE]" />
-                            <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
-                              Active minutes
-                            </span>
-                          </div>
-                          <span className="text-[13px] font-medium text-[#5E5BAE] tabular-nums">
-                            {currentRecentData.activeMinutes} min
-                          </span>
-                        </div>
-
-                        <ActiveMinutesBarChart
-                          items={currentRecentData.dailyBreakdown}
-                          timeframe={rhythmFilter}
-                        />
-                      </div>
-
-                      {/* Recorded Days List */}
-                      <div className="flex flex-col gap-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
-                            Recorded days ({currentMonthRecords.length})
-                          </span>
-                        </div>
-
-                        {currentMonthRecords.length === 0 ? (
-                          <div className="p-4 text-center rounded-[20px] bg-white border border-black/[0.04] text-[15px] text-[#6E6E78]">
-                            No records this month.
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {[...currentMonthRecords]
-                              .sort((a, b) => b.date.localeCompare(a.date))
-                              .map((rec) => {
-                                const dObj = new Date(rec.date + 'T00:00:00');
-                                const isToday = rec.date === deviceToday.dateStr;
-                                const dateLabel = dObj.toLocaleDateString('en-US', {
-                                  month: 'short',
-                                  day: 'numeric',
-                                  weekday: 'short'
-                                });
-                                const sessCount = rec.sessionsCount ?? 1;
-
-                                return (
-                                  <div
-                                    key={rec.date}
-                                    className="p-3.5 rounded-[18px] bg-white border border-black/[0.04] shadow-[0_2px_10px_-4px_rgba(28,28,45,0.05)] flex items-center justify-between gap-3"
-                                  >
-                                    <div className="flex items-start gap-2.5 min-w-0">
-                                      <div
-                                        className={`w-3 h-3 rounded-[4px] mt-1 shrink-0 ${
-                                          rec.type === 'active' ? 'bg-[#5E5BAE]' : 'bg-[#E59980]'
-                                        }`}
-                                      />
-                                      <div className="min-w-0">
-                                        <div className="flex items-center gap-1.5 flex-wrap">
-                                          <span className="font-semibold text-[#1C1C1E] text-[15px] leading-[22px]">
-                                            {dateLabel}
-                                          </span>
-                                          {isToday && (
-                                            <span className="text-[13px] text-[#5E5BAE] font-semibold">
-                                              Today
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="text-[13px] text-[#6E6E78] mt-0.5 truncate">
-                                          {rec.type === 'active' ? (
-                                            <span>
-                                              {rec.title} · {sessCount} · {rec.durationMinutes}m
-                                            </span>
-                                          ) : (
-                                            <span>{rec.title || 'Rest day'}</span>
-                                          )}
-                                        </div>
-                                        {rec.note && (
-                                          <div className="text-[13px] text-[#6E6E78] mt-0.5 truncate">
-                                            “{rec.note}”
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-
+                                  return (
                                     <button
                                       type="button"
-                                      onClick={() => handleOpenDayDetail(rec.date)}
-                                      className="genki-plan-control genki-plan-control-base min-h-[44px] min-w-[52px] px-3 rounded-[12px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[13px] font-semibold text-[#5E5BAE] shrink-0 transition-colors cursor-pointer"
+                                      key={dStr}
+                                      data-calendar-date={dStr}
+                                      data-calendar-state={record?.type || 'none'}
+                                      aria-pressed={isSelected}
+                                      onClick={() => setHistorySelectedDate(dStr)}
+                                      aria-label={`${dStr}: ${record?.type || 'no record'}`}
+                                      aria-current={isToday ? 'date' : undefined}
+                                      className="genki-plan-control genki-plan-control-base w-full min-h-[44px] flex items-center justify-center rounded-[10px] cursor-pointer group active:scale-92 transition-transform duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5E5BAE]/50"
                                     >
-                                      Edit
+                                      <span
+                                        className={`w-9 h-9 rounded-[10px] flex items-center justify-center text-[13px] font-medium leading-[18px] tabular-nums transition-colors duration-150 ${ringClasses} ${tileClasses}`}
+                                      >
+                                        {dayNum}
+                                      </span>
                                     </button>
-                                  </div>
-                                );
-                              })}
+                                  );
+                                }
+                              )}
+                            </motion.div>
                           </div>
-                        )}
-                      </div>
 
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => setIsMethodologyOpen(true)}
-                          className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 text-[13px] font-medium text-[#5E5BAE] hover:text-[#4B4895] cursor-pointer"
+                          {/* Status Legend */}
+                          <div className="pt-2.5 border-t border-black/[0.05] flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-[18px] text-[#6E6E78]">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#5E5BAE]" />
+                              <span className="text-[#1C1C1E] font-medium">Active</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E59980]" />
+                              <span className="text-[#1C1C1E] font-medium">Rest</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-[4px] bg-[#E5E5EA]" />
+                              <span>No record</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 2. Selected Day Records (Reuses This week ActivityRecordRow) */}
+                        <section
+                          id="history-selected-day-section"
+                          data-selected-date={historySelectedDate}
+                          data-selected-day-status={selectedDayStatusLabel.toLowerCase()}
+                          aria-labelledby="history-selected-day-heading"
+                          className="p-4 rounded-[24px] bg-white border border-black/[0.04] shadow-[0_2px_12px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-3"
                         >
-                          Why
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ======================================================= */}
-                  {/* SECONDARY PAGE 3: PREFERENCES                           */}
-                  {/* ======================================================= */}
-                  {selectedModule === 'preferences' && (
-                    <div id="preferences-secondary-page" className="flex flex-col gap-5 text-[#1C1C1E]">
-                      {/* Section 1: Confirmed preferences */}
-                      <div id="preferences-confirmed-section" className="flex flex-col gap-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
-                            Saved
-                          </h4>
-                          <button
-                            type="button"
-                            id="preferences-add-btn"
-                            onClick={handleOpenAddPreference}
-                            className="genki-plan-control genki-plan-control-base min-h-[44px] px-2 -mr-2 text-[15px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent transition-opacity cursor-pointer"
-                          >
-                            Add
-                          </button>
-                        </div>
-
-                        {confirmedMemories.length === 0 ? (
-                          <div
-                            id="preferences-confirmed-empty"
-                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[15px] leading-[22px] text-[#6E6E78]"
-                          >
-                            No saved preferences yet.
-                          </div>
-                        ) : (
-                          <div className="flex flex-col gap-2.5">
-                            {confirmedMemories.map((item) => {
-                              const tagLabel = deriveShortPreferenceTag(item);
-                              return (
-                                <div
-                                  key={item.id}
-                                  data-pref-confirmed-id={item.id}
-                                  className="rounded-[20px] p-4 bg-white border border-black/[0.05] shadow-[0_2px_10px_-4px_rgba(28,28,45,0.05)] flex flex-col gap-1.5"
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex flex-col min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h4
+                                  id="history-selected-day-heading"
+                                  className="font-sans text-[16px] font-semibold leading-[22px] text-[#211D2C] truncate"
                                 >
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedMemory(item)}
-                                    className="genki-plan-control genki-plan-control-base w-full text-left flex flex-col gap-1 cursor-pointer"
-                                  >
-                                    <span className="text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
-                                      {item.title}
-                                    </span>
-                                    {item.summary && (
-                                      <p className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                                        {item.summary}
-                                      </p>
-                                    )}
-                                  </button>
-
-                                  <div className="mt-1 pt-2 border-t border-black/[0.06] flex items-center justify-between gap-2">
-                                    <span className="text-[13px] font-medium leading-[18px] text-[#6E6E78] truncate">
-                                      {tagLabel}
-                                    </span>
-
-                                    <div className="flex items-center gap-1 shrink-0">
-                                      <button
-                                        type="button"
-                                        data-pref-edit-id={item.id}
-                                        onClick={(e) => handleOpenEditPreference(item, e)}
-                                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 text-[14px] font-medium text-[#5E5BAE] hover:text-[#4B4895] active:opacity-70 bg-transparent cursor-pointer"
-                                      >
-                                        Edit
-                                      </button>
-                                      <button
-                                        type="button"
-                                        data-pref-delete-id={item.id}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setMemoryToDelete(item);
-                                        }}
-                                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-2.5 -mr-2 text-[14px] font-medium text-[#6E6E78] hover:text-[#E11D48] active:opacity-70 bg-transparent cursor-pointer"
-                                      >
-                                        Delete
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Section 2: Pending confirmation */}
-                      <div id="preferences-pending-section" className="flex flex-col gap-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <h4 className="genki-plan-subheading text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
-                            Needs confirmation
-                          </h4>
-                          {checkMemories.length > 0 && (
-                            <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78] tabular-nums">
-                              {checkMemories.length}
-                            </span>
-                          )}
-                        </div>
-
-                        {checkMemories.length === 0 ? (
-                          <div
-                            id="preferences-pending-empty"
-                            className="rounded-[20px] p-4 bg-[#F2F2F7]/75 border border-black/[0.04] text-[15px] leading-[22px] text-[#6E6E78]"
-                          >
-                            No pending questions.
-                          </div>
-                        ) : (
-                          <div className="flex flex-col gap-2.5">
-                            {checkMemories.map((item) => (
-                              <div
-                                key={item.id}
-                                data-pref-pending-id={item.id}
-                                className="rounded-[20px] p-4 bg-[#F5F4FB] border border-[#5E5BAE]/15 flex flex-col gap-2"
+                                  {selectedDateLabel}
+                                </h4>
+                                {isSelectedToday && (
+                                  <span className="text-[12px] font-semibold leading-[16px] text-[#51489A]">
+                                    Today
+                                  </span>
+                                )}
+                              </div>
+                              <span
+                                id="history-selected-day-status"
+                                className="text-[12px] font-normal leading-[16px] text-[#6F687B]"
                               >
+                                {selectedDayStatusLabel}
+                              </span>
+                            </div>
+
+                            {selectedHistoryDayItems.length > 0 && !selectedDayHasRest && (
+                              <button
+                                type="button"
+                                id="history-selected-day-mark-rest-btn"
+                                onClick={() =>
+                                  handleOpenDayDetail(historySelectedDate, {
+                                    initialMode: 'rest',
+                                  })
+                                }
+                                className="min-h-[44px] px-2 -my-2 text-[13px] font-medium text-[#6F687B] hover:text-[#211D2C] transition-colors cursor-pointer shrink-0"
+                              >
+                                Mark rest
+                              </button>
+                            )}
+                          </div>
+
+                          {selectedHistoryDayItems.length === 0 ? (
+                            <div
+                              id="history-selected-day-empty"
+                              className="flex flex-col gap-3 pt-0.5"
+                            >
+                              <p className="text-[14px] font-normal leading-[21px] text-[#625B70]">
+                                No activity or rest recorded on {selectedDateLabel}.
+                              </p>
+                              <div className="flex items-center gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => setSelectedMemory(item)}
-                                  className="genki-plan-control genki-plan-control-base w-full text-left flex flex-col gap-1 cursor-pointer"
+                                  id="history-empty-add-activity-btn"
+                                  onClick={() =>
+                                    handleOpenDayDetail(historySelectedDate, {
+                                      initialMode: 'workout',
+                                    })
+                                  }
+                                  className="genki-plan-control genki-plan-control-secondary flex-1 min-h-[44px] px-3 rounded-[12px] bg-[#EEEDF6] hover:bg-[#E4E2F1] text-[#51489A] text-[14px] font-semibold cursor-pointer"
                                 >
-                                  <span className="text-[15px] font-semibold leading-[22px] text-[#1C1C1E]">
-                                    {formatAsCheckQuestion(item.title)}
-                                  </span>
-                                  {item.learnedFrom && (
-                                    <span className="text-[13px] font-normal leading-[18px] text-[#6E6E78]">
-                                      {item.learnedFrom}
-                                    </span>
-                                  )}
+                                  Add activity
                                 </button>
-
-                                <div className="pt-1 flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    data-pref-confirm-id={item.id}
-                                    onClick={(e) => handleConfirmPendingMemory(item.id, e)}
-                                    className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-3 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[14px] font-semibold transition-colors cursor-pointer"
-                                  >
-                                    Confirm
-                                  </button>
-                                  <button
-                                    type="button"
-                                    data-pref-ignore-id={item.id}
-                                    onClick={(e) => handleDismissPendingMemory(item.id, e)}
-                                    className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-white hover:bg-[#F2F2F7] border border-black/[0.06] text-[#1C1C1E] text-[14px] font-medium transition-colors cursor-pointer"
-                                  >
-                                    Ignore
-                                  </button>
-                                </div>
+                                <button
+                                  type="button"
+                                  id="history-empty-mark-rest-btn"
+                                  onClick={() =>
+                                    handleOpenDayDetail(historySelectedDate, {
+                                      initialMode: 'rest',
+                                    })
+                                  }
+                                  className="genki-plan-control flex-1 min-h-[44px] px-3 rounded-[12px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#302D3D] text-[14px] font-medium cursor-pointer"
+                                >
+                                  Mark rest day
+                                </button>
                               </div>
-                            ))}
-                          </div>
-                        )}
+                            </div>
+                          ) : (
+                            <div
+                              id="history-selected-day-records"
+                              className="flex flex-col divide-y divide-black/[0.06] -my-1"
+                            >
+                              {selectedHistoryDayItems.map((item) => {
+                                const isExternal = item.recordSource === 'external_import';
+                                const isRest = item.kind === 'rest';
+                                return (
+                                  <ActivityRecordRow
+                                    key={item.id}
+                                    item={item}
+                                    showDateInMeta={false}
+                                    dataAttrPrefix="history"
+                                    actionSlot={
+                                      <button
+                                        type="button"
+                                        data-history-edit-record={item.id}
+                                        aria-label={
+                                          isRest
+                                            ? `Edit rest day on ${selectedDateLabel}`
+                                            : isExternal
+                                            ? `Manage ${item.sourceLabel} record ${item.title}`
+                                            : `Edit ${item.title}`
+                                        }
+                                        onClick={() =>
+                                          handleOpenDayDetail(historySelectedDate, {
+                                            initialMode: isRest ? 'rest' : 'workout',
+                                            initialEditActivityId:
+                                              isRest || isExternal ? null : item.id,
+                                            initialRestNote: isRest ? item.note ?? '' : undefined,
+                                          })
+                                        }
+                                        className="w-11 h-11 min-w-[44px] min-h-[44px] -mr-2.5 -my-2 rounded-full flex items-center justify-center text-[#51489A] hover:bg-[#51489A]/[0.08] active:bg-[#51489A]/[0.14] transition-colors shrink-0 cursor-pointer"
+                                      >
+                                        <Pencil
+                                          className="w-[17px] h-[17px] stroke-[2]"
+                                          aria-hidden="true"
+                                        />
+                                      </button>
+                                    }
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
+                        </section>
                       </div>
+                    );
+                  })()}
 
-                      <button
-                        type="button"
-                        id="preferences-talk-nova-btn"
-                        onClick={() => handleStartTalkToNovaMemory(null)}
-                        className="genki-plan-control genki-plan-control-base w-full min-h-[44px] px-4 rounded-[16px] bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[#1C1C1E] text-[15px] font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                      >
-                        <MessageSquare className="w-4 h-4 text-[#5E5BAE] stroke-[2]" />
-                        <span>Update in chat</span>
-                      </button>
-                    </div>
-                  )}
+                  {/* Preferences secondary page is rendered directly above for sticky Save footer */}
 
                   {/* ======================================================= */}
                   {/* SECONDARY PAGE 4: HEALTH DATA                           */}
@@ -5267,6 +4968,66 @@ export function MyPlanView({
                     </div>
                   )}
                   </div>
+                  )}
+
+                  {/* Unsaved changes confirmation dialog for Preferences */}
+                  <AnimatePresence>
+                    {selectedModule === 'preferences' && isPreferencesDiscardModalOpen && (
+                      <div
+                        id="preferences-unsaved-dialog"
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="preferences-unsaved-title"
+                        className="absolute inset-0 z-30 flex items-center justify-center p-5"
+                      >
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          onClick={() => setIsPreferencesDiscardModalOpen(false)}
+                          className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
+                        />
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.96, y: 6 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.96, y: 6 }}
+                          transition={{ duration: 0.16 }}
+                          className="relative w-full max-w-[320px] rounded-[22px] bg-white p-5 shadow-2xl border border-black/[0.06] flex flex-col gap-4 z-10"
+                        >
+                          <div className="flex flex-col gap-1.5">
+                            <h4
+                              id="preferences-unsaved-title"
+                              className="text-[16px] leading-[22px] font-semibold text-[#211D2C]"
+                            >
+                              Unsaved changes
+                            </h4>
+                            <p className="text-[14px] leading-[20px] text-[#625B70]">
+                              You have unsaved preference changes. Leave without saving?
+                            </p>
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <button
+                              type="button"
+                              id="preferences-keep-editing-btn"
+                              onClick={() => setIsPreferencesDiscardModalOpen(false)}
+                              className="w-full h-[44px] rounded-[12px] bg-[#51489A] text-white text-[14px] leading-[20px] font-semibold hover:bg-[#453D86] transition-colors cursor-pointer"
+                            >
+                              Keep editing
+                            </button>
+                            <button
+                              type="button"
+                              id="preferences-discard-changes-btn"
+                              onClick={handleConfirmDiscardPreferences}
+                              className="w-full h-[44px] rounded-[12px] bg-[#F5F4F9] text-[#625B70] text-[14px] leading-[20px] font-semibold hover:bg-[#ECEAF4] transition-colors cursor-pointer"
+                            >
+                              Discard changes
+                            </button>
+                          </div>
+                        </motion.div>
+                      </div>
+                    )}
+                  </AnimatePresence>
                 </motion.div>
               </div>
             )}
@@ -5317,14 +5078,27 @@ export function MyPlanView({
                       </h3>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setSelectedMemory(null)}
-                      className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] shrink-0 cursor-pointer transition-colors"
-                      aria-label="Close"
-                    >
-                      <X className="w-4 h-4 stroke-[2.2]" />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {selectedMemory.isConfirmed && selectedMemory.source === 'user_explicit' && (
+                        <button
+                          type="button"
+                          id="memory-detail-edit-btn"
+                          onClick={() => handleOpenEditPreference(selectedMemory)}
+                          aria-label={`Edit preference: ${selectedMemory.title}`}
+                          className="w-11 h-11 min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center text-[#51489A] hover:bg-[#51489A]/[0.08] active:bg-[#51489A]/[0.14] shrink-0 cursor-pointer transition-colors"
+                        >
+                          <Pencil className="w-[18px] h-[18px] stroke-[2]" aria-hidden="true" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMemory(null)}
+                        className="genki-plan-control genki-plan-control-icon w-11 h-11 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#6E6E78] hover:text-[#1C1C1E] shrink-0 cursor-pointer transition-colors"
+                        aria-label="Close"
+                      >
+                        <X className="w-4 h-4 stroke-[2.2]" />
+                      </button>
+                    </div>
                   </div>
 
                   {selectedMemory.summary && (
@@ -5363,15 +5137,8 @@ export function MyPlanView({
                     <div className="flex items-center gap-2.5 pt-1">
                       <button
                         type="button"
-                        onClick={() => handleOpenEditPreference(selectedMemory)}
-                        className="genki-plan-control genki-plan-control-primary flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[15px] font-semibold cursor-pointer transition-colors"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
                         onClick={() => setMemoryToDelete(selectedMemory)}
-                        className="genki-plan-control genki-plan-control-base min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#FFE4E6]/60 text-[#E11D48] text-[15px] font-medium cursor-pointer transition-colors"
+                        className="genki-plan-control genki-plan-control-base flex-1 min-h-[44px] px-4 rounded-[14px] bg-[#F2F2F7] hover:bg-[#FFE4E6]/60 text-[#E11D48] text-[15px] font-medium cursor-pointer transition-colors"
                       >
                         Delete
                       </button>
@@ -6222,15 +5989,6 @@ export function MyPlanView({
           ? getWorkoutDisplayLabel(matchedFilterType.key, matchedFilterType.label)
           : `${sheetWeekSnapshot.title} activity`;
 
-        const formatItemDateTime = (dateKey: string, iso: string, hasExactTime: boolean) => {
-          const datePart = formatDayLabel(dateKey);
-          if (!hasExactTime) return datePart;
-          const d = new Date(iso);
-          if (Number.isNaN(d.getTime())) return datePart;
-          const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-          return `${datePart} · ${time}`;
-        };
-
         const closeActivitySheet = () => {
           setWeekActivitySheet((prev) => ({
             ...prev,
@@ -6504,93 +6262,15 @@ export function MyPlanView({
                         </div>
                       ) : (
                         <div className="flex flex-col divide-y divide-black/[0.06] -my-1">
-                          {filteredActivityItems.map((item) => {
-                            const visibleSegments =
-                              item.segments && item.segments.length > 0
-                                ? activeFilterKey
-                                  ? item.segments.filter(
-                                      (seg) => seg.workoutTypeKey === activeFilterKey
-                                    )
-                                  : item.segments
-                                : [];
-
-                            return (
-                              <div
-                                key={item.id}
-                                data-week-activity-item={item.id}
-                                data-week-activity-date={item.dateKey}
-                                data-week-activity-kind={item.kind}
-                                className="min-h-[60px] py-3 flex flex-col gap-2"
-                              >
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="flex flex-col min-w-0">
-                                    <span className="text-[15px] font-medium leading-[21px] text-[#302D3D] truncate">
-                                      {item.title}
-                                    </span>
-                                    <span className="text-[13px] font-normal leading-[18px] text-[#706A7C]">
-                                      {formatItemDateTime(
-                                        item.dateKey,
-                                        item.occurredAt,
-                                        item.hasExactTimestamp
-                                      )}
-                                      {' · '}
-                                      {item.sourceLabel}
-                                    </span>
-                                  </div>
-                                  {item.trustworthyDurationMinutes !== null &&
-                                    visibleSegments.length <= 1 && (
-                                      <span className="text-[13px] font-medium leading-[18px] text-[#5E5BAE] tabular-nums whitespace-nowrap shrink-0">
-                                        {item.trustworthyDurationMinutes} min
-                                      </span>
-                                    )}
-                                </div>
-
-                                {visibleSegments.length > 0 && (
-                                  <div className="flex flex-col gap-1.5 pl-0.5">
-                                    {visibleSegments.map((seg, idx) => {
-                                      const segDisplayLabel = getWorkoutDisplayLabel(
-                                        seg.workoutTypeKey,
-                                        seg.workoutTypeLabel
-                                      );
-                                      const showDistinctTitle =
-                                        seg.title.trim().toLowerCase() !==
-                                          segDisplayLabel.trim().toLowerCase() &&
-                                        seg.title.trim().toLowerCase() !==
-                                          seg.workoutTypeLabel.trim().toLowerCase();
-                                      return (
-                                        <div
-                                          key={`${item.id}-seg-${idx}`}
-                                          data-activity-segment={seg.workoutTypeKey}
-                                          className="flex items-center justify-between gap-2 text-[13px] leading-[18px]"
-                                        >
-                                          <span className="flex items-center gap-2 min-w-0 text-[#524C63]">
-                                            <WorkoutActivityIcon
-                                              typeKey={seg.workoutTypeKey}
-                                              size={16}
-                                              className="shrink-0 text-[#625A76]"
-                                            />
-                                            <span className="truncate font-medium text-[#302D3D]">
-                                              {segDisplayLabel}
-                                            </span>
-                                            {showDistinctTitle && (
-                                              <span className="truncate text-[#706A7C]">
-                                                · {seg.title}
-                                              </span>
-                                            )}
-                                          </span>
-                                          {seg.trustworthyDurationMinutes !== null && (
-                                            <span className="text-[#5E5BAE] font-medium tabular-nums whitespace-nowrap shrink-0">
-                                              {seg.trustworthyDurationMinutes} min
-                                            </span>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                          {filteredActivityItems.map((item) => (
+                            <ActivityRecordRow
+                              key={item.id}
+                              item={item}
+                              activeFilterKey={activeFilterKey}
+                              showDateInMeta
+                              dataAttrPrefix="week"
+                            />
+                          ))}
                         </div>
                       )}
                     </div>
@@ -6898,86 +6578,6 @@ export function MyPlanView({
       })()}
 
       {/* ============================================================ */}
-      {/* Lightweight Methodology Modal (Inside Your Rhythm)           */}
-      {/* ============================================================ */}
-      {(() => {
-        const infoModalContent = (
-          <AnimatePresence>
-            {isMethodologyOpen && (
-              <div className="absolute inset-0 z-60 flex items-center justify-center p-6 pointer-events-auto">
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  onClick={() => setIsMethodologyOpen(false)}
-                  className="absolute inset-0 bg-black/35 backdrop-blur-xs"
-                />
-
-                <motion.div
-                  initial={{ scale: 0.94, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.94, opacity: 0 }}
-                  transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-                  className="relative bg-white/95 backdrop-blur-2xl rounded-[24px] p-5 border border-black/[0.04] shadow-2xl z-10 w-full max-w-[320px] flex flex-col gap-3.5 text-[#1C1C1E]"
-                >
-                  <div className="flex items-center justify-between pb-2 border-b border-black/[0.05]">
-                    <div className="flex items-center gap-1.5">
-                      <HelpCircle className="w-4 h-4 text-[#5E5BAE]" />
-                      <h4 className="genki-plan-subheading text-[15px] font-bold text-[#1C1C1E]">How it’s measured</h4>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsMethodologyOpen(false)}
-                      className="genki-plan-control genki-plan-control-icon w-7 h-7 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center text-[#1C1C1E] cursor-pointer transition-colors"
-                      aria-label="Close"
-                    >
-                      <X className="w-3.5 h-3.5 stroke-[2.2]" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2.5 text-[13px] leading-[18px] text-[#6C6C70] leading-relaxed">
-                    <div>
-                      <strong className="text-[#1C1C1E] font-semibold block mb-0.5">
-                        • Active days (days)
-                      </strong>
-                      Count of unique calendar days with at least 1 logged activity.
-                    </div>
-
-                    <div>
-                      <strong className="text-[#1C1C1E] font-semibold block mb-0.5">
-                        • Activities (sessions)
-                      </strong>
-                      Total number of completed activity sessions across those active days.
-                    </div>
-
-                    <div>
-                      <strong className="text-[#1C1C1E] font-semibold block mb-0.5">
-                        • Duration (minutes) & Rest days
-                      </strong>
-                      Cumulative minutes of completed sessions, plus logged restorative rest days.
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsMethodologyOpen(false)}
-                    className="genki-plan-control genki-plan-control-primary w-full py-2.5 rounded-[14px] bg-[#5E5BAE] hover:bg-[#524FA0] text-white text-[13px] leading-[18px] font-semibold shadow-2xs mt-1 transition-colors cursor-pointer"
-                  >
-                    Got it
-                  </button>
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
-        );
-
-        if (phoneFrameRef?.current) {
-          return createPortal(infoModalContent, phoneFrameRef.current);
-        }
-        return infoModalContent;
-      })()}
-
-      {/* ============================================================ */}
       {/* Month Picker Modal                                           */}
       {/* ============================================================ */}
       {(() => {
@@ -7241,9 +6841,10 @@ export function MyPlanView({
                                   data-action="edit-day-activity"
                                   data-activity-id={rec.id}
                                   onClick={() => handleStartEditDayActivity(rec)}
-                                  className="genki-plan-control genki-plan-control-base min-h-[36px] px-2.5 rounded-[10px] bg-white border border-black/[0.06] text-[13px] font-semibold text-[#5E5BAE] hover:bg-[#FAFAFC] transition-colors cursor-pointer"
+                                  aria-label={`Edit ${rec.title}`}
+                                  className="w-11 h-11 min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center text-[#51489A] hover:bg-[#51489A]/[0.08] active:bg-[#51489A]/[0.14] transition-colors cursor-pointer"
                                 >
-                                  Edit
+                                  <Pencil className="w-[18px] h-[18px] stroke-[2]" aria-hidden="true" />
                                 </button>
                                 <button
                                   type="button"

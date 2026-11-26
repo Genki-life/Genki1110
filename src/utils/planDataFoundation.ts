@@ -3371,6 +3371,7 @@ export interface PlanWeekActivitySegment {
 export interface PlanWeekActivityItem {
   id: string;
   kind: 'task' | 'exercise' | 'rest';
+  recordSource?: 'today_task' | 'manual' | 'external_import' | 'rest';
   dateKey: string;
   occurredAt: string;
   hasExactTimestamp: boolean;
@@ -3560,12 +3561,56 @@ export function getPlanWeekSnapshot(
     hasLoadFailure || (doneTaskCount === 0 && restEvents.length === 0 && allNonFutureUncovered);
 
   // Build unified selected-week activity items for the "View activity" / workout filter sheet
+  const activityItems = buildPlanActivityItems(completedTasks, standaloneSessions, restEvents);
+
+  const canGoPrevious = bounds.weekStartKey > navBounds.minWeekStartKey;
+  const canGoNext = bounds.weekStartKey < navBounds.maxWeekStartKey;
+
+  return {
+    weekStartKey: bounds.weekStartKey,
+    weekEndKey: bounds.weekEndKey,
+    weekOffset,
+    isCurrentWeek,
+    title: formatDynamicWeekTitle(bounds.weekStartKey, referenceDate),
+    rangeLabel: formatPlanWeekRangeLabel(bounds.weekStartKey, referenceDate),
+    canGoPrevious,
+    canGoNext,
+    isHistoryCoverageKnown: navBounds.isHistoryCoverageKnown,
+    showEarlierUnavailableNote: !canGoPrevious && !navBounds.isHistoryCoverageKnown,
+    isWeekCoverageUnknown,
+    hasLoadFailure,
+    doneTaskCount,
+    completedTasks,
+    standaloneSessions,
+    restEvents,
+    days,
+    workoutSummary,
+    activityItems,
+  };
+}
+
+function formatExternalImportSourceLabel(session: ExerciseSessionRecord): string {
+  if (
+    session.workoutActivityType?.startsWith('HK') ||
+    session.rawTypeLabel?.toLowerCase().includes('apple')
+  ) {
+    return 'Apple Health';
+  }
+  return 'Apple Health';
+}
+
+function buildPlanActivityItems(
+  completedTasks: TaskCompletionRecord[],
+  standaloneSessions: ExerciseSessionRecord[],
+  restEvents: PlanLifecycleEvent[]
+): PlanWeekActivityItem[] {
   const activityItems: PlanWeekActivityItem[] = [];
 
   for (const tc of completedTasks) {
-    const segs = tc.exerciseSegments.length > 0
-      ? tc.exerciseSegments
-      : [{ exerciseType: 'other' as ExerciseType, title: tc.title }];
+    const segs =
+      tc.exerciseSegments.length > 0
+        ? tc.exerciseSegments
+        : [{ exerciseType: 'other' as ExerciseType, title: tc.title }];
 
     const typeKeys: string[] = [];
     const typeLabels: string[] = [];
@@ -3608,6 +3653,7 @@ export function getPlanWeekSnapshot(
     activityItems.push({
       id: tc.id,
       kind: 'task',
+      recordSource: 'today_task',
       dateKey: tc.dateKey,
       occurredAt: tc.completedAt,
       hasExactTimestamp: tc.hasExactTimestamp,
@@ -3635,6 +3681,7 @@ export function getPlanWeekSnapshot(
     activityItems.push({
       id: s.id,
       kind: 'exercise',
+      recordSource: s.source === 'external_import' ? 'external_import' : 'manual',
       dateKey: s.dateKey,
       occurredAt: s.occurredAt,
       hasExactTimestamp: s.hasExactTimestamp,
@@ -3652,15 +3699,19 @@ export function getPlanWeekSnapshot(
           ]
         : [],
       trustworthyDurationMinutes: isTrustworthy ? s.actualDurationMinutes : null,
-      sourceLabel: s.source === 'external_import' ? 'Imported workout' : 'Logged workout',
+      sourceLabel:
+        s.source === 'external_import'
+          ? formatExternalImportSourceLabel(s)
+          : 'Logged workout',
       ...(s.note ? { note: s.note } : {}),
     });
   }
 
   for (const ev of restEvents) {
     activityItems.push({
-      id: ev.id,
+      id: ev.legacyRestRecordId || ev.id,
       kind: 'rest',
+      recordSource: 'rest',
       dateKey: ev.dateKey,
       occurredAt: ev.occurredAt,
       hasExactTimestamp: false,
@@ -3678,30 +3729,27 @@ export function getPlanWeekSnapshot(
     return new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime();
   });
 
-  const canGoPrevious = bounds.weekStartKey > navBounds.minWeekStartKey;
-  const canGoNext = bounds.weekStartKey < navBounds.maxWeekStartKey;
+  return activityItems;
+}
 
-  return {
-    weekStartKey: bounds.weekStartKey,
-    weekEndKey: bounds.weekEndKey,
-    weekOffset,
-    isCurrentWeek,
-    title: formatDynamicWeekTitle(bounds.weekStartKey, referenceDate),
-    rangeLabel: formatPlanWeekRangeLabel(bounds.weekStartKey, referenceDate),
-    canGoPrevious,
-    canGoNext,
-    isHistoryCoverageKnown: navBounds.isHistoryCoverageKnown,
-    showEarlierUnavailableNote: !canGoPrevious && !navBounds.isHistoryCoverageKnown,
-    isWeekCoverageUnknown,
-    hasLoadFailure,
-    doneTaskCount,
-    completedTasks,
-    standaloneSessions,
-    restEvents,
-    days,
-    workoutSummary,
-    activityItems,
-  };
+/**
+ * Returns chronological activity and explicit rest records for a single local dateKey (YYYY-MM-DD),
+ * reusing the exact same item shape, duration trust rules, and source labels as This week.
+ */
+export function getDayActivityItems(
+  store: PlanFoundationStore,
+  dateKey: string
+): PlanWeekActivityItem[] {
+  const completedTasks = store.taskCompletions.filter(
+    (t) => t.status === 'done' && t.dateKey === dateKey
+  );
+  const standaloneSessions = store.exerciseSessions.filter(
+    (s) => s.source !== 'today_task' && s.dateKey === dateKey
+  );
+  const restEvents = store.lifecycleEvents.filter(
+    (e) => e.type === 'rest' && e.dateKey === dateKey
+  );
+  return buildPlanActivityItems(completedTasks, standaloneSessions, restEvents);
 }
 
 /**
@@ -5436,6 +5484,8 @@ export function getHabitJourneyNextStep(
 export const WEEKLY_REVIEW_FIT_QUESTION_ID = DEFAULT_WEEKLY_REVIEW_QUESTION_ID;
 export const WEEKLY_REVIEW_HARD_FOLLOWUP_QUESTION_ID = 'weekly_hard_followup';
 export const WEEKLY_REVIEW_SELF_REPORT_QUESTION_ID = 'weekly_self_report';
+export const WEEKLY_STARTING_FEEL_SKIPPED_VALUE = '__skipped__';
+export const WEEKLY_STARTING_FEEL_RESTED_VALUE = '__rested_all_week__';
 
 export type WeeklyReviewFitAnswer =
   | 'hard_to_fit_in'
@@ -5447,6 +5497,12 @@ export type WeeklyHardFollowUpAnswer =
   | 'timing_off'
   | 'need_backup'
   | 'busy_week';
+
+export type WeeklyStartingFeelStatus =
+  | 'unanswered'
+  | 'answered'
+  | 'skipped'
+  | 'rested_all_week';
 
 export interface WeeklyReviewSelfReportState {
   status: 'none' | 'note' | 'skipped';
@@ -5460,6 +5516,9 @@ export interface WeeklyReviewModel {
   weekStartKey: string;
   weekEndKey: string;
   rangeLabel: string;
+  isLatestCompletedWeek: boolean;
+  canGoPreviousWeek: boolean;
+  canGoNextWeek: boolean;
   /** Strictly evidence-backed single-sentence fact for the reviewed completed week */
   factLine: string;
   movementDaysCount: number;
@@ -5467,21 +5526,26 @@ export interface WeeklyReviewModel {
   restDaysCount: number;
   hasMovementRecords: boolean;
   isCoverageKnown: boolean;
+  /** True when user explicitly indicated resting all week (7 rest days, note, or explicit rest selection) */
+  isRestedAllWeek: boolean;
+  /** True when rested-all-week was explicitly toggled on the review screen (reversible) */
+  isRestedAllWeekExplicit: boolean;
   /** Saved answer to "How did movement fit into your week?" */
   fitAnswer: WeeklyReviewFitAnswer | null;
   fitAnswerLabel: string | null;
   fitSavedAt: string | null;
   fitUpdatedAt: string | null;
   fitRecord: WeeklyReviewRecord | null;
-  /** Optional single follow-up when "Hard to fit in" is chosen */
+  /** Optional single follow-up when "Hard to fit" is chosen */
   followUpAnswer: WeeklyHardFollowUpAnswer | null;
   followUpLabel: string | null;
   /** Shared pending or accepted suggestion (exact same identity as Your journey!) */
   pendingSuggestion: JourneyNextStepExperiment | null;
   /** Immutable confirmed decisions for this week (preserved even when editing old feedback) */
   confirmedDecisions: WeeklyReviewDecision[];
-  /** Optional starting-feel answer ("How did starting feel?") reused across Weekly review & Your journey */
+  /** Optional starting-feel answer ("On days you moved, how did starting feel?") saved per week */
   startingFeelAnswer: HabitStartFrictionLevel | null;
+  startingFeelStatus: WeeklyStartingFeelStatus;
   startingFeelLabel: string | null;
   startingFeelSourceLabel: string | null;
   /** Optional user self-report when there are no movement records in the reviewed week */
@@ -5501,7 +5565,7 @@ export function normalizeWeeklyReviewFitAnswer(
 export function formatWeeklyReviewFitLabel(answer: WeeklyReviewFitAnswer): string {
   switch (answer) {
     case 'hard_to_fit_in':
-      return 'Hard to fit in';
+      return 'Hard to fit';
     case 'about_right':
       return 'About right';
     case 'room_for_more':
@@ -5527,10 +5591,20 @@ export function formatWeeklyStartingFeelLabel(level: HabitStartFrictionLevel): s
     case 'hard_to_start':
       return 'Hard to start';
     case 'manageable':
-      return 'Manageable';
+      return 'Took a nudge';
     case 'easier':
-      return 'Felt natural';
+      return 'Easy to start';
   }
+}
+
+function noteIndicatesRestedAllWeek(note: string): boolean {
+  const normalized = note.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    /\b(rested\s+all\s+week|rested\s+the\s+whole\s+week|rest\s+week|took\s+(the\s+|a\s+)?(whole\s+)?week\s+off|mostly\s+rested|resting\s+all\s+week|didn't\s+move\s+all\s+week|did\s+not\s+move\s+all\s+week)\b/.test(
+      normalized
+    ) || /(整周.*休息|全周.*休息|休息了一整周|一周都在休息)/.test(normalized)
+  );
 }
 
 /**
@@ -5570,19 +5644,45 @@ export function appendWeeklyReviewDecision(
 }
 
 /**
- * Computes the complete Weekly review view-model for the most recent COMPLETED local Monday-Sunday week.
- * - Strictly isolated from the `This week` switcher!
- * - Reuses PlanFoundationStore weeklyReviews, sharedSuggestionDecisions, and habitCheckIns.
+ * Computes the complete Weekly review view-model for a completed local Monday-Sunday week.
+ * Defaults to the most recent COMPLETED local Monday-Sunday week, and supports switching
+ * to historical completed weeks while keeping answers isolated per reviewed week.
  */
 export function getWeeklyReviewModel(
   store: PlanFoundationStore,
   referenceDate: Date = new Date(),
-  activeHabit: ConfirmedActionStrategy | null = null
+  activeHabit: ConfirmedActionStrategy | null = null,
+  targetWeekStartKey?: string | null
 ): WeeklyReviewModel {
   const currentWeek = getLocalWeekBounds(referenceDate);
-  const reviewWeekStart = addLocalDays(currentWeek.weekStart, -7);
-  const reviewBounds = getLocalWeekBounds(reviewWeekStart);
-  const { weekStartKey, weekEndKey } = reviewBounds;
+  const latestReviewWeekStart = addLocalDays(currentWeek.weekStart, -7);
+  const latestReviewBounds = getLocalWeekBounds(latestReviewWeekStart);
+  const navBounds = getPlanWeekNavigationBounds(store, referenceDate);
+  const minReviewWeekStartKey =
+    navBounds.minWeekStartKey < latestReviewBounds.weekStartKey
+      ? navBounds.minWeekStartKey
+      : latestReviewBounds.weekStartKey;
+
+  let resolvedReviewBounds = latestReviewBounds;
+  if (targetWeekStartKey) {
+    const parsedTarget = parseLocalDateKey(targetWeekStartKey);
+    if (parsedTarget) {
+      const candidate = getLocalWeekBounds(parsedTarget);
+      if (candidate.weekStartKey > latestReviewBounds.weekStartKey) {
+        resolvedReviewBounds = latestReviewBounds;
+      } else if (candidate.weekStartKey < minReviewWeekStartKey) {
+        const minDate = parseLocalDateKey(minReviewWeekStartKey);
+        resolvedReviewBounds = minDate ? getLocalWeekBounds(minDate) : candidate;
+      } else {
+        resolvedReviewBounds = candidate;
+      }
+    }
+  }
+
+  const { weekStartKey, weekEndKey } = resolvedReviewBounds;
+  const isLatestCompletedWeek = weekStartKey === latestReviewBounds.weekStartKey;
+  const canGoPreviousWeek = weekStartKey > minReviewWeekStartKey;
+  const canGoNextWeek = weekStartKey < latestReviewBounds.weekStartKey;
   const rangeLabel = formatPlanWeekRangeLabel(weekStartKey, referenceDate);
 
   // Determine whether user has a reviewable completed week yet
@@ -5679,27 +5779,28 @@ export function getWeeklyReviewModel(
   }
 
   // Strictly evidence-backed single fact line (never fabricated!)
+  const weekPhrase = isLatestCompletedWeek ? 'last week' : 'that week';
   let factLine: string;
   if (movementDaysCount > 0) {
     const dayWord = movementDaysCount === 1 ? 'day' : 'days';
     if (doneTaskCount > 0 && doneTaskCount !== movementDaysCount) {
       const taskWord = doneTaskCount === 1 ? 'task' : 'tasks';
-      factLine = `${movementDaysCount} ${dayWord} with movement last week (${doneTaskCount} ${taskWord} completed).`;
+      factLine = `${movementDaysCount} ${dayWord} with movement ${weekPhrase} (${doneTaskCount} ${taskWord} completed).`;
     } else {
-      factLine = `${movementDaysCount} ${dayWord} with movement last week.`;
+      factLine = `${movementDaysCount} ${dayWord} with movement ${weekPhrase}.`;
     }
   } else if (restDaysCount > 0) {
     const restWord = restDaysCount === 1 ? 'rest day' : 'rest days';
-    factLine = `No movement logged last week · ${restDaysCount} intentional ${restWord}.`;
+    factLine = `No movement logged ${weekPhrase} · ${restDaysCount} intentional ${restWord}.`;
   } else if (selfReport.status === 'note') {
-    factLine = 'No tracked movement last week · your note is saved below.';
+    factLine = `No tracked movement ${weekPhrase} · your note is saved below.`;
   } else if (hasCoverageInOrBeforeReviewWeek) {
-    factLine = 'No movement recorded last week.';
+    factLine = `No movement recorded ${weekPhrase}.`;
   } else {
-    factLine = 'No movement records available for last week.';
+    factLine = `No movement records available for ${weekPhrase}.`;
   }
 
-  // Optional starting-feel answer: reuse SAME context from weeklyReviews OR habitCheckIns (Your journey sync!)
+  // Optional starting-feel answer: strictly scoped to THIS reviewed week!
   const startingFeelRecord = getWeeklyReviewAnswer(
     store,
     weekStartKey,
@@ -5707,6 +5808,10 @@ export function getWeeklyReviewModel(
   );
   let startingFeelAnswer: HabitStartFrictionLevel | null = null;
   let startingFeelSourceLabel: string | null = null;
+  const isRestedAllWeekExplicit =
+    startingFeelRecord?.rawAnswer === WEEKLY_STARTING_FEEL_RESTED_VALUE;
+  const isStartingFeelSkipped =
+    startingFeelRecord?.rawAnswer === WEEKLY_STARTING_FEEL_SKIPPED_VALUE;
 
   if (
     startingFeelRecord &&
@@ -5716,7 +5821,7 @@ export function getWeeklyReviewModel(
   ) {
     startingFeelAnswer = startingFeelRecord.rawAnswer;
     startingFeelSourceLabel = 'Saved in Weekly review';
-  } else if (activeHabit) {
+  } else if (!isRestedAllWeekExplicit && !isStartingFeelSkipped && activeHabit) {
     const fp = computeHabitConfigFingerprint(activeHabit);
     const matchingCheckIns = (store.habitCheckIns ?? [])
       .filter(
@@ -5725,7 +5830,8 @@ export function getWeeklyReviewModel(
           c.habitVersion === activeHabit.version &&
           c.configFingerprint === fp &&
           c.questionId === DEFAULT_HABIT_EASE_QUESTION_ID &&
-          c.frictionLevel !== undefined
+          c.frictionLevel !== undefined &&
+          isDateKeyInWeek(c.dateKey, weekStartKey, weekEndKey)
       )
       .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
     if (matchingCheckIns.length > 0 && matchingCheckIns[0].frictionLevel) {
@@ -5733,6 +5839,20 @@ export function getWeeklyReviewModel(
       startingFeelSourceLabel = `Reused from ${formatShortLocalDateKey(matchingCheckIns[0].dateKey)} (${activeHabit.version})`;
     }
   }
+
+  const isRestedAllWeek =
+    !hasMovementRecords &&
+    (isRestedAllWeekExplicit ||
+      restDaysCount >= 7 ||
+      (selfReport.status === 'note' && noteIndicatesRestedAllWeek(selfReport.note)));
+
+  const startingFeelStatus: WeeklyStartingFeelStatus = startingFeelAnswer
+    ? 'answered'
+    : isRestedAllWeek
+    ? 'rested_all_week'
+    : isStartingFeelSkipped
+    ? 'skipped'
+    : 'unanswered';
 
   // Shared concrete pending/accepted suggestion (exact same suggestionId & sharedSuggestionDecisions as Your journey!)
   const versionScope = activeHabit
@@ -5764,7 +5884,7 @@ export function getWeeklyReviewModel(
           suggestionId,
           kind: 'make_smaller',
           title: 'Make the action smaller',
-          basis: `You noted last week was hard to fit in because it felt too long to start.`,
+          basis: `You noted ${weekPhrase} was hard to fit because it felt too long to start.`,
           beforeLabel: currentAction,
           afterLabel: smallerDefault,
           suggestedFieldValue: smallerDefault,
@@ -5781,7 +5901,7 @@ export function getWeeklyReviewModel(
           suggestionId,
           kind: 'shift_cue',
           title: 'Shift when you start',
-          basis: 'You noted timing didn’t line up last week.',
+          basis: `You noted timing didn’t line up ${weekPhrase}.`,
           beforeLabel: currentCue,
           afterLabel: nextCue,
           suggestedFieldValue: nextCue,
@@ -5798,7 +5918,7 @@ export function getWeeklyReviewModel(
           suggestionId,
           kind: 'add_alternative',
           title: 'Add a backup way',
-          basis: 'You noted a lower-friction backup option would have helped last week.',
+          basis: `You noted a lower-friction backup option would have helped ${weekPhrase}.`,
           beforeLabel: currentBackup,
           afterLabel: nextBackup,
           suggestedFieldValue: nextBackup,
@@ -5840,7 +5960,7 @@ export function getWeeklyReviewModel(
         suggestionId,
         kind: 'keep_rhythm',
         title: 'Keep this rhythm',
-        basis: 'Last week felt about right — staying steady is a complete choice.',
+        basis: 'That week felt about right — staying steady is a complete choice.',
         beforeLabel: currentSetup,
         afterLabel: 'Keep current setup as is — no extra volume added',
         primaryCtaLabel: 'Keep this rhythm',
@@ -5861,12 +5981,17 @@ export function getWeeklyReviewModel(
     weekStartKey,
     weekEndKey,
     rangeLabel,
+    isLatestCompletedWeek,
+    canGoPreviousWeek,
+    canGoNextWeek,
     factLine,
     movementDaysCount,
     doneTaskCount,
     restDaysCount,
     hasMovementRecords,
     isCoverageKnown: hasCoverageInOrBeforeReviewWeek,
+    isRestedAllWeek,
+    isRestedAllWeekExplicit,
     fitAnswer,
     fitAnswerLabel,
     fitSavedAt: fitRecord?.savedAt ?? null,
@@ -5877,6 +6002,7 @@ export function getWeeklyReviewModel(
     pendingSuggestion,
     confirmedDecisions,
     startingFeelAnswer,
+    startingFeelStatus,
     startingFeelLabel: startingFeelAnswer ? formatWeeklyStartingFeelLabel(startingFeelAnswer) : null,
     startingFeelSourceLabel,
     selfReport,

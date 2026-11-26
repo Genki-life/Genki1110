@@ -62,6 +62,16 @@ import {
   getInitialTabFromUrl,
   isPreviewResetRequestedFromUrl,
 } from './utils/previewRuntime';
+import {
+  PreferenceItem,
+  loadPreferences,
+  resetPreviewPreferences,
+} from './utils/preferencesStore';
+import {
+  buildPreferenceAwareTodayPlans,
+  extractConfirmedPreferenceProfile,
+  pickPreferenceAwareAlternative,
+} from './utils/preferenceSuggestions';
 import type {
   PlanNovaChatRequest,
   PlanNovaChatTextEvent,
@@ -134,6 +144,8 @@ interface PlanItem {
   mediaType: 'article';
   activityCategory?: ActivityCategory;
   durationMinutes?: number;
+  activityKey?: string;
+  place?: 'home' | 'outdoors' | 'gym';
 }
 
 const DEFAULT_WALK_PLAN: PlanItem = {
@@ -151,7 +163,9 @@ const DEFAULT_WALK_PLAN: PlanItem = {
   thumbnailUrl: mindfulWalkThumbUrl,
   mediaType: 'article',
   activityCategory: 'walk',
-  durationMinutes: 15
+  durationMinutes: 15,
+  activityKey: 'walking',
+  place: 'outdoors',
 };
 
 const STRETCH_PLAN: PlanItem = {
@@ -169,7 +183,9 @@ const STRETCH_PLAN: PlanItem = {
   thumbnailUrl: stretchPoseSvgUrl,
   mediaType: 'article',
   activityCategory: 'stretch',
-  durationMinutes: 5
+  durationMinutes: 5,
+  activityKey: 'stretching',
+  place: 'home',
 };
 
 const MOBILITY_PLAN: PlanItem = {
@@ -187,7 +203,89 @@ const MOBILITY_PLAN: PlanItem = {
   thumbnailUrl: shoulderNeckPoseSvgUrl,
   mediaType: 'article',
   activityCategory: 'stretch',
-  durationMinutes: 8
+  durationMinutes: 8,
+  activityKey: 'stretching',
+  place: 'home',
+};
+
+const YOGA_FLOW_PLAN: PlanItem = {
+  id: 'yoga',
+  title: '10-minute gentle yoga at home',
+  bubblePrompt: 'How about a 10-minute gentle yoga flow?',
+  subtitle: 'Easy mat-optional stretches at home to loosen stiff hips and calm your pace.',
+  fullDescription:
+    'An unhurried 10-minute home yoga sequence focused on smooth breathing, spine mobility, and gentle leg lengthening without rushing transitions.',
+  detailTitle: '10-minute Gentle Home Yoga',
+  audioTitle: 'Easy Home Yoga Flow',
+  audioSubtitle: 'Guided yoga · 10 min',
+  tip1: 'Works well in a small open space at home with no extra gear required.',
+  tip2: 'Keep every pose comfortable—prioritize steady exhales over depth.',
+  thumbnailUrl: stretchPoseSvgUrl,
+  mediaType: 'article',
+  activityCategory: 'stretch',
+  durationMinutes: 10,
+  activityKey: 'yoga',
+  place: 'home',
+};
+
+const CYCLING_PLAN: PlanItem = {
+  id: 'cycling',
+  title: '20-minute easy bike ride',
+  bubblePrompt: 'How about a 20-minute easy bike ride?',
+  subtitle: 'A relaxed outdoor spin at conversational pace to clear your head.',
+  fullDescription:
+    'A low-pressure 20-minute ride focused on smooth cadence and fresh air rather than speed or elevation.',
+  detailTitle: '20-minute Easy Cycling',
+  audioTitle: 'Unhurried Ride Notes',
+  audioSubtitle: 'Cycling notes · 20 min',
+  tip1: 'Keep the gears light so your legs feel warm rather than taxed.',
+  tip2: 'Stick to a familiar flat loop for an easy start.',
+  thumbnailUrl: discoverTrailUrl,
+  mediaType: 'article',
+  activityCategory: 'other',
+  durationMinutes: 20,
+  activityKey: 'cycling',
+  place: 'outdoors',
+};
+
+const STRENGTH_HOME_PLAN: PlanItem = {
+  id: 'strength-home',
+  title: '15-minute bodyweight strength at home',
+  bubblePrompt: 'How about 15-minute strength at home?',
+  subtitle: 'A steady, low-impact strength circuit right in your living room.',
+  fullDescription:
+    'A calm 15-minute bodyweight strength sequence using slow squats, wall push-ups, and glute bridges at your own pace.',
+  detailTitle: '15-minute Home Strength',
+  audioTitle: 'Steady Strength Guide',
+  audioSubtitle: 'Bodyweight strength · 15 min',
+  tip1: 'Take full rests between sets—form and comfort come first.',
+  tip2: 'No dumbbells required; a chair or wall is plenty for support.',
+  thumbnailUrl: shoulderNeckPoseSvgUrl,
+  mediaType: 'article',
+  activityCategory: 'other',
+  durationMinutes: 15,
+  activityKey: 'strength',
+  place: 'home',
+};
+
+const GYM_STRENGTH_PLAN: PlanItem = {
+  id: 'strength-gym',
+  title: '25-minute easy gym circuit',
+  bubblePrompt: 'How about a 25-minute gym session?',
+  subtitle: 'A straightforward machine or light-weight gym session without rushing.',
+  fullDescription:
+    'A relaxed 25-minute gym session covering light rows, presses, and leg work with comfortable rest intervals.',
+  detailTitle: '25-minute Easy Gym Circuit',
+  audioTitle: 'Calm Gym Session Notes',
+  audioSubtitle: 'Gym strength · 25 min',
+  tip1: 'Start with a lighter weight than you think you need for the first set.',
+  tip2: 'Stop with a couple of comfortable reps left in reserve.',
+  thumbnailUrl: discoverEveningUrl,
+  mediaType: 'article',
+  activityCategory: 'other',
+  durationMinutes: 25,
+  activityKey: 'strength',
+  place: 'gym',
 };
 
 const BREATH_RESET_PLAN: PlanItem = {
@@ -205,8 +303,21 @@ const BREATH_RESET_PLAN: PlanItem = {
   thumbnailUrl: discoverBreathUrl,
   mediaType: 'article',
   activityCategory: 'other',
-  durationMinutes: 3
+  durationMinutes: 3,
+  activityKey: 'other',
+  place: 'home',
 };
+
+const MOVEMENT_SUGGESTION_POOL: PlanItem[] = [
+  STRETCH_PLAN,
+  DEFAULT_WALK_PLAN,
+  MOBILITY_PLAN,
+  YOGA_FLOW_PLAN,
+  CYCLING_PLAN,
+  STRENGTH_HOME_PLAN,
+  GYM_STRENGTH_PLAN,
+  BREATH_RESET_PLAN,
+];
 
 const TOMORROW_WALK_PLAN: PlanItem = {
   id: 'tomorrow',
@@ -223,7 +334,9 @@ const TOMORROW_WALK_PLAN: PlanItem = {
   thumbnailUrl: discoverTrailUrl,
   mediaType: 'article',
   activityCategory: 'walk',
-  durationMinutes: 15
+  durationMinutes: 15,
+  activityKey: 'walking',
+  place: 'outdoors',
 };
 
 const REST_DAY_PLAN: PlanItem = {
@@ -241,7 +354,7 @@ const REST_DAY_PLAN: PlanItem = {
   thumbnailUrl: discoverEveningUrl,
   mediaType: 'article',
   activityCategory: 'rest',
-  durationMinutes: 0
+  durationMinutes: 0,
 };
 
 const REST_DAY_BUBBLE_BODY = 'It’s okay to slow down. I’m here with you.';
@@ -1138,16 +1251,35 @@ export default function App() {
   const restRecordsRef = useRef(restRecords);
   restRecordsRef.current = restRecords;
 
-  // 3 independent suggestion cards state (starts at index 0 -> 1 / 3: "How about a 5-minute stretch?")
+  // Confirmed user preferences driving future Today & Plan B suggestions (never overwrites accepted Today tasks)
+  const initialPreferencesRef = useRef<PreferenceItem[] | null>(null);
+  if (initialPreferencesRef.current === null) {
+    initialPreferencesRef.current =
+      activePreviewProfileId && isPreviewResetRequestedFromUrl()
+        ? resetPreviewPreferences(activePreviewProfileId)
+        : loadPreferences(activePreviewProfileId);
+  }
+  const [confirmedPreferenceProfile, setConfirmedPreferenceProfile] = useState(() =>
+    extractConfirmedPreferenceProfile(initialPreferencesRef.current!)
+  );
+  const confirmedPreferenceProfileRef = useRef(confirmedPreferenceProfile);
+  confirmedPreferenceProfileRef.current = confirmedPreferenceProfile;
+
+  // 3 independent suggestion cards state — shaped by confirmed user preferences
   const [cardsState, setCardsState] = useState<SuggestionCardItemState[]>(() => {
     const todayKey = initialTodayDateKeyRef.current;
     const existingTasks = initialPlanStoreRef.current!.taskCompletions.filter(
       (t) => t.status === 'done'
     );
+    const preferredPlans = buildPreferenceAwareTodayPlans(
+      extractConfirmedPreferenceProfile(initialPreferencesRef.current!),
+      MOVEMENT_SUGGESTION_POOL,
+      3
+    );
     const baseCards: { id: string; plan: PlanItem }[] = [
-      { id: 'card-0', plan: STRETCH_PLAN },
-      { id: 'card-1', plan: DEFAULT_WALK_PLAN },
-      { id: 'card-2', plan: MOBILITY_PLAN },
+      { id: 'card-0', plan: preferredPlans[0] ?? STRETCH_PLAN },
+      { id: 'card-1', plan: preferredPlans[1] ?? DEFAULT_WALK_PLAN },
+      { id: 'card-2', plan: preferredPlans[2] ?? MOBILITY_PLAN },
     ];
     return baseCards.map(({ id, plan }) => {
       const taskInstanceId = `today-task::${todayKey}::${id}`;
@@ -1169,6 +1301,38 @@ export default function App() {
       };
     });
   });
+
+  // Sync confirmed preferences into future suggestions ONLY (Today's accepted/completed tasks stay intact)
+  const handlePreferencesChange = useCallback((nextItems: PreferenceItem[]) => {
+    const nextProfile = extractConfirmedPreferenceProfile(nextItems);
+    confirmedPreferenceProfileRef.current = nextProfile;
+    setConfirmedPreferenceProfile(nextProfile);
+
+    const nextPreferredPlans = buildPreferenceAwareTodayPlans(
+      nextProfile,
+      MOVEMENT_SUGGESTION_POOL,
+      3
+    );
+    setCardsState((prev) => {
+      const lockedIds = new Set(
+        prev
+          .filter((card) => card.planState !== 'suggested')
+          .map((card) => card.plan.id)
+      );
+      const available = nextPreferredPlans.filter((p) => !lockedIds.has(p.id));
+      let cursor = 0;
+      return prev.map((card, idx) => {
+        // Strictly preserve accepted and completed Today tasks
+        if (card.planState !== 'suggested') return card;
+        const replacement = available[cursor] ?? nextPreferredPlans[idx] ?? card.plan;
+        cursor += 1;
+        return {
+          ...card,
+          plan: replacement,
+        };
+      });
+    });
+  }, []);
 
   const [activeVirtualIndex, setActiveVirtualIndex] = useState<number>(0);
   const activeCardIndex = ((activeVirtualIndex % 3) + 3) % 3;
@@ -2560,16 +2724,19 @@ export default function App() {
     setHoldProgress(0);
   };
 
-  // Click "Plan B" on initial suggestion: Opens chat with proactive alternative
+  // Click "Plan B" on initial suggestion: Opens chat with preference-aware proactive alternative
   const handleInitialPlanB = (targetCardIdx?: number) => {
     const idx = typeof targetCardIdx === 'number' ? targetCardIdx : activeCardIndexRef.current;
     chatTargetCardIdxRef.current = idx;
     const targetCard = cardsState[idx];
     const targetPlan = targetCard?.plan || currentPlan;
-    const alternative = targetPlan.id === 'walk' ? STRETCH_PLAN : BREATH_RESET_PLAN;
-    const alternativeText = targetPlan.id === 'walk'
-      ? 'How about a 5-minute stretch at home instead?'
-      : 'How about a 3-minute seated breath reset instead?';
+    const alternative =
+      pickPreferenceAwareAlternative(
+        confirmedPreferenceProfileRef.current,
+        MOVEMENT_SUGGESTION_POOL,
+        [targetPlan.id]
+      ) ?? (targetPlan.id === 'walk' ? STRETCH_PLAN : BREATH_RESET_PLAN);
+    const alternativeText = `${alternative.bubblePrompt.replace(/\?$/, '')} instead?`;
 
     openChatWithTransition(() => {
       if (targetCard) {
@@ -2607,7 +2774,7 @@ export default function App() {
   };
 
   // 2. Accepted State Handlers
-  // Click "Plan B" on already accepted plan: Proactively offers alternative while keeping current plan until accepted
+  // Click "Plan B" on already accepted plan: Proactively offers preference-aware alternative while keeping current plan until accepted
   const handleAcceptedPlanB = (targetCardIdx?: number) => {
     const idx = typeof targetCardIdx === 'number' ? targetCardIdx : activeCardIndexRef.current;
     chatTargetCardIdxRef.current = idx;
@@ -2623,16 +2790,13 @@ export default function App() {
       }
       setInputPlaceholder('Tell Nova what changed…');
       isNearBottomRef.current = true;
-      const alternative = targetPlan.id === 'walk'
-        ? STRETCH_PLAN
-        : targetPlan.id === 'stretch'
-        ? BREATH_RESET_PLAN
-        : TOMORROW_WALK_PLAN;
-      const alternativeText = targetPlan.id === 'walk'
-        ? 'How about a 5-minute stretch at home instead?'
-        : targetPlan.id === 'stretch'
-        ? 'How about a 3-minute seated breath reset instead?'
-        : 'Would moving your walk to tomorrow work better?';
+      const alternative =
+        pickPreferenceAwareAlternative(
+          confirmedPreferenceProfileRef.current,
+          MOVEMENT_SUGGESTION_POOL,
+          [targetPlan.id]
+        ) ?? (targetPlan.id === 'walk' ? STRETCH_PLAN : TOMORROW_WALK_PLAN);
+      const alternativeText = `${alternative.bubblePrompt.replace(/\?$/, '')} instead?`;
 
       setChatMessages([
         {
@@ -2858,18 +3022,50 @@ export default function App() {
         }
       ]);
     } else if (option.action === 'show_another') {
-      // Show next alternative option: disable prior cards, record user's choice
+      // Show next preference-aware alternative option: disable prior cards, record user's choice
       setChatMessages((prev) => {
         const disabledPrev = prev.map((m) =>
           m.id === messageId
             ? { ...m, disabled: true, selectedOptionLabel: option.label }
             : { ...m, disabled: true }
         );
-        const hasTomorrowWalk = prev.some((m) =>
-          m.options?.some((o) => o.targetPlan?.id === 'tomorrow' || o.targetPlan?.id === 'tomorrow_walk')
+        const alreadySuggestedIds = new Set<string>([
+          cardsStateRef.current[chatTargetCardIdxRef.current ?? activeCardIndexRef.current]?.plan.id ?? '',
+        ]);
+        prev.forEach((m) =>
+          m.options?.forEach((o) => {
+            if (o.targetPlan?.id) alreadySuggestedIds.add(o.targetPlan.id);
+          })
+        );
+        const hasTomorrowWalk = alreadySuggestedIds.has('tomorrow') || alreadySuggestedIds.has('tomorrow_walk');
+        const nextPreferredAlt = pickPreferenceAwareAlternative(
+          confirmedPreferenceProfileRef.current,
+          MOVEMENT_SUGGESTION_POOL,
+          Array.from(alreadySuggestedIds)
         );
 
-        const nextAiMsg: ChatMessage = !hasTomorrowWalk
+        const nextAiMsg: ChatMessage = nextPreferredAlt && alreadySuggestedIds.size < 4
+          ? {
+              id: `ai-${Date.now() + 1}`,
+              sender: 'ai',
+              text: `${nextPreferredAlt.bubblePrompt.replace(/\?$/, '')} instead?`,
+              options: [
+                {
+                  label: 'Sounds good',
+                  action: 'accept',
+                  targetPlan: nextPreferredAlt
+                },
+                {
+                  label: 'Show me another option',
+                  action: 'show_another'
+                },
+                {
+                  label: 'Tell Nova what changed',
+                  action: 'focus_input'
+                }
+              ]
+            }
+          : !hasTomorrowWalk
           ? {
               id: `ai-${Date.now() + 1}`,
               sender: 'ai',
@@ -3097,6 +3293,12 @@ export default function App() {
       return;
     }
 
+    const preferredQuickAlt =
+      pickPreferenceAwareAlternative(
+        confirmedPreferenceProfileRef.current,
+        MOVEMENT_SUGGESTION_POOL,
+        []
+      ) ?? STRETCH_PLAN;
     setChatMessages((prev) => [
       ...prev.map((m) => ({ ...m, disabled: true })),
       {
@@ -3107,12 +3309,12 @@ export default function App() {
       {
         id: `ai-${Date.now()}`,
         sender: 'ai',
-        text: "Got it! Listening to your body is what matters most. How about a 5-minute breather or taking today off?",
+        text: `Got it! Listening to your body is what matters most. ${preferredQuickAlt.bubblePrompt.replace(/\?$/, '')} or taking today off?`,
         options: [
           {
-            label: 'Sounds good (5-min stretch)',
+            label: `Sounds good (${preferredQuickAlt.durationMinutes ? `${preferredQuickAlt.durationMinutes}-min ` : ''}${preferredQuickAlt.activityKey || 'stretch'})`,
             action: 'accept',
-            targetPlan: STRETCH_PLAN
+            targetPlan: preferredQuickAlt
           },
           {
             label: 'Take today off',
@@ -5502,6 +5704,7 @@ export default function App() {
                 isNovaChatOpen={isChatOpen}
                 onOpenPlanNovaChat={openPlanNovaChat}
                 onOverlayChange={setIsPlanOverlayOpen}
+                onPreferencesChange={handlePreferencesChange}
               />
             </React.Suspense>
           )}

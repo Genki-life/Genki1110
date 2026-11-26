@@ -5,6 +5,7 @@ import coverBreath from '../assets/images/discover_breath_1793765860138.jpg';
 import type { DiscoverCatalogId } from './discoverStore';
 
 export type DiscoverMediaType = 'audio' | 'video';
+export type DiscoverCoverAspectRatio = '5/4' | '1/1';
 
 export interface DiscoverPublisher {
   name: string;
@@ -17,7 +18,11 @@ export interface DiscoverItem {
   contentType: 'Guide';
   /** Suggested practice duration (not media playback length) */
   suggestedDuration: string;
-  category: 'Walk' | 'Stretch' | 'Breathe' | 'Unwind';
+  category: 'Walk' | 'Stretch' | 'Breathe' | 'Unwind' | 'Yoga';
+  /** Direct movement/activity label shown under the title */
+  activityType: string;
+  /** Fixed cover aspect ratio per item (5:4 default, 1:1 for select items) */
+  coverAspectRatio: DiscoverCoverAspectRatio;
   coverUrl: string;
   /** Objective usage scenario — no unverified personalization claims */
   useCaseNote: string;
@@ -37,10 +42,12 @@ export interface DiscoverItem {
 export const DISCOVER_ITEMS: DiscoverItem[] = [
   {
     id: 'walk-mindful',
-    title: 'Gentle walk',
+    title: 'Gentle morning neighborhood walk',
     contentType: 'Guide',
     suggestedDuration: '15 min',
     category: 'Walk',
+    activityType: 'Walking',
+    coverAspectRatio: '5/4',
     coverUrl: coverTrail,
     useCaseNote: 'A gentle way to step outside.',
     overview:
@@ -58,6 +65,8 @@ export const DISCOVER_ITEMS: DiscoverItem[] = [
     contentType: 'Guide',
     suggestedDuration: '6 min',
     category: 'Stretch',
+    activityType: 'Stretching',
+    coverAspectRatio: '1/1',
     coverUrl: coverStretch,
     useCaseNote: 'A short break after desk work.',
     overview:
@@ -71,10 +80,12 @@ export const DISCOVER_ITEMS: DiscoverItem[] = [
   },
   {
     id: 'parasympathetic-breath',
-    title: 'Slow breathing',
+    title: 'Slow 4-7-8 breathing reset',
     contentType: 'Guide',
     suggestedDuration: '8 min',
     category: 'Breathe',
+    activityType: 'Breathing',
+    coverAspectRatio: '5/4',
     coverUrl: coverBreath,
     useCaseNote: 'A quiet moment to slow down.',
     overview:
@@ -88,18 +99,58 @@ export const DISCOVER_ITEMS: DiscoverItem[] = [
   },
   {
     id: 'evening-soundscape',
-    title: 'Evening wind-down',
+    title: 'Quiet evening wind-down & light floor stretch before bed',
     contentType: 'Guide',
     suggestedDuration: '20 min',
     category: 'Unwind',
+    activityType: 'Yoga',
+    coverAspectRatio: '5/4',
     coverUrl: coverEvening,
     useCaseNote: 'A calmer way to end the day.',
     overview:
-      'A 20-minute evening routine focused on lower light and stepping away from screens before turning in.',
+      'A 20-minute evening routine focused on lower light, gentle floor poses, and stepping away from screens before turning in.',
     steps: [
       'Dim bright overhead lights and set your phone face-down nearby.',
-      'Spend a few minutes tidying one small surface or making a warm caffeine-free drink.',
+      'Move through two slow seated twists and a supported child’s pose for a few easy breaths.',
       'Use the remaining time to read, stretch lightly, or sit quietly.',
+    ],
+    source: 'demo',
+  },
+  {
+    id: 'morning-yoga-flow',
+    title: 'Easy floor yoga for stiff hips and lower back',
+    contentType: 'Guide',
+    suggestedDuration: '12 min',
+    category: 'Yoga',
+    activityType: 'Yoga',
+    coverAspectRatio: '1/1',
+    coverUrl: coverStretch,
+    useCaseNote: 'Loosen up gently without breaking a sweat.',
+    overview:
+      'A low-intensity floor sequence designed to wake up tight hips, hamstrings, and your lower back at an unhurried rhythm.',
+    steps: [
+      'Start on a mat or soft rug with slow cat-cow movements synced to your breath.',
+      'Transition into a gentle low lunge on each side, keeping your weight balanced and soft.',
+      'Finish lying on your back with knees bent side to side for five relaxed breaths.',
+    ],
+    source: 'demo',
+  },
+  {
+    id: 'after-lunch-stroll',
+    title: '10-minute outdoor reset walk after lunch',
+    contentType: 'Guide',
+    suggestedDuration: '10 min',
+    category: 'Walk',
+    activityType: 'Walking',
+    coverAspectRatio: '5/4',
+    coverUrl: coverTrail,
+    useCaseNote: 'A light midday loop to clear afternoon fog.',
+    overview:
+      'A brief, easygoing stroll right after lunch to settle digestion and ease into the afternoon with a clearer head.',
+    steps: [
+      'Step outside for five minutes in one direction without setting a pace goal.',
+      'Keep your arms loose and notice the air temperature or sunlight along your route.',
+      'Turn back gently and take one deep exhale before returning to your desk.',
     ],
     source: 'demo',
   },
